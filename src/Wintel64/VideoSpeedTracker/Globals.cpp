@@ -55,15 +55,15 @@ bool getSides(string inLine){
 
 string trim(string toBeTrimmed){
 	int first = 0;
-	while (toBeTrimmed.substr(first, 1) == " ") first++;
+	while (first < (int)toBeTrimmed.length() && isspace((unsigned char)toBeTrimmed[first])) first++;
 	int last = toBeTrimmed.length() - 1;
-	while (toBeTrimmed.substr(last, 1) == " ") last--;
+	while (last >= first && isspace((unsigned char)toBeTrimmed[last])) last--;
 	return toBeTrimmed.substr(first, (last-first)+1);
 }
 
 
 
-bool Globals::readConfig(){
+bool Globals::readConfig(const string& path){
 
 // Items in config file VST.cfg must conform WRT order and spelling of LHS items, as follows:
 //  VST.cfg must use syntax:  <LHS> = <RHS> # 
@@ -95,9 +95,9 @@ bool Globals::readConfig(){
 	};
 
 
-	ifstream configIn("VST.cfg");
+	ifstream configIn(path);
 	if (!configIn.good()){
-		cout << "Can't open VST.cfg." << endl;
+		cout << "Can't open " << path << "." << endl;
 		return false;
 	}
 

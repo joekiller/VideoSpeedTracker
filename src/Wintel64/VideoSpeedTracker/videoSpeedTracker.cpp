@@ -53,9 +53,8 @@
 //*****************************************************************************************************************************
 
 
-#include <opencv\cv.h>
-#include "opencv2\highgui\highgui.hpp"
-#include "Globals.h""
+#include <opencv2/opencv.hpp>
+#include "Globals.h"
 #include <iostream>
 #include <fstream>
 #include <queue>
@@ -107,6 +106,22 @@ VideoWriter hiLiteVideo; // For writing highlights...the Scofflaws
 Globals g;
 
 Mat frame1, frame2; // Frames read by main, to use in frame differencing, and for display.
+
+// Command-line mode (any arguments given): no prompts, no Windows "dir" calls, optional headless run with no GUI windows.
+bool headless = false;    // --headless: never open a window or call waitKey (servers, containers, cron jobs)
+string inputPath;         // --input: full path of the single video to analyze; empty means interactive mode
+string configPath = "VST.cfg";  // --config
+//......................................................................................................................................................
+
+// Substring that returns "" instead of throwing when a file name doesn't follow the Foscam "manual_yyyymmddhhmmss.avi" pattern.
+string safeSub(const string& s, size_t pos, size_t len){
+	return pos < s.size() ? s.substr(pos, len) : string();
+}
+
+// waitKey() that is a no-op when running headless, so no display is required.
+int uiWaitKey(int ms){
+	return headless ? -1 : waitKey(ms);
+}
 //......................................................................................................................................................
 
 //int to string helper function
@@ -121,7 +136,7 @@ string intToString(int number){
 void setup(){
 
 // Get configuration values from VST.cfg and set corresponding objects in Globals.h to read-in values.
-	if (!g.readConfig()){
+	if (!g.readConfig(configPath)){
 		cout << "Reading of config file appears to have failed.   Exiting" << endl;
 		exit(-1);
 	}
@@ -271,14 +286,14 @@ void setup(){
 		cout << endl;
 		if (yesNoAll == "*"){ // give trace and stats files names based on directory name
 			hiLiteVideo.open(g.dataPathPrefix + "\\HiLites\\Hilites_" + dirName + ".avi",
-//				CV_FOURCC('X', '2', '6', '4'), capture.get(CV_CAP_PROP_FPS), Size(1280, 720), true);
-			-1, capture.get(CV_CAP_PROP_FPS), Size(1280, 720), true); // bug in OpenCV open function.  x264 has to be picked from list.  Argh.
+//				CV_FOURCC('X', '2', '6', '4'), capture.get(CAP_PROP_FPS), Size(1280, 720), true);
+			-1, capture.get(CAP_PROP_FPS), Size(1280, 720), true); // bug in OpenCV open function.  x264 has to be picked from list.  Argh.
 		}
 		else{ // yesNoAll == "y" which means only one file to process; give it name corresponding to input file name
 			fileMid = fileName.substr(7, 14);
 			hiLiteVideo.open(g.dataPathPrefix + "\\HiLites\\Hilites_" + fileMid.substr(0, 8) + "_" + fileMid.substr(8, 6) + ".avi",
-//				CV_FOURCC('X', '2', '6', '4'), capture.get(CV_CAP_PROP_FPS), Size(1280, 720), true);
-			-1, capture.get(CV_CAP_PROP_FPS), Size(1280, 720), true); // bug in OpenCV open function.  x264 has to be picked from list.  Argh.
+//				CV_FOURCC('X', '2', '6', '4'), capture.get(CAP_PROP_FPS), Size(1280, 720), true);
+			-1, capture.get(CAP_PROP_FPS), Size(1280, 720), true); // bug in OpenCV open function.  x264 has to be picked from list.  Argh.
 			
 		}
 		if (!hiLiteVideo.isOpened()){
@@ -291,6 +306,82 @@ void setup(){
 	return;
 }
 
+
+void printUsage(){
+	cout << "Usage: VideoSpeedTracker [options]        (no options = original interactive mode)" << endl
+		<< "  --input PATH          video file to analyze (required in command-line mode)" << endl
+		<< "  --config PATH         VST.cfg to use [VST.cfg]" << endl
+		<< "  --stats PATH          csv output [stats_<input name>.csv]" << endl
+		<< "  --trace PATH          write a debug trace file" << endl
+		<< "  --speed-limit N       [25]" << endl
+		<< "  --egregious N         egregious speed lower bound [speed limit + 10]" << endl
+		<< "  --start-frame N       [0]" << endl
+		<< "  --highlights PATH     write a highlights video (mp4v) of qualifying vehicles" << endl
+		<< "  --hl-min N --hl-max N speed range for highlights [35..100]" << endl
+		<< "  --hl-area N           minimum profile area for large-vehicle highlights [100]" << endl
+		<< "  --headless            no windows; runs as fast as the CPU allows" << endl;
+}
+
+// Command-line counterpart of setup(): same globals end up set, but from arguments instead of prompts,
+// and with portable paths so it runs on Linux and macOS as well as Windows.
+bool setupFromArgs(int argc, char** argv){
+	string statsPath, tracePath, hiLitePath;
+	bool egregiousGiven = false;
+	for (int i = 1; i < argc; i++){
+		string a = argv[i];
+		auto next = [&](){ if (i + 1 >= argc){ cout << "Missing value for " << a << endl; exit(-1); } return string(argv[++i]); };
+		if (a == "--input") inputPath = next();
+		else if (a == "--config") configPath = next();
+		else if (a == "--stats") statsPath = next();
+		else if (a == "--trace") tracePath = next();
+		else if (a == "--speed-limit") speedLimit = stoi(next());
+		else if (a == "--egregious"){ egregiousSpeedLowerBound = stoi(next()); egregiousGiven = true; }
+		else if (a == "--start-frame") startFrame = stod(next());
+		else if (a == "--highlights") hiLitePath = next();
+		else if (a == "--hl-min") highLightsSpeedLower = stoi(next());
+		else if (a == "--hl-max") highLightsSpeedUpper = stoi(next());
+		else if (a == "--hl-area") minimumProfileArea = stoi(next());
+		else if (a == "--headless") headless = true;
+		else if (a == "--help" || a == "-h"){ printUsage(); exit(0); }
+		else { cout << "Unknown option: " << a << endl; printUsage(); return false; }
+	}
+	if (inputPath.empty()){ cout << "--input is required" << endl; printUsage(); return false; }
+
+	if (!g.readConfig(configPath)){
+		cout << "Reading of config file appears to have failed.   Exiting" << endl;
+		return false;
+	}
+	g.pixelRight = g.AnalysisBoxWidth;
+	AnalysisBox = Rect(g.AnalysisBoxLeft, g.AnalysisBoxTop, g.AnalysisBoxWidth, g.AnalysisBoxHeight);
+
+	// main() expects a directory + file name pair; keep both so stats rows still carry the Foscam date/time fields.
+	size_t slash = inputPath.find_last_of("/\\");
+	fileName = (slash == string::npos) ? inputPath : inputPath.substr(slash + 1);
+	dirPath = (slash == string::npos) ? "." : inputPath.substr(0, slash);
+	yesNoAll = "y";
+
+	if (!egregiousGiven) egregiousSpeedLowerBound = speedLimit + 10;
+	egregiousSpeedLowerBound = max(egregiousSpeedLowerBound, speedLimit);
+	crazySpeed = egregiousSpeedLowerBound + 20;
+
+	if (statsPath.empty()) statsPath = "stats_" + fileName.substr(0, fileName.find_last_of('.')) + ".csv";
+	statsFile.open(statsPath);
+	if (!statsFile.is_open()){ cout << "Can't open stats file " << statsPath << endl; return false; }
+	statsFile << ", , Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed" << endl;
+
+	pleaseTrace = !tracePath.empty();
+	if (pleaseTrace) traceFile.open(tracePath);
+
+	highLightsPlease = !hiLitePath.empty();
+	if (highLightsPlease){
+		VideoCapture probe(inputPath);
+		double fps = probe.isOpened() ? probe.get(CAP_PROP_FPS) : 30.0;
+		hiLiteVideo.open(hiLitePath, VideoWriter::fourcc('m', 'p', '4', 'v'), fps, Size(1280, 720), true);
+		if (!hiLiteVideo.isOpened()){ cout << "ERROR Opening HiLites File " << hiLitePath << endl; return false; }
+	}
+	cout << "Analyzing " << inputPath << " -> " << statsPath << (headless ? "  (headless)" : "") << endl;
+	return true;
+}
 
 
 string vStateString(vehicleStatus inState){
@@ -482,7 +573,7 @@ void logL2Rstats(bool isOK, int index){
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
 	if ((estSpeed >= 18.0) && isOK){
-		statsFile << fileName.substr(7, 8) << ", " << fileName.substr(15, 6) << ", "
+		statsFile << safeSub(fileName, 7, 8) << ", " << safeSub(fileName, 15, 6) << ", "
 			<< frameNumber << ", " << g.L2RDirection << ", " << vehiclesGoingRight[index].getTrackStartFrame() << ", "
 			<< vehiclesGoingRight[index].getTrackEndFrame() << ", "
 			<< frames << ", "
@@ -503,7 +594,7 @@ void logL2Rstats(bool isOK, int index){
 			for (int i = 0; i < 5; i++){
 				vehiclesGoingRight[index].getSavedFrame(0).copyTo(zero(AnalysisBox));
 				hiLiteVideo.write(zero);
-				waitKey(10);
+				uiWaitKey(10);
 			}
 			arrowedLine(zero, Point(speedleft + 10, arrowY), Point(speedleft + 60, arrowY), Scalar(CVBlack), 5);
 			int midPoint = (speedleft + speedRight) / 2;
@@ -520,12 +611,12 @@ void logL2Rstats(bool isOK, int index){
 					else putText(zero, intToString(estSpeed) + " MPH", Point(speedRight - 125, AnalysisBox.y - 55), 2, 1, Scalar(CVGreen), 2);
 				}
 				hiLiteVideo.write(zero);
-				waitKey(10);
+				uiWaitKey(10);
 			}
 			for (int i = 0; i < 5; i++){
 				vehiclesGoingRight[index].getSavedFrame(vehiclesGoingRight[index].getNumberSavedFrames() - 1).copyTo(zero(AnalysisBox));
 				hiLiteVideo.write(zero);
-				waitKey(10);
+				uiWaitKey(10);
 			}
 			hiLiteVideo.write(Mat::zeros(Size(1280, 720), frame1.type())); //  write a partition between vehicles for HiLites processor to detect.
 		}
@@ -549,7 +640,7 @@ void logR2Lstats(bool isOK, int index){
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
 	if ((estSpeed >= 18.0) && isOK){
-		statsFile << fileName.substr(7, 8) << ", " << fileName.substr(15, 6) << ", "
+		statsFile << safeSub(fileName, 7, 8) << ", " << safeSub(fileName, 15, 6) << ", "
 			<< frameNumber << ", " << g.R2LDirection << ", " << vehiclesGoingLeft[index].getTrackStartFrame() << ", "
 			<< vehiclesGoingLeft[index].getTrackEndFrame() << ", "
 			<< frames << ", "
@@ -570,7 +661,7 @@ void logR2Lstats(bool isOK, int index){
 			for (int i = 0; i < 5; i++){
 				vehiclesGoingLeft[index].getSavedFrame(0).copyTo(zero(AnalysisBox));
 				hiLiteVideo.write(zero);
-				waitKey(10);
+				uiWaitKey(10);
 			}
 			arrowedLine(zero, Point(speedRight - 10, arrowY), Point(speedRight - 60, arrowY), Scalar(CVBlack), 5);
 			int midPoint = (speedleft + speedRight) / 2;
@@ -587,12 +678,12 @@ void logR2Lstats(bool isOK, int index){
 					else putText(zero, intToString(estSpeed) + " MPH", Point(speedleft, AnalysisBox.y - 55), 2, 1, Scalar(CVGreen), 2);
 				}
 				hiLiteVideo.write(zero);
-				waitKey(10);
+				uiWaitKey(10);
 			}
 			for (int i = 0; i < 5; i++){
 				vehiclesGoingLeft[index].getSavedFrame(vehiclesGoingLeft[index].getNumberSavedFrames() - 1).copyTo(zero(AnalysisBox));
 				hiLiteVideo.write(zero);
-				waitKey(10);
+				uiWaitKey(10);
 			}
 			hiLiteVideo.write(Mat::zeros(Size(1280, 720), frame1.type())); //  write a partition between vehicles for HiLites processor to detect.
 		}
@@ -783,7 +874,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 	Mat tempForL2R = wholeScenethreshImage(Rect(g.pixelLeft, 0, g.pixelRight, g.L2RStreetY)); // L2RStreetY is the lowest needed to go to see a rightbound vehicle
 	Rect objectBoundingRectangleL2R[MAX_NUM_OBJECTS]; // bounding rectangles, from top of ROI to L2R lane, captured in a given frame
 
-	findContours(tempForL2R, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);// retrieves external contours
+	findContours(tempForL2R, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 	// found some objects?
 	if (contours.size() > 0){   // Are both of
 		if (hierarchy.size() > 0) {  // these necessary?
@@ -811,7 +902,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 	contours.erase(contours.begin(), contours.end()); // Clear contours vector
 	hierarchy.erase(hierarchy.begin(), hierarchy.end());  // Clear hierarchy vector
 	//find external contours of filtered image using openCV findContours function
-	findContours(tempForR2L, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);// retrieves external contours
+	findContours(tempForR2L, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 	// found some objects?
 	if (contours.size() > 0){   // Are both of
 		if (hierarchy.size() > 0) {  // these necessary?
@@ -960,7 +1051,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				int tempX = max(projectedL2R[index].getBox().x - 80, g.pixelLeft);  // look behind the predicted rear bumper
 				int tempWidth = min(projectedL2R[index].getBox().width + 100, g.pixelRight - tempX); // Look a little beyond the front bumper;
 				Mat ROIL2R = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.L2RStreetY));
-				findContours(ROIL2R, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);// retrieves external contours
+				findContours(ROIL2R, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeL2RObjects = 0; // Used to count how many detected objects are in selected region of interest
 				// found some objects?
 				if (contours.size() > 0){   // Are both of
@@ -1029,7 +1120,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				int tempX = max(projectedR2L[index].getBox().x - 20, g.pixelLeft);  // look a little ahead of the predicted front bumper
 				int tempWidth = min(projectedR2L[index].getBox().width + 100, g.pixelRight - tempX); // Look behind the rear bumper;
 				Mat ROIR2L = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.R2LStreetY));
-				findContours(ROIR2L, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);// retrieves external contours
+				findContours(ROIR2L, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeR2LObjects = 0; // Used to count how many detected objects are in selected region of interest
 				// found some objects?
 				if (contours.size() > 0){   // Are both of
@@ -1101,16 +1192,20 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 // which causes processing of all known and newly entered vehicls to occur at time "frameNumber."  This one call exercises most of the code above
 // and most all of the code in vehicleDynamics.
 
-int main(){
+int main(int argc, char** argv){
 
 	bool objectDetected = false;
 	bool pause = false;  	 // toggle using "p"
-	bool showVideo = true;  // turning this off should make processing run faster.  toggled with a "v"
 	Mat grayImage1, grayImage2; // for absdiff() function
 	Mat differenceImage;
 	Mat thresholdImage;  	//thresholded difference image (for use in findContours() function)
 
-	setup();  // Get config data and user preferences for files to process, tracing, debugging, start frame and others
+	if (argc > 1){
+		if (!setupFromArgs(argc, argv)) return -1;  // Non-interactive: everything comes from the command line
+	}
+	else
+		setup();  // Get config data and user preferences for files to process, tracing, debugging, start frame and others
+	bool showVideo = !headless;  // turning this off should make processing run faster.  toggled with a "v"
 
 //  * * * * * * * * * * * * * * * * * * * * * *  M a i n   L o o p   o v e r   o n e   o r   m o r e   i n p u t   f i l e s  * * * * * * * * * * * * * * * *
 
@@ -1144,7 +1239,7 @@ int main(){
 		// dirPath is the path to the directory in which input (.avi) files are located; it includes dirName at the end, but no trailing reverse slashes 
 		// fileName is the name of the current avi file to be processed.  Its form is "manual_" <yyyymmddhhmmss> ".avi"   <<-- no spaces
 
-		string FName = dirPath + "\\" + fileName;
+		string FName = inputPath.empty() ? dirPath + "\\" + fileName : inputPath;
 		cout << "Trying to capture from " + FName << endl;
 		capture.open(FName);
 
@@ -1154,23 +1249,23 @@ int main(){
 			return -1;
 		}
 
-		double frameWidth = capture.get(CV_CAP_PROP_FRAME_WIDTH);
+		double frameWidth = capture.get(CAP_PROP_FRAME_WIDTH);
 		if (frameWidth != 1280.0){
 			cout << "Frame width is not 1280.  Bailing";
 			return - 1;
 		}
-		double FPS = capture.get(CV_CAP_PROP_FPS);
+		double FPS = capture.get(CAP_PROP_FPS);
 		if (FPS != 30.0){
 			cout << "Frame rate is not 30.  Bailing";
 			return -1;
 		}
 
-		capture.set(CV_CAP_PROP_POS_FRAMES, startFrame);  // Set frame number to start at, in first file to be processed;  Remaining files will start at zero.
+		capture.set(CAP_PROP_POS_FRAMES, startFrame);  // Set frame number to start at, in first file to be processed;  Remaining files will start at zero.
 		frameNumber = int(startFrame);
 		int delay = 10;   //at least 10ms delay is necessary for proper operation of this program <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 		//work through frame pairs looking for differences
-		while (capture.get(CV_CAP_PROP_POS_FRAMES) < capture.get(CV_CAP_PROP_FRAME_COUNT) - 2){ // minus 2 to prevent reading empty frame at end.
+		while (capture.get(CAP_PROP_POS_FRAMES) < capture.get(CAP_PROP_FRAME_COUNT) - 2){ // minus 2 to prevent reading empty frame at end.
 			capture.read(frame1);
 			Mat ROIFr1 = frame1(AnalysisBox).clone();  			// Carve out the analysis box for motion detection
 			cv::cvtColor(ROIFr1, grayImage1, COLOR_BGR2GRAY);  //convert ROIFr1 to gray scale for frame differencing
@@ -1183,7 +1278,7 @@ int main(){
 			cv::threshold(thresholdImage, thresholdImage, g.SENSITIVITY_VALUE, 255, THRESH_BINARY);	//threshold again to obtain binary image from blur output
 
 			if (showVideo)	imshow("Final Threshold Image", thresholdImage);
-			else cv::destroyWindow("Final Threshold Image");
+			else if (!headless) cv::destroyWindow("Final Threshold Image");
 
 		// ************************************************* Vehicle motion analysis *****************************************************
 			objectDetected = manageMovers(thresholdImage, ROIFr2);
@@ -1207,7 +1302,7 @@ int main(){
 			else 
 				delay = 10;
 
-			switch (waitKey(delay)){
+			switch (uiWaitKey(delay)){
 			case 27: //'esc'     exit program.
 				return 0;
 			case 102: // 'f'    make display go faster;
