@@ -2,8 +2,8 @@
 The Video Speed Tracker (VST) is an open source, technically sound, vehicle speed measuring system
 that can track bidirectional traffic, one lane in each direction (e.g. a typical residential street).
 Beyond a typical home computer, VST requires video from an HD camera, many of which can be purchased
-for less than $100 (e.g. the Foscam Fi9103EP, power over Ethernet, outdoor camera). If you buy a POE camera,
-be sure to buy something like the TP-LINK TL-PoE150S (about $18) to power it.
+for less than $100 (e.g. the Foscam Fi9103EP, power over Ethernet, outdoor camera.  If you buy a POE camera,
+be sure to buy something like the TP-LINK TL-PoE150S - about $18 - to power it.).
 
 As of 31 March 2016, watch the use of the speed tracker in support of documenting Charlottesville, Virginia's current struggles with urban vehicular assault in its established residential neighborhoods at http://eyetach.github.io/CharlottesvilleSpeeds/.
 
@@ -36,12 +36,14 @@ the oldest data) is what allows it to adapt to changing pixel rates as a vehicle
 the scene. Setting up as you see in Figure 2 of the included overview
 ([Overview and User Manual](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)) helps the tracker produce high quality results.
 
-4. Pick how you’ll run VST. The provided Windows executables come with the OpenCV 2.4.11 x64/vc12
-runtime libraries (dll’s) in /bin (see [Running on Windows](#running-on-windows)). Recompiling the
-original Visual Studio 2013 project needs OpenCV 2.4.11 installed; the CMake build needs OpenCV 4
-(see [Building on Linux / macOS with OpenCV 4](#building-on-linux--macos-with-opencv-4)).
+4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile. If
+you’re executing a provided executable the required OpenCV 2.4.11 x64/vc12 runtime libraries (dll’s in
+Windows) are provided in /bin.
 
-5. Set critical one time setup values in VST.cfg. These values are described in the [appendix](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix) of the User Manual.
+   *Note:* the [CMake build](#building-on-linux--macos-with-opencv-4) added later uses OpenCV 4 instead.
+
+5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included [pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf) under docs
+([Markdown version](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)).
 
 6. Create a location (the “prefixPath”) for five directories used by VST (and the final highlights
 video processor):
@@ -63,7 +65,7 @@ that day’s video files.
 
 ## Running on Windows
 
-Win7telx64 executables were added on 15 Feb 2016. `bin/` holds `VideoSpeedTracker.exe`, the final
+Win7telx64 executables have been added on 15 Feb 2016. `bin/` holds `VideoSpeedTracker.exe`, the final
 highlights video processor `ProcessHiLites.exe`, their config files (`VST.cfg`, `ProcessHiLites.cfg`)
 and the OpenCV 2.4.11 runtime dll’s. See the section named
 [Installing Executables](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#installing-executables) in the User Manual.

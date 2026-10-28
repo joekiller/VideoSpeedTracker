@@ -90,7 +90,7 @@ analyzed by the Video Speed Tracker is derived by determining the value
 of:
 ```
 Observed vehicle speed =
-    int(0.5 + ((observed vehicle frame count) / (calibration vehicle frame count)) * speed limit)
+int (0.5 + ( (observed vehicle frame count) / (calibration vehicle frame count)) * speed limit).
 ```
 Further analysis is performed in VST to home in on the likely actual
 speed but that analysis needn’t be discussed here.
@@ -406,7 +406,7 @@ names in a directory. You’ll probably find some other dependencies as
 well.
 
 You also need to have OpenCV 2.4.11 installed. You can find the download
-you need here: <https://opencv.org/releases/>. I first tried using the then
+you need here: <http://opencv.org/downloads.html>. I first tried using the then
 relatively new 3.x version and ran into too many bugs. Your mileage may
 vary. Once I got the installation right, OpenCV 2.4.11 has worked
 without noticeable bugs (except the codec pop-up issue noted above).
@@ -417,14 +417,14 @@ bin directory. You’ll find two executables and two config files that
 should co-reside with them, wherever you put them. To get the
 executables running:
 
--   Install OpenCV 2.4.11 (<https://opencv.org/releases/>).
+-   Install OpenCV 2.4.11. <http://opencv.org/downloads.html>
 
 -   Edit your path variable to include the path to OpenCV’s x64 bin
     directory full of OpenCV dll’s. My directory is at
     `G:\builds\opencv2411\build\x64\vc12\bin`
 
 -   Set up the four VST directories (and one subdirectory) as spelled
-    out in part 6 of the [Set-up Checklist](#set-up-checklist) below.
+    out in part 6 of the [Set-up checklist](#set-up-checklist) following.
 
 -   Edit the two config files (VST.cfg and ProcessHiLites.cfg), changing
     the value for the first entry in each, “dataPathPrefix”, to the
