@@ -134,8 +134,8 @@ jobs:
           # Third-party notices for what the zip redistributes: OpenCV (Apache-2.0) and the libraries
           # inside its DLLs, including FFmpeg (LGPL-2.1) in opencv_videoio_ffmpeg.
           $lic = New-Item -ItemType Directory "pkg/$name/licenses/opencv"
-          $opencvLicense = Get-Item C:\tools\opencv\LICENSE, C:\tools\opencv\build\LICENSE, C:\tools\opencv\sources\LICENSE `
-            -ErrorAction SilentlyContinue | Select-Object -First 1
+          # Top-level LICENSE of the extracted package (opencv\, opencv\build\ or opencv\sources\ depending on version).
+          $opencvLicense = Get-ChildItem C:\tools\opencv -Recurse -Depth 1 -File -Filter LICENSE* | Select-Object -First 1
           if (-not $opencvLicense) { throw "OpenCV LICENSE not found under C:\tools\opencv" }
           Copy-Item $opencvLicense "$lic/LICENSE.txt"
           Copy-Item C:\tools\opencv\build\etc\licenses\* $lic -ErrorAction Stop
