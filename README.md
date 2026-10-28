@@ -2,7 +2,7 @@
 The Video Speed Tracker (VST) is an open source, technically sound, vehicle speed measuring system
 that can track bidirectional traffic, one lane in each direction (e.g. a typical residential street).
 Beyond a typical home computer, VST requires video from an HD camera, many of which can be purchased
-for less than $100 (e.g. the Foscam FI9803EP, power over Ethernet, outdoor camera). If you buy a POE camera,
+for less than $100 (e.g. the Foscam Fi9103EP, power over Ethernet, outdoor camera). If you buy a POE camera,
 be sure to buy something like the TP-LINK TL-PoE150S (about $18) to power it.
 
 As of 31 March 2016, watch the use of the speed tracker in support of documenting Charlottesville, Virginia's current struggles with urban vehicular assault in its established residential neighborhoods at http://eyetach.github.io/CharlottesvilleSpeeds/.
@@ -43,7 +43,7 @@ original Visual Studio 2013 project needs OpenCV 2.4.11 installed; the CMake bui
 
 5. Set critical one time setup values in VST.cfg. These values are described in the [appendix](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix) of the User Manual.
 
-6. Create a location (the “prefixPath”) for four directories (plus one subdirectory) used by VST (and the final highlights
+6. Create a location (the “prefixPath”) for five directories used by VST (and the final highlights
 video processor):
 
    1. IPCam – You put directories for (typically) daily collections of .avi video files here.
