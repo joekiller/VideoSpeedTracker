@@ -83,7 +83,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file libopencv-dev
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVST_VERSION=${{ needs.meta.outputs.version }}
@@ -97,7 +97,7 @@ jobs:
           cp build/videospeedtracker_*.deb \
              "dist/videospeedtracker_${{ needs.meta.outputs.version }}_${{ matrix.distro }}_${{ matrix.arch }}.deb"
           dpkg-deb --info dist/*.deb
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: dist-linux-${{ matrix.distro }}-${{ matrix.arch }}
           path: dist/*
@@ -109,7 +109,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Official OpenCV Windows build: a single opencv_world DLL plus the FFmpeg plugin DLL.
       - name: Install OpenCV
         run: |
@@ -134,12 +134,16 @@ jobs:
           # Third-party notices for what the zip redistributes: OpenCV (Apache-2.0) and the libraries
           # inside its DLLs, including FFmpeg (LGPL-2.1) in opencv_videoio_ffmpeg.
           $lic = New-Item -ItemType Directory "pkg/$name/licenses/opencv"
-          Copy-Item C:\tools\opencv\LICENSE "$lic/LICENSE.txt"
-          Copy-Item C:\tools\opencv\build\etc\licenses\* $lic
+          $opencvLicense = Get-Item C:\tools\opencv\LICENSE, C:\tools\opencv\build\LICENSE, C:\tools\opencv\sources\LICENSE `
+            -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $opencvLicense) { throw "OpenCV LICENSE not found under C:\tools\opencv" }
+          Copy-Item $opencvLicense "$lic/LICENSE.txt"
+          Copy-Item C:\tools\opencv\build\etc\licenses\* $lic -ErrorAction Stop
+          Get-ChildItem $lic
           New-Item -ItemType Directory dist | Out-Null
           Compress-Archive -Path "pkg/$name" -DestinationPath "dist/$name.zip"
           Get-ChildItem -Recurse pkg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: dist-windows-x64
           path: dist/*
@@ -151,7 +155,7 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install OpenCV
         run: brew install opencv
       - name: Build
@@ -171,7 +175,7 @@ jobs:
           mkdir dist
           tar -C pkg -czf "dist/$name.tar.gz" "$name"
           otool -L "pkg/$name/VideoSpeedTracker"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: dist-macos-arm64
           path: dist/*
@@ -183,7 +187,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: dist-*
           merge-multiple: true
