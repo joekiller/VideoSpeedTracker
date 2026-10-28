@@ -1,41 +1,21 @@
 # VideoSpeedTracker
 The Video Speed Tracker (VST) is an open source, technically sound, vehicle speed measuring system
-that can track bidirectional traffic, one lane in each direction (e.g. a typical residential street). 
+that can track bidirectional traffic, one lane in each direction (e.g. a typical residential street).
 Beyond a typical home computer, VST requires video from an HD camera, many of which can be purchased
 for less than $100 (e.g. the Foscam Fi9103EP, power over Ethernet, outdoor camera.  If you buy a POE camera,
 be sure to buy something like the TP-LINK TL-PoE150S - about $18 - to power it.).
 
-Win7telx64 executables have been added on 15 Feb 2016.  See the section named "Installing executables" in the
-User Manual.
+As of 31 March 2016, watch the use of the speed tracker in support of documenting Charlottesville, Virginia's current struggles with urban vehicular assault in its established residential neighborhoods at http://eyetach.github.io/CharlottesvilleSpeeds/.
 
-As of 31 March 2016, watch the use of the speed tracker in support of documenting Charlottesville, Virginia's current struggles with urban vehicular assault in its established residential neighborhoods at http://eyetach.github.io/CharlottesvilleSpeeds/.  
+*Note:* that site is no longer online; an [archived copy from May 2016](https://web.archive.org/web/20160521015116/http://eyetach.github.io:80/CharlottesvilleSpeeds/)
+is available on the Internet Archive.
 
 Video example:
 
 [![Video example](http://img.youtube.com/vi/1HVkKysDvGA/0.jpg)](http://www.youtube.com/watch?v=1HVkKysDvGA "Video Speed Tracker on a 25 MPH Residential Street")
 
-# Building on Linux / macOS with OpenCV 4
+## Set-up Checklist
 
-The sources under `src/Wintel64` now build with CMake against OpenCV 4 (tested with 4.6 on Ubuntu 24.04):
-
-```
-sudo apt-get install libopencv-dev cmake g++
-cmake -S . -B build && cmake --build build -j
-ctest --test-dir build          # runs the bundled 2016 sample video and checks speeds against tests/baseline_*.csv
-```
-
-Run with no arguments for the original interactive mode. Pass options to skip the prompts and run without windows:
-
-```
-build/VideoSpeedTracker --headless \
-  --input sampleData/IPCam/20160130/manual_20160130172251.avi \
-  --config bin/VST.cfg --stats stats.csv --speed-limit 25 \
-  --highlights hilites.mp4 --hl-min 35
-```
-
-`--help` lists every option. The 8.6 minute sample processes in about 20 seconds headless (roughly 25× real time).
-
-# Set-up Checklist
 1. You really want 100 feet or more of open view (a maple tree trunk in the foreground is OK) of
 the street. Your speed measuring zone should be at least one second wide for a vehicle going
 the speed limit. For a speed limit of 25 MPH, that’s about 37 feet. My speed measuring zone is
@@ -57,36 +37,70 @@ as it proceeds from an edge towards the center and back towards the far edge. My
 what’s known as a “piecewise, linear least squares” tracker. The piecewise part (throwing out
 the oldest data) is what allows it to adapt to changing pixel rates as a vehicle moves through
 the scene. Setting up as you see in Figure 2 of the included overview
-(in docs/Video Speed Tracker Overview and User Manual.md) helps the tracker produce high quality results.
+([Overview and User Manual](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)) helps the tracker produce high quality results.
 
 4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile. If
 you’re executing a provided executable the required OpenCV 2.4.11 x64/vc12 runtime libraries (dll’s in
 Windows) are provided in /bin.
 
-5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included pdf under docs.
+   *Note:* the [CMake build](#building-on-linux--macos-with-opencv-4) added later uses OpenCV 4 instead.
+
+5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included [pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf) under docs
+([Markdown version](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)).
 
 6. Create a location (the “prefixPath”) for five directories used by VST (and the final highlights
 video processor):
 
-  1. IPCam – You put directories for (typically) daily collections of .avi video files here.
+   1. IPCam – You put directories for (typically) daily collections of .avi video files here.
 
-  2. HiLites – VST outputs highlights videos into this directory
+   2. HiLites – VST outputs highlights videos into this directory
 
-    1.  forPosting – Subdirectory for output of final highlights video processor
+      1. forPosting – Subdirectory for output of final highlights video processor
 
-  3. Stats – VST puts csv files with tracked vehicle data here
+   3. Stats – VST puts csv files with tracked vehicle data here
 
-  4. Trace – VST puts debug files here.
+   4. Trace – VST puts debug files here.
 
 All of the files VST creates are given names derived from the input video file name (or the video file
 directory if you answer “*” when asked for which file in a directory full of video files to process.) For
 the IPCam directory, I create subdirectories with syntax yyyymmdd (e.g. 20160205) in which I place
 that day’s video files.
 
+## Running on Windows
+
+Win7telx64 executables have been added on 15 Feb 2016. `bin/` holds `VideoSpeedTracker.exe`, the final
+highlights video processor `ProcessHiLites.exe`, their config files (`VST.cfg`, `ProcessHiLites.cfg`)
+and the OpenCV 2.4.11 runtime dll’s. See the section named
+[Installing Executables](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#installing-executables) in the User Manual.
+
+## Building on Linux / macOS with OpenCV 4
+
+The sources under `src/Wintel64` now build with CMake against OpenCV 4 (tested with 4.6 on Ubuntu 24.04):
+
+```
+sudo apt-get install libopencv-dev cmake g++
+cmake -S . -B build && cmake --build build -j
+ctest --test-dir build          # runs the bundled 2016 sample video and checks speeds against tests/baseline_*.csv
+```
+
+Run with no arguments for the original interactive mode. Pass options to skip the prompts and run without windows:
+
+```
+build/VideoSpeedTracker --headless \
+  --input sampleData/IPCam/20160130/manual_20160130172251.avi \
+  --config bin/VST.cfg --stats stats.csv --speed-limit 25 \
+  --highlights hilites.mp4 --hl-min 35
+```
+
+`--help` lists every option. The 8.6 minute sample processes in about 20 seconds headless (roughly 25× real time).
+
 ## Additional Documentation
 
 - A much more detailed version of this readme is available
-[**here.**](docs/Video Speed Tracker Overview and User Manual.md)
+[**here.**](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)
+- PDF version of the manual: [Video Speed Tracker Overview and User Manual_v3.pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf)
+- [Excessive City Vehicle Speeds As Observed from Locust Avenue](docs/forCouncil_v2.pdf) (February 2016 analysis
+of December 2015 – January 2016 data)
 
 ## Original Author and Development Lead
 - Paul Reynolds (reynolds@virginia.edu) www.cs.virginia.edu/~pfr
