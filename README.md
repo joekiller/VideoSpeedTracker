@@ -30,6 +30,9 @@ pans, the video signal cuts out). That’s a decent record for an inexpensive ca
 and 30FPS. My 9803EP has been working about four weeks, including through the infamous
 Middle Atlantic January 2016 Snowzilla.
 
+   *Note:* the OpenCV 4 build accepts any resolution (frames are scaled to the 1280 x 720 coordinates VST.cfg uses)
+   and any frame rate (speeds are scaled by `CalibrationFPS`). 720p or better at 25–30 fps is still what to aim for.
+
 3. Aim the camera well. Aim the camera so that the street passes left to right
 about half way up the overall image. This should minimize the effects of lens distortion. A
 vehicle moving a constant velocity cross the lens moves at different pixel rates, frame to frame,
@@ -46,6 +49,7 @@ the scene. Setting up as you see in Figure 2 of the included overview
 
 5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included [pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf) under docs
 ([Markdown version](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)).
+   Keys can be in any order, and blank and `#` comment lines are fine. See [Calibrating speed](#calibrating-speed).
 
 6. Create a location (the “prefixPath”) for five directories used by VST (and the final highlights
 video processor):
@@ -175,6 +179,36 @@ the files directly:
 ```
 build/ProcessHiLites --config bin/ProcessHiLites.cfg --input hilites.mp4 [--output keepers.mp4]
 ```
+
+## Calibrating speed
+
+VST doesn't know distances. It measures how many frames a vehicle takes to cross the speed zone between the two white
+lines and compares that with a calibration run:
+
+```
+speed = CalibrationSpeed × CalibrationFrames × (video fps / CalibrationFPS) / frames taken
+```
+
+Record yourself driving through the zone in each direction at a steady, known speed, count the frames each pass took,
+and put them in `CalibrationFramesL2R` / `CalibrationFramesR2L`, with the speed you drove as `CalibrationSpeed` (default
+25 MPH) and the camera's frame rate as `CalibrationFPS` (default 30). The speed limit you give VST (`--speed-limit` or
+the interactive prompt) only colors the results (green at or under, yellow over, red at or above the egregious bound).
+It does not change the measured speeds.
+
+## Troubleshooting
+
+These come from the [issues filed against the original project](docs/upstream-issues.md).
+
+| Symptom | Cause and fix |
+|---|---|
+| Interactive mode seems to hang at start | The 2016 code looped forever when `<dataPathPrefix>/IPCam` was missing or empty. It now says what's missing and exits. Put each day's videos in their own folder under `IPCam`, point `dataPathPrefix` somewhere else, or skip the prompts with `--input`. |
+| Exits right after reading the config, or "Frame width is not 1280" / "Frame rate is not 30" | The 2016 code accepted only exactly 1280x720 at exactly 30.000 fps, so 1080p, 29.97 fps and phone video all quit. Any size and rate now work. |
+| "Can't open video" | The file is missing or this OpenCV can't decode it. Convert it with `ffmpeg -i in.ext -c:v libx264 out.mp4`. |
+| Crash partway through an H.264 file | Likely cause: the 2016 loop trusted the container's frame count and read past the last real frame. VST now reads until the video ends. |
+| "unknown setting" or "can't read a value" | Typo in VST.cfg. The message gives the file and line number. |
+| Speeds look scaled by a constant factor | Check `CalibrationSpeed`, `CalibrationFPS` and the two `CalibrationFrames` values (see above). |
+
+VideoSpeedTracker prints every error to stderr and exits with status 1 on any error, so scripts and cron jobs can check `$?`.
 
 ## Additional Documentation
 
