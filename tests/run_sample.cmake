@@ -16,5 +16,6 @@ execute_process(
           ${OUT}/sample.csv ${SRC}/tests/baseline_manual_20160130172251.csv
   RESULT_VARIABLE diff)
 if(NOT diff EQUAL 0)
-  message(FATAL_ERROR "Speeds differ from tests/baseline_manual_20160130172251.csv")
+  file(READ ${OUT}/sample.csv got)
+  message(FATAL_ERROR "Speeds differ from tests/baseline_manual_20160130172251.csv; this run produced:\n${got}")
 endif()
