@@ -55,7 +55,7 @@ public:
 
 	~Globals();
 
-	bool readConfig();	
+	bool readConfig(const string& path = "VST.cfg");
 
 	const int pixelLeft = 0;				// This won't change.  It's used relative to AnalysisBoxLeft.
 	int pixelRight = 1279;                  // This will change to be AnalysisBoxWidth.  Change should happen after AnalysisBoxLeft and Width are read in from config.

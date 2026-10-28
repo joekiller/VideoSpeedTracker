@@ -14,6 +14,27 @@ Video example:
 
 [![Video example](http://img.youtube.com/vi/1HVkKysDvGA/0.jpg)](http://www.youtube.com/watch?v=1HVkKysDvGA "Video Speed Tracker on a 25 MPH Residential Street")
 
+# Building on Linux / macOS with OpenCV 4
+
+The sources under `src/Wintel64` now build with CMake against OpenCV 4 (tested with 4.6 on Ubuntu 24.04):
+
+```
+sudo apt-get install libopencv-dev cmake g++
+cmake -S . -B build && cmake --build build -j
+ctest --test-dir build          # runs the bundled 2016 sample video and checks speeds against tests/baseline_*.csv
+```
+
+Run with no arguments for the original interactive mode. Pass options to skip the prompts and run without windows:
+
+```
+build/VideoSpeedTracker --headless \
+  --input sampleData/IPCam/20160130/manual_20160130172251.avi \
+  --config bin/VST.cfg --stats stats.csv --speed-limit 25 \
+  --highlights hilites.mp4 --hl-min 35
+```
+
+`--help` lists every option. The 8.6 minute sample processes in about 20 seconds headless (roughly 25× real time).
+
 # Set-up Checklist
 1. You really want 100 feet or more of open view (a maple tree trunk in the foreground is OK) of
 the street. Your speed measuring zone should be at least one second wide for a vehicle going

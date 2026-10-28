@@ -24,8 +24,7 @@
 #pragma once
 #include "Globals.h"
 //#include <string>
-#include <opencv\cv.h>
-#include <opencv\highgui.h>
+#include <opencv2/opencv.hpp>
 #include "Projection.h"
 #include "Snapshot.h"
 
@@ -94,7 +93,7 @@ private:
 
 
 
-	Vector <Snapshot> snaps;  // Keeps a history of all logged snapshots of vehicle as it moves.
+	vector <Snapshot> snaps;  // Keeps a history of all logged snapshots of vehicle as it moves.
 
 	direction vehicleDirection;  // left, or right?   L2R v. R2L
 	vehicleStatus vState; // entering, exiting, etc.
