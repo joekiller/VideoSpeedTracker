@@ -150,7 +150,8 @@ jobs:
 
   macos:
     needs: meta
-    runs-on: macos-14
+    # macos-latest is the current Apple-silicon image; pinned macOS labels get retired (macos-14 no longer gets a runner).
+    runs-on: macos-latest
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
