@@ -148,9 +148,15 @@ jobs:
           name: dist-windows-x64
           path: dist/*
 
+  # macOS runners can sit queued far longer than the others (GitHub's macOS pool is small), so
+  # this job doesn't gate the release: it starts once publish has run (or been skipped on PRs)
+  # and adds its tarball and checksum to the existing release on its own.
+  # macos-latest is the current Apple-silicon image; macos-14 is retired on 2026-11-02.
   macos:
-    needs: meta
-    # macos-latest is the current Apple-silicon image; pinned macOS labels get retired (macos-14 no longer gets a runner).
+    permissions:
+      contents: write
+    needs: [meta, publish]
+    if: always() && needs.meta.result == 'success' && needs.publish.result != 'failure'
     runs-on: macos-latest
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
@@ -180,9 +186,23 @@ jobs:
         with:
           name: dist-macos-arm64
           path: dist/*
+      - name: Add to the release
+        if: needs.publish.result == 'success'
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          gh release upload "$TAG" *.tar.gz --clobber
+          gh release download "$TAG" --pattern SHA256SUMS
+          grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
+          shasum -a 256 *.tar.gz >> SHA256SUMS.new
+          mv SHA256SUMS.new SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
 
   publish:
-    needs: [meta, linux, windows, macos]
+    needs: [meta, linux, windows]
     if: needs.meta.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
