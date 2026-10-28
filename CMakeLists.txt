@@ -1,4 +1,4 @@
-# Cross-platform build for VideoSpeedTracker (VST) and the highlights processor.
+# Cross-platform build for VideoSpeedTracker (VST) and the highlights processor (ProcessHiLites).
 # Builds the original sources in src/Wintel64 against OpenCV 4 on Linux, macOS or Windows.
 cmake_minimum_required(VERSION 3.16)
 project(VideoSpeedTracker CXX)
@@ -26,6 +26,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(VideoSpeedTracker PRIVATE -ffp-contract=off)
 endif()
 
+# Interactive editor that trims a VST highlights video down to the vehicles worth posting.
+add_executable(ProcessHiLites ${CMAKE_SOURCE_DIR}/src/Wintel64/ProcessHiLites/ProcessHilites.cpp)
+target_link_libraries(ProcessHiLites PRIVATE ${OpenCV_LIBS})
+
 enable_testing()
 add_test(NAME sample_video_baseline
   COMMAND ${CMAKE_COMMAND}
@@ -47,8 +51,8 @@ else()
   set(VST_BIN_DIR ${CMAKE_INSTALL_BINDIR})
   set(VST_DATA_DIR ${CMAKE_INSTALL_DATADIR}/videospeedtracker)
 endif()
-install(TARGETS VideoSpeedTracker RUNTIME DESTINATION ${VST_BIN_DIR})
-install(FILES ${CMAKE_SOURCE_DIR}/bin/VST.cfg ${CMAKE_SOURCE_DIR}/README.md DESTINATION ${VST_DATA_DIR})
+install(TARGETS VideoSpeedTracker ProcessHiLites RUNTIME DESTINATION ${VST_BIN_DIR})
+install(FILES ${CMAKE_SOURCE_DIR}/bin/VST.cfg ${CMAKE_SOURCE_DIR}/bin/ProcessHiLites.cfg ${CMAKE_SOURCE_DIR}/README.md DESTINATION ${VST_DATA_DIR})
 
 set(CPACK_PACKAGE_NAME videospeedtracker)
 set(CPACK_PACKAGE_VERSION ${VST_VERSION})

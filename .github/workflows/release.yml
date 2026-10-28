@@ -9,10 +9,11 @@
 # platform shows up before the tag does. Manual runs (workflow_dispatch) do the same on a
 # branch, and publish when started on a tag.
 #
+# Every package holds VideoSpeedTracker and ProcessHiLites plus their sample configs.
 # Outputs (all built against the platform's own OpenCV 4 and checked with the sample-video ctest):
 #   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
 #                                                amd64 + arm64; apt pulls in the matching OpenCV runtime
-#   VideoSpeedTracker-<ver>-windows-x64.zip      exe + OpenCV/FFmpeg DLLs, no install needed
+#   VideoSpeedTracker-<ver>-windows-x64.zip      exes + OpenCV/FFmpeg DLLs, no install needed
 #   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv`
 #   SHA256SUMS
 name: release

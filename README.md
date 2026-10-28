@@ -81,8 +81,8 @@ tag in the GitHub UI. The workflow builds and tests every platform, then creates
 packages and a `SHA256SUMS` file.
 
 The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
-still in the git history before the release workflow was added. `ProcessHiLites` (the highlights editor) has not been
-ported to OpenCV 4 yet, so it is not in the release packages.
+still in the git history before the release workflow was added. Every package contains both `VideoSpeedTracker` and
+the highlights editor `ProcessHiLites`, with their sample configs.
 
 ## Building on Linux / macOS with OpenCV 4
 
@@ -104,6 +104,15 @@ build/VideoSpeedTracker --headless \
 ```
 
 `--help` lists every option. The 8.6 minute sample processes in about 20 seconds headless (roughly 25× real time).
+
+`ProcessHiLites` (the highlights editor, also built by CMake) steps through a highlights video one vehicle at a time
+and writes the ones you keep, cropped to 640×360, to `forPosting/forPost_<name>`. It needs a display. With no arguments
+it reads `ProcessHiLites.cfg` from the working directory and offers the videos in `<dataPathPrefix>/HiLites`; or name
+the files directly:
+
+```
+build/ProcessHiLites --config bin/ProcessHiLites.cfg --input hilites.mp4 [--output keepers.mp4]
+```
 
 ## Additional Documentation
 
