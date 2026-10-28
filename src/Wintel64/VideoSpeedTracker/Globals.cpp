@@ -23,11 +23,13 @@
 
 
 #include "Globals.h"
-#include <queue>
+#include <algorithm>
+#include <cctype>
+#include <functional>
 #include <iostream>
 #include <fstream>
+#include <map>
 #include <sstream>
-// #include <string>
 
 using namespace std;
 
@@ -40,211 +42,156 @@ Globals::~Globals()
 {
 }
 
-string inLine, lhs, rhs;
+namespace {
 
-
-bool getSides(string inLine){
-	string tempLHS, tempRHS;
-	istringstream configLine(inLine);
-	getline(configLine, tempLHS, '=');
-	getline(configLine, tempRHS, '#');
-	lhs = tempLHS;
-	rhs = tempRHS;
-	return true;
+string trim(const string& s){
+	size_t first = 0;
+	while (first < s.size() && isspace((unsigned char)s[first])) first++;
+	size_t last = s.size();
+	while (last > first && isspace((unsigned char)s[last - 1])) last--;
+	return s.substr(first, last - first);
 }
 
-string trim(string toBeTrimmed){
-	int first = 0;
-	while (first < (int)toBeTrimmed.length() && isspace((unsigned char)toBeTrimmed[first])) first++;
-	int last = toBeTrimmed.length() - 1;
-	while (last >= first && isspace((unsigned char)toBeTrimmed[last])) last--;
-	return toBeTrimmed.substr(first, (last-first)+1);
+string lower(string s){
+	for (char& c : s) c = (char)tolower((unsigned char)c);
+	return s;
 }
 
+// Whole-string integer parse: "35" is fine, "35px", "", "thirty" are not.
+bool parseInt(const string& s, int& out){
+	try {
+		size_t used = 0;
+		int v = stoi(s, &used);
+		if (trim(s.substr(used)).empty()){ out = v; return true; }
+	}
+	catch (const exception&) {}
+	return false;
+}
+
+bool parseDouble(const string& s, double& out){
+	try {
+		size_t used = 0;
+		double v = stod(s, &used);
+		if (trim(s.substr(used)).empty()){ out = v; return true; }
+	}
+	catch (const exception&) {}
+	return false;
+}
+
+// Strings may be written bare (SE) or quoted ("SE"); the 2016 sample config quotes the compass directions.
+string unquote(const string& s){
+	if (s.size() >= 2 && s.front() == '"' && s.back() == '"') return s.substr(1, s.size() - 2);
+	return s;
+}
+
+}  // namespace
 
 
+// Reads VST.cfg.  Format, one setting per line:
+//     key = value      # anything after '#' is a comment
+// Keys may appear in any order and are matched case-insensitively.  Blank lines, comment-only lines,
+// CRLF line endings and a missing or present final newline are all fine.  Keys left out keep the
+// defaults in Globals.h.  Unknown keys, unparseable values and an analysis box that doesn't fit the
+// 1280x720 frame are reported with the file name and line number, and make this return false.
 bool Globals::readConfig(const string& path){
 
-// Items in config file VST.cfg must conform WRT order and spelling of LHS items, as follows:
-//  VST.cfg must use syntax:  <LHS> = <RHS> # 
-//                                            ^^^^^ Anything can follow the #
-	string lhsString[23] = {
-		"dataPathPrefix",
-		"L2RDirection",
-		"R2LDirection",
-		"obstruction", 
-		"AnalysisBoxLeft",
-		"AnalysisBoxTop",
-		"AnalysisBoxWidth",
-		"AnalysisBoxHeight",
-		"speedLineLeft",
-		"speedLineRight",
-		"maxL2RDistOnEntry",
-		"maxR2LDistOnEntry",
-		"entryLookBack",
-		"obstruction_extent",
-		"largeVehicleArea",
-		"CalibrationFramesL2R",
-		"CalibrationFramesR2L",
-		"SENSITIVITY_VALUE",
-		"BLUR_SIZE",
-		"SLOP",
-		"R2LStreetY",
-		"L2RStreetY",
-		"nextHeight"
+	// key -> setter.  Each setter parses the right-hand side and returns false if it can't.
+	auto intKey = [](int& field){ return [&field](const string& v){ return parseInt(v, field); }; };
+	auto dblKey = [](double& field){ return [&field](const string& v){ return parseDouble(v, field); }; };
+	auto strKey = [](string& field){ return [&field](const string& v){ field = unquote(v); return true; }; };
+	const vector<pair<string, function<bool(const string&)>>> keys = {
+		{ "dataPathPrefix", strKey(dataPathPrefix) },
+		{ "L2RDirection", strKey(L2RDirection) },
+		{ "R2LDirection", strKey(R2LDirection) },
+		{ "obstruction", [this](const string& v){  // [left,right]; use left >= right (e.g. [0,0]) for no obstruction
+			string inner = trim(v);
+			if (inner.size() < 2 || inner.front() != '[' || inner.back() != ']') return false;
+			inner = inner.substr(1, inner.size() - 2);
+			size_t comma = inner.find(',');
+			return comma != string::npos && parseInt(inner.substr(0, comma), obstruction[0]) && parseInt(inner.substr(comma + 1), obstruction[1]);
+		} },
+		{ "AnalysisBoxLeft", intKey(AnalysisBoxLeft) },
+		{ "AnalysisBoxTop", intKey(AnalysisBoxTop) },
+		{ "AnalysisBoxWidth", intKey(AnalysisBoxWidth) },
+		{ "AnalysisBoxHeight", intKey(AnalysisBoxHeight) },
+		{ "speedLineLeft", intKey(speedLineLeft) },
+		{ "speedLineRight", intKey(speedLineRight) },
+		{ "maxL2RDistOnEntry", intKey(maxL2RDistOnEntry) },
+		{ "maxR2LDistOnEntry", intKey(maxR2LDistOnEntry) },
+		{ "entryLookBack", intKey(entryLookBack) },
+		{ "obstruction_extent", intKey(obstruction_extent) },
+		{ "largeVehicleArea", intKey(largeVehicleArea) },
+		{ "CalibrationFramesL2R", intKey(CalibrationFramesL2R) },
+		{ "CalibrationFramesR2L", intKey(CalibrationFramesR2L) },
+		{ "CalibrationSpeed", dblKey(CalibrationSpeed) },
+		{ "CalibrationFPS", dblKey(CalibrationFPS) },
+		{ "SENSITIVITY_VALUE", intKey(SENSITIVITY_VALUE) },
+		{ "BLUR_SIZE", intKey(BLUR_SIZE) },
+		{ "SLOP", intKey(SLOP) },
+		{ "R2LStreetY", intKey(R2LStreetY) },
+		{ "L2RStreetY", intKey(L2RStreetY) },
+		{ "nextHeight", intKey(nextHeight) },
 	};
-
+	map<string, size_t> byName;  // lower-cased key -> index into keys
+	for (size_t i = 0; i < keys.size(); i++) byName[lower(keys[i].first)] = i;
 
 	ifstream configIn(path);
 	if (!configIn.good()){
-		cout << "Can't open " << path << "." << endl;
+		cerr << "Can't open config file " << path << endl;
 		return false;
 	}
 
-	int place, place2;
-	int lineNo = 0;
-	while (!configIn.eof()){
-		getline(configIn, inLine);
-		if (!configIn){
-			cout << "Unexpected error in config file." << endl;
-			return false;
+	bool ok = true;
+	map<size_t, int> seenOnLine;
+	string inLine;
+	for (int lineNo = 1; getline(configIn, inLine); lineNo++){
+		string text = trim(inLine.substr(0, inLine.find('#')));
+		if (text.empty()) continue;  // blank or comment-only line
+		auto where = [&](){ return path + ":" + to_string(lineNo) + ": "; };
+		size_t eq = text.find('=');
+		if (eq == string::npos){
+			cerr << where() << "expected \"key = value\", got \"" << text << "\"" << endl;
+			ok = false;
+			continue;
 		}
-		if (getSides(inLine)){
-			lhs = trim(lhs);
-			rhs = trim(rhs);
-			if (lhs != lhsString[lineNo]){
-				cout << "Just read LHS doesn't match anything: <" << lhs << ">.  Aborting" << endl;
-				return false;
-			}
-			switch (lineNo){
-			case 0:             // dataPathPrefix
-				dataPathPrefix = rhs;
-				cout << "dataPathPrefix = " << dataPathPrefix << endl;
-				break;
-			case 1:             // L2RDirection
-				L2RDirection = rhs;
-				cout << "L2RDirection = " << L2RDirection << endl;
-				break;
-			case 2:             // R2LDirection
-				R2LDirection = rhs;
-				cout << "R2LDirection = " << R2LDirection << endl;
-				break;
-			case 3:             // obstruction  (If no foreground obstructions in scene, just make first value >= second value)
-				place = rhs.find(',');
-				place2 = rhs.find(']');
-				obstruction[0] = stoi(rhs.substr(1, place - 1));
-				obstruction[1] = stoi(rhs.substr(place + 1, (place2 - place) - 1));
-				cout << "obstruction[0] = " << obstruction[0] << endl;
-				cout << "obstruction[1] = " << obstruction[1] << endl;
-				break;
-			case 4:             // AnalysisBoxLeft     ( must be >= 0 and <= 1279)
-				AnalysisBoxLeft = stoi(rhs);
-				cout << "AnalysisBoxLeft = " << AnalysisBoxLeft << endl;
-				break;
-			case 5:             // AnalysisBoxTop      ( must be >= 0 and <= 719)
-				AnalysisBoxTop = stoi(rhs);
-				cout << "AnalysisBoxTop = " << AnalysisBoxTop << endl;
-				break;
-			case 6:             // AnalysisBoxWidth       ( must be >= 0 and <= (1279 - AnalysisBoxLeft))
-				AnalysisBoxWidth = stoi(rhs);
-				cout << "AnalysisBoxWidth = " << AnalysisBoxWidth << endl;
-				break;
-			case 7:             // AnalysisBoxHeight            ( must be >= 0 and <= (719 - AnalysisBoxTop))
-				AnalysisBoxHeight = stoi(rhs);
-				cout << "AnalysisBoxHeight = " << AnalysisBoxHeight << endl;
-				break;
-			case 8:             // speedLineLeft              (relative to AnalysisBoxLeft.  Must be >= 0 and <= (719 - AnalysisBoxWidth))
-				speedLineLeft = stoi(rhs);
-				cout << "speedLineLeft = " << speedLineLeft << endl;
-				break;
-			case 9:             // speedLineRight          (relative to AnalysisBoxLeft.  Must be > speedLineLeft and <= (719 - AnalysisBoxWidth))
-				speedLineRight = stoi(rhs);
-				cout << "speedLineRight = " << speedLineRight << endl;
-				break;
-			case 10:             // maxL2RDistOnEntry
-				maxL2RDistOnEntry = stoi(rhs);
-				cout << "maxL2RDistOnEntry = " << maxL2RDistOnEntry << endl;
-				break;
-			case 11:             // maxR2LDistOnEntry
-				maxR2LDistOnEntry = stoi(rhs);
-				cout << "maxR2LDistOnEntry = " << maxR2LDistOnEntry << endl;
-				break;
-			case 12:             // entryLookBack
-				entryLookBack = stoi(rhs);
-				cout << "entryLookBack = " << entryLookBack << endl;
-				break;
-			case 13:             // obstruction_extent
-				obstruction_extent = stoi(rhs);
-				cout << "obstruction_extent = " << obstruction_extent << endl;
-				break;
-			case 14:             // largeVehicleArea
-				largeVehicleArea = stoi(rhs);
-				cout << "largeVehicleArea = " << largeVehicleArea << endl;
-				break;
-			case 15:             // CalibrationFramesL2R     (How many frames does it take a L2R vehicle to pass thru speed zone at speed limit?)
-				CalibrationFramesL2R = stoi(rhs);
-				cout << "CalibrationFramesL2R = " << CalibrationFramesL2R << endl;
-				break;
-			case 16:             // CalibrationFramesR2L     (How many frames does it take a R2L vehicle to pass thru speed zone at speed limit?)
-				CalibrationFramesR2L = stoi(rhs);
-				cout << "CalibrationFramesR2L = " << CalibrationFramesR2L << endl;
-				break;
-			case 17:             // SENSITIVITY_VALUE
-				SENSITIVITY_VALUE = stoi(rhs);
-				cout << "SENSITIVITY_VALUE = " << SENSITIVITY_VALUE << endl;
-				break;
-			case 18:             // BLUR_SIZE
-				BLUR_SIZE = stoi(rhs);
-				cout << "BLUR_SIZE = " << BLUR_SIZE << endl;
-				break;
-			case 19:             // SLOP
-				SLOP = stoi(rhs);
-				cout << "SLOP = " << SLOP << endl;
-				break;
-			case 20:             // R2LStreetY         (R2L hubcap line)
-				R2LStreetY = stoi(rhs);
-				cout << "R2LStreetY = " << R2LStreetY << endl;
-				break;
-			case 21:             // L2RStreetY         (L2R hubcap line)
-				L2RStreetY = stoi(rhs);
-				cout << "L2RStreetY = " << L2RStreetY << endl;
-				break;
-			case 22:             // nextHeight
-				nextHeight = stoi(rhs);
-				cout << "nextHeight = " << nextHeight << endl;
-				break;
-
-			default:
-				if (lineNo > 22){
-					cout << "Too many lines in config file.  Abortiing." << endl;
-					return false;
-				}
-			} // switch
-			lineNo++;
-		
+		string key = trim(text.substr(0, eq));
+		string value = trim(text.substr(eq + 1));
+		auto found = byName.find(lower(key));
+		if (found == byName.end()){
+			cerr << where() << "unknown setting \"" << key << "\".  Known settings:";
+			for (const auto& k : keys) cerr << " " << k.first;
+			cerr << endl;
+			ok = false;
+			continue;
 		}
-		else{
-			cout << "getSides() failed in config reader.  Check VST.cfg syntax.  Aborting " << endl;
-			configIn.close();
-			return false;
+		const string& name = keys[found->second].first;
+		if (seenOnLine.count(found->second))
+			cerr << where() << name << " was already set on line " << seenOnLine[found->second] << "; using this later value" << endl;
+		seenOnLine[found->second] = lineNo;
+		if (!keys[found->second].second(value)){
+			cerr << where() << "can't read a value for " << name << " from \"" << value << "\"" << endl;
+			ok = false;
+			continue;
 		}
-		
-
-
-	}  // while not eof
-
-	configIn.close();
-
-	if ((AnalysisBoxLeft + AnalysisBoxWidth) > 1279){
-		cout << "Analysis box too wide.  Must be <= 1279. Check config file.  Aborting." << endl;
-		return false;
+		cout << name << " = " << value << endl;
 	}
-	else if ((AnalysisBoxTop + AnalysisBoxHeight) > 719){
-		cout << "Analysis box too high.  Must be <= 719.  Check config file.  Aborting." << endl;
-		return false;
-	}
-	return true;
+	if (!ok) return false;
+
+	// The analysis box, speed lines and hubcap lines are all in 1280x720 frame pixels (frames of other sizes are scaled to it).
+	auto bad = [&](const string& why){ cerr << path << ": " << why << endl; ok = false; };
+	if (AnalysisBoxLeft < 0 || AnalysisBoxTop < 0 || AnalysisBoxWidth <= 0 || AnalysisBoxHeight <= 0)
+		bad("AnalysisBoxLeft/Top must be >= 0 and AnalysisBoxWidth/Height must be > 0");
+	if (AnalysisBoxLeft + AnalysisBoxWidth > FrameWidth)
+		bad("analysis box too wide: AnalysisBoxLeft + AnalysisBoxWidth = " + to_string(AnalysisBoxLeft + AnalysisBoxWidth) + ", must be <= " + to_string(FrameWidth));
+	if (AnalysisBoxTop + AnalysisBoxHeight > FrameHeight)
+		bad("analysis box too tall: AnalysisBoxTop + AnalysisBoxHeight = " + to_string(AnalysisBoxTop + AnalysisBoxHeight) + ", must be <= " + to_string(FrameHeight));
+	if (speedLineLeft < 0 || speedLineLeft >= speedLineRight || speedLineRight > AnalysisBoxWidth)
+		bad("speed lines must satisfy 0 <= speedLineLeft < speedLineRight <= AnalysisBoxWidth (they are relative to AnalysisBoxLeft)");
+	if (R2LStreetY <= 0 || R2LStreetY > AnalysisBoxHeight || L2RStreetY <= 0 || L2RStreetY > AnalysisBoxHeight)
+		bad("R2LStreetY and L2RStreetY must be between 1 and AnalysisBoxHeight (they are relative to AnalysisBoxTop)");
+	if (CalibrationFramesL2R <= 0 || CalibrationFramesR2L <= 0 || CalibrationSpeed <= 0 || CalibrationFPS <= 0)
+		bad("CalibrationFramesL2R, CalibrationFramesR2L, CalibrationSpeed and CalibrationFPS must all be > 0");
+	if (BLUR_SIZE <= 0)
+		bad("BLUR_SIZE must be > 0");
+	return ok;
 };
-
-
-

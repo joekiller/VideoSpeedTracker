@@ -188,17 +188,20 @@ int VehicleDynamics::computeFinalSpeed(Globals& g, direction dir, int trackStart
 	
 	// The entry and end gaps may provide useful infomration for minor speed assessment corrections.  Not using them here yet...
 	int halfSpeed = int(estVel / 2.0);
+	// Speed = CalibrationSpeed * (calibration crossing time / this vehicle's crossing time).  The calibration crossing was
+	// counted in CalibrationFPS video; fpsScale converts it to frames of the video being analyzed (exactly 1 when they match).
+	double fpsScale = g.videoFPS / g.CalibrationFPS;
 	switch (dir){
 	case L2R:
 		// fine tune final frame marker used for estimating speed
 		if ((trackStartPixel - g.speedLineLeft) > halfSpeed && (trackEndPixel - g.speedLineRight) < halfSpeed)  trackEndFrame++;  // went over start late, and left early
 		else if ((trackStartPixel - g.speedLineLeft) < halfSpeed && (trackEndPixel - g.speedLineRight) > halfSpeed)  trackEndFrame--; // went over start early, and left late
-		return int(((double(g.CalibrationFramesL2R) / double(trackEndFrame - trackStartFrame)) * 25.0) + 0.4999);
+		return int(((double(g.CalibrationFramesL2R) * fpsScale / double(trackEndFrame - trackStartFrame)) * g.CalibrationSpeed) + 0.4999);
 	case R2L:
 		// fine tune final frame markers used for estimating speed
 		if ((g.speedLineRight - trackStartPixel) > halfSpeed && (g.speedLineLeft - trackEndPixel) < halfSpeed)  trackEndFrame++;  // went over start as late as possible and stayed late
 		else if ((g.speedLineRight - trackStartPixel) < halfSpeed && (g.speedLineLeft - trackEndPixel) > halfSpeed)  trackEndFrame--; // went over start early, and left late
-		return int(((double(g.CalibrationFramesR2L) / double(trackEndFrame - trackStartFrame)) * 25.0) + 0.4999);
+		return int(((double(g.CalibrationFramesR2L) * fpsScale / double(trackEndFrame - trackStartFrame)) * g.CalibrationSpeed) + 0.4999);
 	case UNK:
 		return -1;
 	}
@@ -445,6 +448,10 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, L2R, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
 					cout << "<" << frameNum << ">    > > > > > Speed is : " << finalSpeed << endl;
+					if (bestWidth == 0){  // Left the speed zone before passing its midpoint (e.g. a long truck): size it from what was last seen.  From pfr's 2016 neighborhoods branch.
+						bestHeight = lastObservedBox.height;
+						bestWidth = lastObservedBox.width;
+					}
 					deadReckonFB = true;  // Once speed measurement is done, just dead reckon vehicle out of the picture.
 				}
 				else {
@@ -468,6 +475,10 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, R2L, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
 					cout << "<" << frameNum << ">   < < < < < Speed is : " << finalSpeed << endl;
+					if (bestWidth == 0){  // Left the speed zone before passing its midpoint (e.g. a long truck): size it from what was last seen.  From pfr's 2016 neighborhoods branch.
+						bestHeight = lastObservedBox.height;
+						bestWidth = lastObservedBox.width;
+					}
 					deadReckonFB = true;    // Once speed measurement is done, just dead reckon vehicle out of the picture.
 				}
 				else {
@@ -592,8 +603,8 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 			}
 
 
-// Get best snapshot of cross section area for stats (taken when center of vehicle in center of Analysis box)
-			if (abs(((nextFrontBumper + nextRearBumper) / 2) - ((g.pixelRight - g.pixelLeft) / 2)) <= 70){
+// Get best snapshot of cross section area for stats (taken when center of vehicle is mid speed zone, which need not be mid Analysis box)
+			if (abs(((nextFrontBumper + nextRearBumper) / 2) - ((g.speedLineLeft + g.speedLineRight) / 2)) <= 70){
 				bestHeight = lastObservedBox.height;
 				bestWidth = lastObservedBox.width;
 				bestVelocity = estVelocity;

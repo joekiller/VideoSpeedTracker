@@ -61,6 +61,9 @@
 #include <iostream>
 #include <fstream>
 #include <queue>
+#include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include "VehicleDynamics.h"
 #include "Projection.h"
 #include "Snapshot.h"
@@ -70,6 +73,7 @@
 
 using namespace std;
 using namespace cv;
+namespace fs = std::filesystem;
 
 const int MAX_NUM_OBJECTS = 30; // Max number of objects allowed to be retunred by contours
 const int MIN_OBJECT_AREA = 30 * 35;  // Very sensitive to pedestrians, bicyclists and other small things.
@@ -86,15 +90,10 @@ bool bailing = false;
 // ........................................................ Globals shared between setup() and main() ................................................
 ofstream traceFile;
 ofstream statsFile;
-ifstream directoryList;
-ifstream filesList;
 VideoCapture capture;  //video capture object.
-bool moreFilesToDo = true;  //  Used to control file processing loop in main.
-string yesNoAll = "n";  // Indicates whetehr one file (Y) or multiple (*) are to be processed.
-string fileName;  // Name of avi file currently being processed.
-string dirPath; // path to fileName
-string fileMid; // The date part of the file name placed there by the Foscam camera
-int objDelay = 1250;  // delay to be used when objects are detected in ROI;  Can be changed through use of "f" and "s" keys while running
+vector<string> filesToDo;  // Full paths of the videos main() processes, in order.  One entry unless "*" was chosen in interactive mode.
+string fileName;  // Name (no directory) of the video currently being processed.  Foscam names "manual_yyyymmddhhmmss.avi" supply the csv Date/Time columns.
+int objDelay = 50;  // ms per frame pair while a vehicle is on screen (about real time).  "s" slows it to 250 then 1250 ms for close inspection, "f" speeds it up.  Was 1250; 50 is from piki's 2017 fork.
 bool pleaseTrace = false;  // If you want a trace file (lots of debug info)
 bool highLightsPlease = false;
 int speedLimit = 25;  // User supplied speed limit, used for color choice when posting speed
@@ -117,9 +116,93 @@ string inputPath;         // --input: full path of the single video to analyze; 
 string configPath;        // --config; empty = userpaths::resolveConfig("VST.cfg")
 //......................................................................................................................................................
 
-// Substring that returns "" instead of throwing when a file name doesn't follow the Foscam "manual_yyyymmddhhmmss.avi" pattern.
-string safeSub(const string& s, size_t pos, size_t len){
-	return pos < s.size() ? s.substr(pos, len) : string();
+
+const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed";
+
+// Reads the next frame and scales it to the 1280x720 canvas every config coordinate refers to, so cameras that record
+// 1080p, 4K or 640x480 work with the same VST.cfg geometry.  Returns false at end of video or on a read error.
+bool readFrame(VideoCapture& cap, Mat& frame){
+	if (!cap.read(frame) || frame.empty()) return false;
+	if (frame.cols != Globals::FrameWidth || frame.rows != Globals::FrameHeight)
+		cv::resize(frame, frame, Size(Globals::FrameWidth, Globals::FrameHeight), 0, 0, INTER_AREA);
+	return true;
+}
+
+// Output name for a video: Foscam "manual_20160130172251.avi" -> "20160130_172251" (the 2016 naming), anything else -> its stem.
+string outputStem(const string& videoName){
+	string stem = fs::path(videoName).stem().string();
+	bool foscam = stem.size() == 21 && stem.compare(0, 7, "manual_") == 0
+		&& all_of(stem.begin() + 7, stem.end(), [](char c){ return isdigit((unsigned char)c) != 0; });
+	return foscam ? stem.substr(7, 8) + "_" + stem.substr(15, 6) : stem;
+}
+
+// csv Date and Time columns: "20160130, 172251" for a Foscam "manual_20160130172251.avi", blank ", " for any other name.
+string csvDateTime(const string& videoName){
+	string stem = outputStem(videoName);
+	bool foscam = stem.size() == 15 && stem[8] == '_' && stem != fs::path(videoName).stem().string();
+	return foscam ? stem.substr(0, 8) + ", " + stem.substr(9, 6) : string(", ");
+}
+
+bool isVideoFile(const fs::path& p){
+	string ext = p.extension().string();
+	for (char& c : ext) c = (char)tolower((unsigned char)c);
+	for (const char* known : { ".avi", ".mp4", ".mkv", ".mov", ".m4v", ".ts", ".h264", ".mjpeg", ".webm" })
+		if (ext == known) return true;
+	return false;
+}
+
+// Sorted names of the entries in dir that pass keep().
+vector<string> listDir(const fs::path& dir, bool (*keep)(const fs::directory_entry&)){
+	vector<string> names;
+	error_code ec;
+	for (const auto& e : fs::directory_iterator(dir, ec))
+		if (keep(e)) names.push_back(e.path().filename().string());
+	sort(names.begin(), names.end());
+	return names;
+}
+
+// One line from stdin, trimmed.  Exits rather than re-prompting forever when stdin is closed (no terminal, piped input).
+string ask(const string& prompt){
+	cout << prompt << flush;
+	string answer;
+	if (!getline(cin, answer)){
+		cerr << endl << "No more input on stdin.  For unattended runs use command-line mode instead (VideoSpeedTracker --help)." << endl;
+		exit(EXIT_FAILURE);
+	}
+	size_t a = answer.find_first_not_of(" \t\r");
+	size_t b = answer.find_last_not_of(" \t\r");
+	return a == string::npos ? string() : answer.substr(a, b - a + 1);
+}
+
+// Asks until the answer is empty (keep dflt) or a whole number.
+int askInt(const string& prompt, int dflt){
+	for (;;){
+		string answer = ask(prompt + " [" + to_string(dflt) + "]: ");
+		if (answer.empty()) return dflt;
+		try { size_t used; int v = stoi(answer, &used); if (used == answer.size()) return v; }
+		catch (const exception&) {}
+		cout << "Please enter a whole number." << endl;
+	}
+}
+
+bool askYesNo(const string& prompt, bool dflt){
+	for (;;){
+		string answer = ask(prompt + (dflt ? " (y/n) [y]: " : " (y/n) [n]: "));
+		if (answer.empty()) return dflt;
+		if (answer == "y" || answer == "Y") return true;
+		if (answer == "n" || answer == "N") return false;
+	}
+}
+
+// Asks for one of names by number; "*" is also accepted when allowAll.  Returns the index, or -1 for "*".
+int askChoice(const string& what, const vector<string>& names, bool allowAll){
+	for (size_t i = 0; i < names.size(); i++) cout << "  " << (i + 1) << ": " << names[i] << endl;
+	for (;;){
+		string answer = ask("Which " + what + " (1-" + to_string(names.size()) + (allowAll ? ", or * for all" : "") + ")? ");
+		if (allowAll && answer == "*") return -1;
+		try { size_t used; int v = stoi(answer, &used); if (used == answer.size() && v >= 1 && v <= (int)names.size()) return v - 1; }
+		catch (const exception&) {}
+	}
 }
 
 // waitKey() that is a no-op when running headless, so no display is required.
@@ -142,61 +225,50 @@ void setup(){
 // Get configuration values from VST.cfg and set corresponding objects in Globals.h to read-in values.
 	if (configPath.empty()) configPath = userpaths::resolveConfig("VST.cfg");
 	if (configPath.empty() || !g.readConfig(configPath)){
-		cout << "Reading of config file appears to have failed.   Exiting" << endl;
-		exit(-1);
+		cerr << "Fix " << (configPath.empty() ? string("the config") : configPath) << " and run again." << endl;
+		exit(EXIT_FAILURE);
 	}
 // PixelLeft is always zero relative to AnalysisBoxLeft;  PixelRight depends on AnalysisBoxWidth/
 	g.pixelRight = g.AnalysisBoxWidth; // index of rightmost pixel in AnalysisBox.
 	AnalysisBox = Rect(g.AnalysisBoxLeft, g.AnalysisBoxTop, g.AnalysisBoxWidth, g.AnalysisBoxHeight);  // For use when performing speed analysis in cropped region
 
-	Mat frame;
-	string dirName;
-	string camPath = g.dataPathPrefix + "\\IPCam\\";
-
+	// Videos live in <dataPathPrefix>/IPCam/<one folder per day>/; outputs go to <dataPathPrefix>/Stats, Trace and HiLites.
+	fs::path data(g.dataPathPrefix);
+	fs::path camPath = data / "IPCam";
 	cout << endl << endl;
 
 // Get directory containing file(s) to be processed
-	string toSysString = "dir " + camPath + " /b > " + camPath + "directories.txt";
-	const char * toSysStringC = toSysString.c_str();
-//	system("dir g:\\LocustData\\IPCam /b > g:\\LocustData\\IPCam\\directories.txt");
-	system(toSysStringC);
-	string yesNo = "n";
-	while (yesNo == "n"){
-		directoryList.open(camPath + "directories.txt");
-		while (getline(directoryList, dirName)){
-			cout << "Want the directory " << dirName.substr(0, 4) + " " + dirName.substr(4, 2) + " " + dirName.substr(6, 2) << "  (y/n) [n]: ";
-			getline(cin, yesNo);
-			if (yesNo == "y") break;
-		}
-		directoryList.close();
+	vector<string> dirs = listDir(camPath, [](const fs::directory_entry& e){ return e.is_directory(); });
+	if (dirs.empty()){
+		cerr << "No video folders found in " << camPath.string() << endl
+			<< "Put each day's videos in a folder of its own there (e.g. IPCam/20160130/), set dataPathPrefix in "
+			<< configPath << " to another location, or analyze one file with --input PATH (see --help)." << endl;
+		exit(EXIT_FAILURE);
 	}
+	cout << "Video folders in " << camPath.string() << ":" << endl;
+	string dirName = dirs[askChoice("folder", dirs, false)];
+	fs::path dirPath = camPath / dirName;
 
 // Go through the file names in the selected directory for the user.
-	dirPath = camPath + dirName;
-	string sysString = "dir " + dirPath + "\\*.avi /b > " + dirPath + "\\files.txt";
-	const char * c = sysString.c_str();
-	system(c); // copy the file names from the chosen directory to file "files.txt" in the same directory.
-
-	// Get file user wants
-	while (yesNoAll == "n"){
-		filesList.open(dirPath + "\\files.txt");
-		while (getline(filesList, fileName)){
-			cout << "Want the file " << fileName.substr(0, 15) + "_" + fileName.substr(15, 10) << "  (y/n/*) [n]: ";
-			getline(cin, yesNoAll);
-			if (yesNoAll == "y" || yesNoAll == "*") break;  // User has chosen one file, or all in directory
-		}
-		filesList.close();
+	vector<string> videos = listDir(dirPath, [](const fs::directory_entry& e){ return e.is_regular_file() && isVideoFile(e.path()); });
+	if (videos.empty()){
+		cerr << "No video files (.avi, .mp4, .mkv, .mov, ...) in " << dirPath.string() << endl;
+		exit(EXIT_FAILURE);
 	}
+	cout << endl << "Videos in " << dirPath.string() << ":" << endl;
+	int choice = askChoice("video", videos, true);
+	bool allFiles = choice < 0;
+	if (allFiles) for (const string& v : videos) filesToDo.push_back((dirPath / v).string());
+	else filesToDo.push_back((dirPath / videos[choice]).string());
+	fileName = fs::path(filesToDo[0]).filename().string();
 
 	// Do a one-time setup of region of interest, obstructions and speed posts
-	string FullName = dirPath + "\\" + fileName;
-	capture.open(FullName);
-	if (!capture.isOpened()){
-		cout << "ERROR ACQUIRING VIDEO FEED\n";
-		getchar();
-		return;
+	Mat frame;
+	capture.open(filesToDo[0]);
+	if (!capture.isOpened() || !readFrame(capture, frame)){
+		cerr << "Can't read video from " << filesToDo[0] << endl;
+		exit(EXIT_FAILURE);
 	}
-	capture.read(frame);
 	cv::line(frame, Point(g.AnalysisBoxLeft, g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth, g.AnalysisBoxTop), Scalar(CVYellow), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft, g.AnalysisBoxTop + g.AnalysisBoxHeight), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth, g.AnalysisBoxTop + g.AnalysisBoxHeight), Scalar(CVYellow), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft, g.AnalysisBoxTop), Point(g.AnalysisBoxLeft, g.AnalysisBoxTop + g.AnalysisBoxHeight), Scalar(CVYellow), 2);
@@ -207,108 +279,60 @@ void setup(){
 	cv::line(frame, Point(g.AnalysisBoxLeft + g.obstruction[1], 85 + g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.obstruction[1], 160 + g.AnalysisBoxTop), Scalar(CVYellow), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + g.R2LStreetY), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + g.R2LStreetY), Scalar(CVOrange), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + g.L2RStreetY), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + g.L2RStreetY), Scalar(CVPurple), 2);
+	double fps = capture.get(CAP_PROP_FPS);
+	capture.release();
 
-	switch (waitKey(20)){};
 	cv::imshow("Full Frame", frame);
-	switch (waitKey(20)){};
-
-	cout << endl << "Are Analysis Box, Speed Measuring Zone, " << endl << "    Obstruction Framing, and Hubcap Lines OK (y|n) [y] ?  ";
-	getline(cin, yesNo);
-	if (!yesNo.empty() & (yesNo == "n")){ 
-		cout << "You'll need to change values in VST.cfg.  Terminating.   Hit enter to exit program." << endl;
-		getline(cin, yesNo);
+	waitKey(20);
+	cout << endl;
+	if (!askYesNo("Are Analysis Box, Speed Measuring Zone, Obstruction Framing, and Hubcap Lines OK", true)){
+		cout << "Adjust the values in " << configPath << " and run again." << endl;
 		cv::destroyWindow("Full Frame");
-		capture.release();
-		exit(-1);
-	}
-	else{
-		if (yesNo.substr(0, 1) == "y")
-			cout << "Glad you're happy." << endl;;
+		exit(EXIT_FAILURE);
 	}
 	cv::destroyWindow("Full Frame");
 
-	filesList.open(dirPath + "\\files.txt"); // Done for main() to access files contained therein
+	// Outputs are named after the folder when processing all of it, else after the one video.
+	string stem = allFiles ? dirName : outputStem(fileName);
+	error_code ec;
+	for (const char* sub : { "Stats", "Trace", "HiLites" }) fs::create_directories(data / sub, ec);
 
 // Want a trace file?
-	pleaseTrace = false;
-	cout << endl << "Want a trace file (y/n) [n]? : ";
-	getline(cin, yesNo);
-	if (!yesNo.empty()) pleaseTrace = (yesNo == "y");
-
-// Open trace file (if requested) and stats file
-	if (yesNoAll == "*"){ // give trace and stats files names based on directory name
-		if (pleaseTrace) traceFile.open(g.dataPathPrefix + "\\trace\\trace_" + dirName + ".txt");
-		statsFile.open(g.dataPathPrefix + "\\stats\\stats_" + dirName + ".csv");
-	}
-	else{ // yesNoAll == "y" which means only one file to process; give it name corresponding to input file name
-		fileMid = fileName.substr(7, 14);
-		if (pleaseTrace) traceFile.open(g.dataPathPrefix + "\\trace\\trace_" + fileMid.substr(0, 8) + "_" + fileMid.substr(8, 6) + ".txt");
-		statsFile.open(g.dataPathPrefix + "\\stats\\stats_" + fileMid.substr(0, 8) + "_" + fileMid.substr(8, 6) + ".csv");
-	}
-
-	statsFile << ", , Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed" << endl;
-
-	string answer;
-	cout << endl << "Speed Limit: (int) [" + intToString(speedLimit) + "]: ";
-	getline(cin, answer);
-	if (!answer.empty()) speedLimit = stoi(answer);
 	cout << endl;
+	pleaseTrace = askYesNo("Want a trace file", false);
+	if (pleaseTrace) traceFile.open((data / "Trace" / ("trace_" + stem + ".txt")).string());
 
-	egregiousSpeedLowerBound = speedLimit + 10;
-	cout << "Egregious Speed Lower Bound: (int) [" + intToString(egregiousSpeedLowerBound) + "]: ";
-	getline(cin, answer);
-	if (!answer.empty()) egregiousSpeedLowerBound = max(stoi(answer), speedLimit);
+	fs::path statsPath = data / "Stats" / ("stats_" + stem + ".csv");
+	statsFile.open(statsPath.string());
+	if (!statsFile.is_open()){
+		cerr << "Can't write " << statsPath.string() << endl;
+		exit(EXIT_FAILURE);
+	}
+	statsFile << statsHeader << endl;
+
 	cout << endl;
-
+	speedLimit = askInt("Speed Limit: (int)", speedLimit);
+	egregiousSpeedLowerBound = max(askInt("Egregious Speed Lower Bound: (int)", speedLimit + 10), speedLimit);
 	crazySpeed = egregiousSpeedLowerBound + 20;  // Stats reporting will flag anything faster than this.
 
 // What frame number would you like to start with in the first file?
-
-	startFrame = 0.0;
-	cout << "Frame number to start with in first file (int) [0]? : ";
-	getline(cin, answer);
-	if (!answer.empty()) startFrame = stod(answer);
+	startFrame = askInt("Frame number to start with in first file (int)", 0);
 
 // Want a highlights file?
-	highLightsPlease = false;
-	cout << endl << "Want a highlights file (y/n) [n]? : ";
-	getline(cin, yesNo);
-	if (!yesNo.empty()) highLightsPlease = (yesNo == "y");
-
-// What lower threshold speed for being added to highlights?
+	highLightsPlease = askYesNo("Want a highlights file", false);
 	if (highLightsPlease){
-		cout << endl << "Threshold lower speed for highlights file: (int) [" + intToString(highLightsSpeedLower) + "]: ";
-		getline(cin, answer);
-		if (!answer.empty()) highLightsSpeedLower = stoi(answer);
-// What upper threshold speed for being added to highlights?
-		cout << endl << "Threshold upper bound on speed for highlights file: (int) [" + intToString(highLightsSpeedUpper) + "]: ";
-		getline(cin, answer);
-		if (!answer.empty()) highLightsSpeedUpper = stoi(answer);
-// What minimum profile area should be used for adding speeding vehicles to highlights?
-		cout << endl << "Min area of large speeding vehicle to be added to highlights (int) [" + intToString(minimumProfileArea) + "]: ";
-		getline(cin, answer);
-		if (!answer.empty()) minimumProfileArea = stoi(answer);
-		cout << endl;
-		if (yesNoAll == "*"){ // give trace and stats files names based on directory name
-			hiLiteVideo.open(g.dataPathPrefix + "\\HiLites\\Hilites_" + dirName + ".avi",
-//				CV_FOURCC('X', '2', '6', '4'), capture.get(CAP_PROP_FPS), Size(1280, 720), true);
-			-1, capture.get(CAP_PROP_FPS), Size(1280, 720), true); // bug in OpenCV open function.  x264 has to be picked from list.  Argh.
-		}
-		else{ // yesNoAll == "y" which means only one file to process; give it name corresponding to input file name
-			fileMid = fileName.substr(7, 14);
-			hiLiteVideo.open(g.dataPathPrefix + "\\HiLites\\Hilites_" + fileMid.substr(0, 8) + "_" + fileMid.substr(8, 6) + ".avi",
-//				CV_FOURCC('X', '2', '6', '4'), capture.get(CAP_PROP_FPS), Size(1280, 720), true);
-			-1, capture.get(CAP_PROP_FPS), Size(1280, 720), true); // bug in OpenCV open function.  x264 has to be picked from list.  Argh.
-			
-		}
+		highLightsSpeedLower = askInt("Threshold lower speed for highlights file: (int)", highLightsSpeedLower);
+		highLightsSpeedUpper = askInt("Threshold upper bound on speed for highlights file: (int)", highLightsSpeedUpper);
+		minimumProfileArea = askInt("Min area of large speeding vehicle to be added to highlights (int)", minimumProfileArea);
+		fs::path hiLitePath = data / "HiLites" / ("Hilites_" + stem + ".mp4");
+		hiLiteVideo.open(hiLitePath.string(), VideoWriter::fourcc('m', 'p', '4', 'v'), fps > 0 ? fps : 30.0,
+			Size(Globals::FrameWidth, Globals::FrameHeight), true);
 		if (!hiLiteVideo.isOpened()){
-			cout << "ERROR Opening HiLites File\n";
-			getchar();
-			return;
+			cerr << "Can't write highlights video " << hiLitePath.string() << endl;
+			exit(EXIT_FAILURE);
 		}
 	}
-	capture.release();
-	return;
+	cout << "Writing " << statsPath.string() << endl;
 }
 
 
@@ -324,7 +348,9 @@ void printUsage(){
 		<< "  --highlights PATH     write a highlights video (mp4v) of qualifying vehicles" << endl
 		<< "  --hl-min N --hl-max N speed range for highlights [35..100]" << endl
 		<< "  --hl-area N           minimum profile area for large-vehicle highlights [100]" << endl
-		<< "  --headless            no windows; runs as fast as the CPU allows" << endl;
+		<< "  --headless            no windows; runs as fast as the CPU allows" << endl
+		<< "Video of any size or frame rate is accepted: frames are scaled to 1280x720 (the size VST.cfg coordinates" << endl
+		<< "refer to) and speeds are scaled by CalibrationFPS.  Exit status is 0 on success, 1 on any error." << endl;
 }
 
 // Command-line counterpart of setup(): same globals end up set, but from arguments instead of prompts,
@@ -334,56 +360,72 @@ bool setupFromArgs(int argc, char** argv){
 	bool egregiousGiven = false;
 	for (int i = 1; i < argc; i++){
 		string a = argv[i];
-		auto next = [&](){ if (i + 1 >= argc){ cout << "Missing value for " << a << endl; exit(-1); } return string(argv[++i]); };
+		// Both "--opt value" and "--opt=value" are accepted.
+		string inlineValue;
+		bool hasInline = false;
+		size_t eq = a.find('=');
+		if (a.compare(0, 2, "--") == 0 && eq != string::npos){ inlineValue = a.substr(eq + 1); a = a.substr(0, eq); hasInline = true; }
+		auto next = [&](){
+			if (hasInline) return inlineValue;
+			if (i + 1 >= argc){ cerr << "Missing value for " << a << endl; exit(EXIT_FAILURE); }
+			return string(argv[++i]);
+		};
+		auto nextInt = [&](){
+			string v = next();
+			try { size_t used; int n = stoi(v, &used); if (used == v.size()) return n; }
+			catch (const exception&) {}
+			cerr << a << " needs a whole number, got \"" << v << "\"" << endl;
+			exit(EXIT_FAILURE);
+		};
 		if (a == "--input") inputPath = next();
 		else if (a == "--config") configPath = next();
 		else if (a == "--stats") statsPath = next();
 		else if (a == "--trace") tracePath = next();
-		else if (a == "--speed-limit") speedLimit = stoi(next());
-		else if (a == "--egregious"){ egregiousSpeedLowerBound = stoi(next()); egregiousGiven = true; }
-		else if (a == "--start-frame") startFrame = stod(next());
+		else if (a == "--speed-limit") speedLimit = nextInt();
+		else if (a == "--egregious"){ egregiousSpeedLowerBound = nextInt(); egregiousGiven = true; }
+		else if (a == "--start-frame") startFrame = nextInt();
 		else if (a == "--highlights") hiLitePath = next();
-		else if (a == "--hl-min") highLightsSpeedLower = stoi(next());
-		else if (a == "--hl-max") highLightsSpeedUpper = stoi(next());
-		else if (a == "--hl-area") minimumProfileArea = stoi(next());
+		else if (a == "--hl-min") highLightsSpeedLower = nextInt();
+		else if (a == "--hl-max") highLightsSpeedUpper = nextInt();
+		else if (a == "--hl-area") minimumProfileArea = nextInt();
 		else if (a == "--headless") headless = true;
-		else if (a == "--help" || a == "-h"){ printUsage(); exit(0); }
-		else { cout << "Unknown option: " << a << endl; printUsage(); return false; }
+		else if (a == "--help" || a == "-h"){ printUsage(); exit(EXIT_SUCCESS); }
+		else { cerr << "Unknown option: " << a << endl; printUsage(); return false; }
 	}
-	if (inputPath.empty()){ cout << "--input is required" << endl; printUsage(); return false; }
+	if (inputPath.empty()){ cerr << "--input is required" << endl; printUsage(); return false; }
 
 	if (configPath.empty()) configPath = userpaths::resolveConfig("VST.cfg");
 	if (configPath.empty() || !g.readConfig(configPath)){
-		cout << "Reading of config file appears to have failed.   Exiting" << endl;
+		cerr << "Fix " << (configPath.empty() ? string("the config") : configPath) << " and run again." << endl;
 		return false;
 	}
 	g.pixelRight = g.AnalysisBoxWidth;
 	AnalysisBox = Rect(g.AnalysisBoxLeft, g.AnalysisBoxTop, g.AnalysisBoxWidth, g.AnalysisBoxHeight);
 
-	// main() expects a directory + file name pair; keep both so stats rows still carry the Foscam date/time fields.
-	size_t slash = inputPath.find_last_of("/\\");
-	fileName = (slash == string::npos) ? inputPath : inputPath.substr(slash + 1);
-	dirPath = (slash == string::npos) ? "." : inputPath.substr(0, slash);
-	yesNoAll = "y";
+	filesToDo = { inputPath };
+	fileName = fs::path(inputPath).filename().string();  // Foscam names fill the csv Date/Time columns
 
 	if (!egregiousGiven) egregiousSpeedLowerBound = speedLimit + 10;
 	egregiousSpeedLowerBound = max(egregiousSpeedLowerBound, speedLimit);
 	crazySpeed = egregiousSpeedLowerBound + 20;
 
-	if (statsPath.empty()) statsPath = "stats_" + fileName.substr(0, fileName.find_last_of('.')) + ".csv";
+	if (statsPath.empty()) statsPath = "stats_" + fs::path(fileName).stem().string() + ".csv";
 	statsFile.open(statsPath);
-	if (!statsFile.is_open()){ cout << "Can't open stats file " << statsPath << endl; return false; }
-	statsFile << ", , Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed" << endl;
+	if (!statsFile.is_open()){ cerr << "Can't write stats file " << statsPath << endl; return false; }
+	statsFile << statsHeader << endl;
 
 	pleaseTrace = !tracePath.empty();
-	if (pleaseTrace) traceFile.open(tracePath);
+	if (pleaseTrace){
+		traceFile.open(tracePath);
+		if (!traceFile.is_open()){ cerr << "Can't write trace file " << tracePath << endl; return false; }
+	}
 
 	highLightsPlease = !hiLitePath.empty();
 	if (highLightsPlease){
 		VideoCapture probe(inputPath);
 		double fps = probe.isOpened() ? probe.get(CAP_PROP_FPS) : 30.0;
-		hiLiteVideo.open(hiLitePath, VideoWriter::fourcc('m', 'p', '4', 'v'), fps, Size(1280, 720), true);
-		if (!hiLiteVideo.isOpened()){ cout << "ERROR Opening HiLites File " << hiLitePath << endl; return false; }
+		hiLiteVideo.open(hiLitePath, VideoWriter::fourcc('m', 'p', '4', 'v'), fps > 0 ? fps : 30.0, Size(Globals::FrameWidth, Globals::FrameHeight), true);
+		if (!hiLiteVideo.isOpened()){ cerr << "Can't write highlights video " << hiLitePath << endl; return false; }
 	}
 	cout << "Analyzing " << inputPath << " -> " << statsPath << (headless ? "  (headless)" : "") << endl;
 	return true;
@@ -579,7 +621,7 @@ void logL2Rstats(bool isOK, int index){
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
 	if ((estSpeed >= 18.0) && isOK){
-		statsFile << safeSub(fileName, 7, 8) << ", " << safeSub(fileName, 15, 6) << ", "
+		statsFile << csvDateTime(fileName) << ", "
 			<< frameNumber << ", " << g.L2RDirection << ", " << vehiclesGoingRight[index].getTrackStartFrame() << ", "
 			<< vehiclesGoingRight[index].getTrackEndFrame() << ", "
 			<< frames << ", "
@@ -591,7 +633,7 @@ void logL2Rstats(bool isOK, int index){
 		if (estSpeed < 0 || estSpeed > crazySpeed) statsFile << ", *****";
 		statsFile << endl;
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingRight[index].getArea())){
-			Mat zero = Mat::zeros(Size(1280, 720), frame1.type());
+			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
 			int speedleft = AnalysisBox.x + g.speedLineLeft; // Left boundary may have moved right for ROI boundary.
 			int speedRight = AnalysisBox.x + g.speedLineRight;
 			int arrowY = AnalysisBox.y - 32;
@@ -624,7 +666,7 @@ void logL2Rstats(bool isOK, int index){
 				hiLiteVideo.write(zero);
 				uiWaitKey(10);
 			}
-			hiLiteVideo.write(Mat::zeros(Size(1280, 720), frame1.type())); //  write a partition between vehicles for HiLites processor to detect.
+			hiLiteVideo.write(Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type())); //  write a partition between vehicles for HiLites processor to detect.
 		}
 	}
 }
@@ -646,7 +688,7 @@ void logR2Lstats(bool isOK, int index){
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
 	if ((estSpeed >= 18.0) && isOK){
-		statsFile << safeSub(fileName, 7, 8) << ", " << safeSub(fileName, 15, 6) << ", "
+		statsFile << csvDateTime(fileName) << ", "
 			<< frameNumber << ", " << g.R2LDirection << ", " << vehiclesGoingLeft[index].getTrackStartFrame() << ", "
 			<< vehiclesGoingLeft[index].getTrackEndFrame() << ", "
 			<< frames << ", "
@@ -658,7 +700,7 @@ void logR2Lstats(bool isOK, int index){
 		if (estSpeed < 0 || estSpeed > crazySpeed) statsFile << ", *****";
 		statsFile << endl;
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingLeft[index].getArea())){
-			Mat zero = Mat::zeros(Size(1280, 720), frame1.type());
+			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
 			int speedleft = AnalysisBox.x + g.speedLineLeft;
 			int speedRight = AnalysisBox.x + g.speedLineRight;
 			int arrowY = AnalysisBox.y - 32;
@@ -691,7 +733,7 @@ void logR2Lstats(bool isOK, int index){
 				hiLiteVideo.write(zero);
 				uiWaitKey(10);
 			}
-			hiLiteVideo.write(Mat::zeros(Size(1280, 720), frame1.type())); //  write a partition between vehicles for HiLites processor to detect.
+			hiLiteVideo.write(Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type())); //  write a partition between vehicles for HiLites processor to detect.
 		}
 	}
 }
@@ -1207,7 +1249,7 @@ int main(int argc, char** argv){
 	Mat thresholdImage;  	//thresholded difference image (for use in findContours() function)
 
 	if (argc > 1){
-		if (!setupFromArgs(argc, argv)) return -1;  // Non-interactive: everything comes from the command line
+		if (!setupFromArgs(argc, argv)) return EXIT_FAILURE;  // Non-interactive: everything comes from the command line
 	}
 	else
 		setup();  // Get config data and user preferences for files to process, tracing, debugging, start frame and others
@@ -1216,66 +1258,52 @@ int main(int argc, char** argv){
 //  * * * * * * * * * * * * * * * * * * * * * *  M a i n   L o o p   o v e r   o n e   o r   m o r e   i n p u t   f i l e s  * * * * * * * * * * * * * * * *
 
 
-	while (moreFilesToDo){
+	for (size_t fileIndex = 0; fileIndex < filesToDo.size(); fileIndex++){
 
-		if (yesNoAll == "*"){
-			if (getline(filesList, fileName)){
-				cout << endl << "Now processing cam input file: " << fileName << endl;
-				if (pleaseTrace) traceFile << endl << "Now processing cam input file: " << fileName << endl;
-				vehiclesGoingRight.erase(vehiclesGoingRight.begin(), vehiclesGoingRight.end());  // Reinitialize
-				vehiclesGoingLeft.erase(vehiclesGoingLeft.begin(), vehiclesGoingLeft.end());   // Reinitialize  
-				bailing = false;  // Reinitialize
-				startFrame = 0.0;
-			}
-			else{
-				cout << endl << "Done processing all input files: " << fileName << endl;
-				if (pleaseTrace) traceFile << endl << "Done processing all input files: " << fileName << endl;
-				moreFilesToDo = false;
-				filesList.close();
-				break; 
-			}
+		string FName = filesToDo[fileIndex];
+		fileName = fs::path(FName).filename().string();
+		if (fileIndex > 0){  // Each further file of a "*" run starts from scratch at frame 0
+			vehiclesGoingRight.clear();
+			vehiclesGoingLeft.clear();
+			bailing = false;
+			startFrame = 0.0;
 		}
-		else {  // yesNoAll must == "y";  "fileName" is the name of the file to process
-			moreFilesToDo = false;
-			filesList.close();
-		}
-
-
-		// dirName is the directory name (only) in which input files reside.  Its name is expected to be of the form: yyyymmdd
-		// dirPath is the path to the directory in which input (.avi) files are located; it includes dirName at the end, but no trailing reverse slashes 
-		// fileName is the name of the current avi file to be processed.  Its form is "manual_" <yyyymmddhhmmss> ".avi"   <<-- no spaces
-
-		string FName = inputPath.empty() ? dirPath + "\\" + fileName : inputPath;
-		cout << "Trying to capture from " + FName << endl;
+		cout << endl << "Now processing " << FName << endl;
+		if (pleaseTrace) traceFile << endl << "Now processing cam input file: " << fileName << endl;
 		capture.open(FName);
 
 		if (!capture.isOpened()){
-			cout << "ERROR ACQUIRING VIDEO FEED\n";
-			getchar();
-			return -1;
+			cerr << "Can't open video " << FName << endl
+				<< "Check the path, and that this OpenCV build can decode it (try converting with: ffmpeg -i in.ext -c:v libx264 out.mp4)." << endl;
+			return EXIT_FAILURE;
 		}
 
-		double frameWidth = capture.get(CAP_PROP_FRAME_WIDTH);
-		if (frameWidth != 1280.0){
-			cout << "Frame width is not 1280.  Bailing";
-			return - 1;
-		}
+		// Any resolution works: readFrame() scales to 1280x720.  Any frame rate works: computeFinalSpeed() rescales the
+		// calibration frame counts from CalibrationFPS to this rate.  Below ~20 fps cars jump too far between frames to track well.
+		int width = int(capture.get(CAP_PROP_FRAME_WIDTH)), height = int(capture.get(CAP_PROP_FRAME_HEIGHT));
+		if (width != Globals::FrameWidth || height != Globals::FrameHeight)
+			cout << "Scaling " << width << "x" << height << " frames to " << Globals::FrameWidth << "x" << Globals::FrameHeight
+				<< "; VST.cfg pixel values refer to the scaled frame." << endl;
 		double FPS = capture.get(CAP_PROP_FPS);
-		if (FPS != 30.0){
-			cout << "Frame rate is not 30.  Bailing";
-			return -1;
+		if (!(FPS > 0 && FPS < 1000)){
+			cout << "Video doesn't report a usable frame rate; assuming CalibrationFPS (" << g.CalibrationFPS << ")." << endl;
+			FPS = g.CalibrationFPS;
 		}
+		else if (fabs(FPS - g.CalibrationFPS) > 0.01)
+			cout << "Video is " << FPS << " fps and calibration was counted at " << g.CalibrationFPS << " fps; speeds are scaled to match." << endl;
+		if (FPS < 20)
+			cout << "Warning: " << FPS << " fps is low for tracking; 30 fps is recommended." << endl;
+		g.videoFPS = FPS;
 
 		capture.set(CAP_PROP_POS_FRAMES, startFrame);  // Set frame number to start at, in first file to be processed;  Remaining files will start at zero.
 		frameNumber = int(startFrame);
 		int delay = 10;   //at least 10ms delay is necessary for proper operation of this program <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
-		//work through frame pairs looking for differences
-		while (capture.get(CAP_PROP_POS_FRAMES) < capture.get(CAP_PROP_FRAME_COUNT) - 2){ // minus 2 to prevent reading empty frame at end.
-			capture.read(frame1);
+		//work through frame pairs looking for differences, until the video runs out.  Reading (rather than trusting
+		// CAP_PROP_FRAME_COUNT, which is an estimate or 0 for many H.264 and streamed sources) avoids processing empty frames.
+		while (readFrame(capture, frame1) && readFrame(capture, frame2)){
 			Mat ROIFr1 = frame1(AnalysisBox).clone();  			// Carve out the analysis box for motion detection
 			cv::cvtColor(ROIFr1, grayImage1, COLOR_BGR2GRAY);  //convert ROIFr1 to gray scale for frame differencing
-			capture.read(frame2);
 			Mat ROIFr2 = frame2(AnalysisBox).clone();   		   // Carve out the analysis box for motion detection
 			cv::cvtColor(ROIFr2, grayImage2, COLOR_BGR2GRAY);   //convert ROIFr2 to gray scale for frame differencing
 			cv::absdiff(grayImage1, grayImage2, differenceImage);   			//perform frame differencing
