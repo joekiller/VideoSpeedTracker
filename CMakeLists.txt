@@ -20,6 +20,11 @@ add_executable(VideoSpeedTracker
   ${VST_DIR}/Snapshot.cpp)
 target_include_directories(VideoSpeedTracker PRIVATE ${VST_DIR})
 target_link_libraries(VideoSpeedTracker PRIVATE ${OpenCV_LIBS})
+# Keep a*b+c as two roundings everywhere. GCC on arm64 and Clang fuse them into FMA by default,
+# which nudges tracked pixel positions by one and makes speeds differ from the x86 baseline.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(VideoSpeedTracker PRIVATE -ffp-contract=off)
+endif()
 
 enable_testing()
 add_test(NAME sample_video_baseline
