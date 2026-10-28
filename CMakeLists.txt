@@ -28,3 +28,30 @@ add_test(NAME sample_video_baseline
     -DSRC=${CMAKE_SOURCE_DIR}
     -DOUT=${CMAKE_BINARY_DIR}/test-out
     -P ${CMAKE_SOURCE_DIR}/tests/run_sample.cmake)
+
+# Packaging for release builds (.github/workflows/release.yml).
+# Linux installs into the usual bin/ + share/ tree so `cpack -G DEB` can build a .deb whose OpenCV
+# runtime dependencies are filled in by dpkg-shlibdeps for the distro it was built on.
+# Windows and macOS install flat (exe next to VST.cfg) into a folder that gets zipped as-is.
+set(VST_VERSION "0.0.0" CACHE STRING "Version stamped into release packages")
+include(GNUInstallDirs)
+if(WIN32 OR APPLE)
+  set(VST_BIN_DIR .)
+  set(VST_DATA_DIR .)
+else()
+  set(VST_BIN_DIR ${CMAKE_INSTALL_BINDIR})
+  set(VST_DATA_DIR ${CMAKE_INSTALL_DATADIR}/videospeedtracker)
+endif()
+install(TARGETS VideoSpeedTracker RUNTIME DESTINATION ${VST_BIN_DIR})
+install(FILES ${CMAKE_SOURCE_DIR}/bin/VST.cfg ${CMAKE_SOURCE_DIR}/README.md DESTINATION ${VST_DATA_DIR})
+
+set(CPACK_PACKAGE_NAME videospeedtracker)
+set(CPACK_PACKAGE_VERSION ${VST_VERSION})
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Measures vehicle speeds from fixed-camera street video")
+set(CPACK_PACKAGE_CONTACT "Joe Lawson <joe@joekiller.com>")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/joekiller/VideoSpeedTracker")
+set(CPACK_PACKAGING_INSTALL_PREFIX /usr)
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_SECTION video)
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+include(CPack)

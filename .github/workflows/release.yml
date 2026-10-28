@@ -1,0 +1,193 @@
+# Builds every release binary and attaches it to a GitHub release.
+#
+# Cut a release by pushing a version tag:   git tag v1.0.0 && git push origin v1.0.0
+# (or create the release in the GitHub UI with a new v* tag; that pushes the tag too).
+# The release is created with generated notes if it doesn't exist yet, otherwise the
+# assets are uploaded to it, replacing any with the same name.
+#
+# Pull requests that touch the build run everything except the publish step, so a broken
+# platform shows up before the tag does. Manual runs (workflow_dispatch) do the same on a
+# branch, and publish when started on a tag.
+#
+# Outputs (all built against the platform's own OpenCV 4 and checked with the sample-video ctest):
+#   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
+#                                                amd64 + arm64; apt pulls in the matching OpenCV runtime
+#   VideoSpeedTracker-<ver>-windows-x64.zip      exe + OpenCV/FFmpeg DLLs, no install needed
+#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv`
+#   SHA256SUMS
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - CMakeLists.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      # Tag builds are versioned from the tag (v1.2.3 -> 1.2.3); anything else gets a
+      # dpkg-sortable pre-release version (0.0.0~abc1234) and is never published.
+      - id: v
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          version="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${version:-0.0.0~${GITHUB_SHA::7}}" >> "$GITHUB_OUTPUT"
+
+  linux:
+    needs: meta
+    name: linux ${{ matrix.distro }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # One .deb per distro release because each ships a different OpenCV soname
+        # (bookworm 4.6, trixie 4.10, noble 4.6 after the t64 rename). arm64 builds run
+        # natively on GitHub's arm runners and cover 64-bit Raspberry Pi OS.
+        distro: [debian-bookworm, debian-trixie, ubuntu-24.04]
+        arch: [amd64, arm64]
+        include:
+          - distro: debian-bookworm
+            image: debian:bookworm
+          - distro: debian-trixie
+            image: debian:trixie
+          - distro: ubuntu-24.04
+            image: ubuntu:24.04
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Install toolchain and OpenCV
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file libopencv-dev
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVST_VERSION=${{ needs.meta.outputs.version }}
+          cmake --build build -j"$(nproc)"
+      - name: Sample video regression test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: |
+          (cd build && cpack -G DEB)
+          mkdir dist
+          cp build/videospeedtracker_*.deb \
+             "dist/videospeedtracker_${{ needs.meta.outputs.version }}_${{ matrix.distro }}_${{ matrix.arch }}.deb"
+          dpkg-deb --info dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.distro }}-${{ matrix.arch }}
+          path: dist/*
+
+  windows:
+    needs: meta
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      # Official OpenCV Windows build: a single opencv_world DLL plus the FFmpeg plugin DLL.
+      - name: Install OpenCV
+        run: |
+          choco install opencv -y --no-progress
+          $bin = (Get-ChildItem C:\tools\opencv\build\x64\vc*\bin | Select-Object -Last 1).FullName
+          "OPENCV_BIN=$bin" | Out-File -Append $env:GITHUB_ENV
+          $bin | Out-File -Append $env:GITHUB_PATH
+      - name: Build
+        run: |
+          cmake -S . -B build -A x64 -DOpenCV_DIR=C:/tools/opencv/build -DVST_VERSION=${{ needs.meta.outputs.version }}
+          cmake --build build --config Release
+      - name: Sample video regression test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Package
+        run: |
+          $name = "VideoSpeedTracker-${{ needs.meta.outputs.version }}-windows-x64"
+          cmake --install build --config Release --prefix "pkg/$name"
+          # Release DLLs only (the debug ones end in d.dll).
+          Get-ChildItem $env:OPENCV_BIN -Filter *.dll |
+            Where-Object { $_.Name -match '^opencv_(world\d+|videoio_ffmpeg\d+_64)\.dll$' } |
+            Copy-Item -Destination "pkg/$name"
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path "pkg/$name" -DestinationPath "dist/$name.zip"
+          Get-ChildItem -Recurse pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-x64
+          path: dist/*
+
+  macos:
+    needs: meta
+    runs-on: macos-14
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OpenCV
+        run: brew install opencv
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix opencv)" \
+                -DVST_VERSION=${{ needs.meta.outputs.version }}
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
+      - name: Sample video regression test
+        run: ctest --test-dir build --output-on-failure
+      # Links against Homebrew's OpenCV dylibs rather than bundling them (that would drag in
+      # FFmpeg and most of its codec stack), so the archive is for machines with Homebrew.
+      - name: Package
+        run: |
+          name="VideoSpeedTracker-${{ needs.meta.outputs.version }}-macos-arm64"
+          cmake --install build --prefix "pkg/$name"
+          printf 'Requires Homebrew OpenCV:  brew install opencv\n' > "pkg/$name/REQUIREMENTS.txt"
+          mkdir dist
+          tar -C pkg -czf "dist/$name.tar.gz" "$name"
+          otool -L "pkg/$name/VideoSpeedTracker"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-arm64
+          path: dist/*
+
+  publish:
+    needs: [meta, linux, windows, macos]
+    if: needs.meta.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Create or update the release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" * --clobber
+          else
+            gh release create "$TAG" * --verify-tag --generate-notes --title "$TAG"
+          fi

@@ -39,11 +39,10 @@ the oldest data) is what allows it to adapt to changing pixel rates as a vehicle
 the scene. Setting up as you see in Figure 2 of the included overview
 ([Overview and User Manual](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)) helps the tracker produce high quality results.
 
-4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile. If
-you’re executing a provided executable the required OpenCV 2.4.11 x64/vc12 runtime libraries (dll’s in
-Windows) are provided in /bin.
+4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile.
 
-   *Note:* the [CMake build](#building-on-linux--macos-with-opencv-4) added later uses OpenCV 4 instead.
+   *Note:* the [CMake build](#building-on-linux--macos-with-opencv-4) added later uses OpenCV 4 instead, and the
+   [release packages](#downloads) bundle or depend on the OpenCV 4 runtime they need.
 
 5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included [pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf) under docs
 ([Markdown version](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)).
@@ -66,12 +65,24 @@ directory if you answer “*” when asked for which file in a directory full of
 the IPCam directory, I create subdirectories with syntax yyyymmdd (e.g. 20160205) in which I place
 that day’s video files.
 
-## Running on Windows
+## Downloads
 
-Win7telx64 executables have been added on 15 Feb 2016. `bin/` holds `VideoSpeedTracker.exe`, the final
-highlights video processor `ProcessHiLites.exe`, their config files (`VST.cfg`, `ProcessHiLites.cfg`)
-and the OpenCV 2.4.11 runtime dll’s. See the section named
-[Installing Executables](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#installing-executables) in the User Manual.
+Prebuilt binaries are attached to each [GitHub release](https://github.com/joekiller/VideoSpeedTracker/releases),
+built from the CMake/OpenCV 4 sources by `.github/workflows/release.yml`:
+
+| Platform | File | Install |
+|---|---|---|
+| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (pulls in OpenCV); sample config in `/usr/share/videospeedtracker/VST.cfg` |
+| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip; the OpenCV and FFmpeg DLLs sit next to the exe |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
+
+To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`) or create a release with a new `v*`
+tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the
+packages and a `SHA256SUMS` file.
+
+The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
+still in the git history before the release workflow was added. `ProcessHiLites` (the highlights editor) has not been
+ported to OpenCV 4 yet, so it is not in the release packages.
 
 ## Building on Linux / macOS with OpenCV 4
 
