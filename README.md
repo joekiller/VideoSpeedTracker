@@ -5,7 +5,7 @@ Beyond a typical home computer, VST requires video from an HD camera, many of wh
 for less than $100 (e.g. the Foscam Fi9103EP, power over Ethernet, outdoor camera.  If you buy a POE camera,
 be sure to buy something like the TP-LINK TL-PoE150S - about $18 - to power it.).
 
-Win7telx64 executables have been added on 15 Feb 2016.  See the section named "Installing executables" in the
+Win7telx64 executables have been added on 15 Feb 2016.  See the section named [Installing Executables](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#installing-executables) in the
 User Manual.
 
 As of 31 March 2016, watch the use of the speed tracker in support of documenting Charlottesville, Virginia's current struggles with urban vehicular assault in its established residential neighborhoods at http://eyetach.github.io/CharlottesvilleSpeeds/.  
@@ -57,26 +57,26 @@ as it proceeds from an edge towards the center and back towards the far edge. My
 what’s known as a “piecewise, linear least squares” tracker. The piecewise part (throwing out
 the oldest data) is what allows it to adapt to changing pixel rates as a vehicle moves through
 the scene. Setting up as you see in Figure 2 of the included overview
-(in docs/Video Speed Tracker Overview and User Manual.md) helps the tracker produce high quality results.
+([Overview and User Manual](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)) helps the tracker produce high quality results.
 
 4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile. If
 you’re executing a provided executable the required OpenCV 2.4.11 x64/vc12 runtime libraries (dll’s in
 Windows) are provided in /bin.
 
-5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included pdf under docs.
+5. Set critical one time setup values in VST.cfg. These values are described in the [appendix](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix) of the User Manual.
 
 6. Create a location (the “prefixPath”) for five directories used by VST (and the final highlights
 video processor):
 
-  1. IPCam – You put directories for (typically) daily collections of .avi video files here.
+   1. IPCam – You put directories for (typically) daily collections of .avi video files here.
 
-  2. HiLites – VST outputs highlights videos into this directory
+   2. HiLites – VST outputs highlights videos into this directory
 
-    1.  forPosting – Subdirectory for output of final highlights video processor
+      1. forPosting – Subdirectory for output of final highlights video processor
 
-  3. Stats – VST puts csv files with tracked vehicle data here
+   3. Stats – VST puts csv files with tracked vehicle data here
 
-  4. Trace – VST puts debug files here.
+   4. Trace – VST puts debug files here.
 
 All of the files VST creates are given names derived from the input video file name (or the video file
 directory if you answer “*” when asked for which file in a directory full of video files to process.) For
@@ -86,7 +86,7 @@ that day’s video files.
 ## Additional Documentation
 
 - A much more detailed version of this readme is available
-[**here.**](docs/Video Speed Tracker Overview and User Manual.md)
+[**here.**](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)
 
 ## Original Author and Development Lead
 - Paul Reynolds (reynolds@virginia.edu) www.cs.virginia.edu/~pfr
