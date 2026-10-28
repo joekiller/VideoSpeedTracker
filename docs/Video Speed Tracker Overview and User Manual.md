@@ -4,7 +4,7 @@ vehicle speed measuring system that can track bidirectional traffic, one
 lane in each direction (e.g. a typical residential street). Software for
 VST can be found at <https://github.com/pfr/VideoSpeedTracker>. Beyond a
 typical home computer, VST requires video from an HD camera, many of
-which can be purchased for less than $100 (e.g. the Foscam Fi9103EP,
+which can be purchased for less than $100 (e.g. the Foscam FI9803EP,
 power over Ethernet, outdoor camera). If you plan to modify and
 recompile VST then you need to have OpenCV c 2.4.11 installed.
 
@@ -428,7 +428,7 @@ executables running:
 
 -   Edit the two config files (VST.cfg and ProcessHiLites.cfg), changing
     the value for the first entry in each, “dataPathPrefix”, to the
-    directory in which you placed the five directories you created in
+    directory in which you placed the directories you created in
     the previous step.
 
 -   Feel free to use the avi file I’ve provided in the repo
@@ -478,7 +478,7 @@ executables running:
 5.  Set critical one time setup values in VST.cfg. These values are
     described in the [appendix](#appendix).
 
-6.  Create a location (the “prefixPath”) for five directories used by
+6.  Create a location (the “prefixPath”) for four directories (plus one subdirectory) used by
     VST (and the final highlights video processor):
 
     1.  IPCam – You put directories for (typically) daily collections
