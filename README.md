@@ -72,13 +72,35 @@ built from the CMake/OpenCV 4 sources by `.github/workflows/release.yml`:
 
 | Platform | File | Install |
 |---|---|---|
-| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (pulls in OpenCV); sample config in `/usr/share/videospeedtracker/VST.cfg` |
-| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip; the OpenCV and FFmpeg DLLs sit next to the exe |
+| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (pulls in OpenCV) |
+| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; the OpenCV, FFmpeg and MSVC runtime DLLs sit next to the exes |
 | macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
 
 To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`) or create a release with a new `v*`
 tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the
 packages and a `SHA256SUMS` file.
+
+### Where config and data live
+
+Without `--config`, each program uses `VST.cfg` / `ProcessHiLites.cfg` from the working directory if one is there
+(the original 2016 workflow), otherwise its per-user copy. The first run creates that copy from the template installed
+with the program, points its `dataPathPrefix` at the per-user data folder, and creates `IPCam`, `HiLites/forPosting`,
+`Stats` and `Trace` inside it. The install folder is never written, so the same binaries work from a .deb, an unzipped
+folder, or a Store/MSIX or `.app` package.
+
+| | Config | Data |
+|---|---|---|
+| Linux | `$XDG_CONFIG_HOME/videospeedtracker` (`~/.config/videospeedtracker`) | `$XDG_DATA_HOME/videospeedtracker` (`~/.local/share/videospeedtracker`) |
+| Windows | `%APPDATA%\VideoSpeedTracker` | `%LOCALAPPDATA%\VideoSpeedTracker` |
+| macOS | `~/Library/Application Support/VideoSpeedTracker` | `~/Library/Application Support/VideoSpeedTracker/Data` |
+
+Each run prints the config file it used.
+
+### Licenses
+
+VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. The Windows zip also redistributes OpenCV
+(Apache 2.0), its bundled FFmpeg (LGPL 2.1) and other third-party code, with their license texts in `licenses/opencv`.
+The Linux and macOS packages use the OpenCV installed by apt or Homebrew, which ships its own licenses.
 
 The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
 still in the git history before the release workflow was added. Every package contains both `VideoSpeedTracker` and
@@ -127,4 +149,4 @@ of December 2015 – January 2016 data)
 
 ## License
 
-- BSD 3-Clause
+- BSD 3-Clause, see [LICENSE](LICENSE)

@@ -30,7 +30,7 @@
 //  - paths are joined with std::filesystem instead of hard-coded backslashes; forPosting is created if missing
 //  - the output codec is mp4v (fourcc -1 popped up a codec picker dialog that only exists on Windows)
 //  - config errors exit instead of spinning for ctrl-c, and the frame buffer grows instead of overflowing at 200 frames
-//  - optional --config / --input / --output arguments skip the config lookup in the working directory and the file prompt
+//  - optional --config / --input / --output arguments; without --config the per-user config is used (see Common/UserPaths.h)
 
 #include <opencv2/opencv.hpp>
 #include <iostream>
@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include "UserPaths.h"
 
 #define CVBlack 0,0,0
 #define CVCyan 255,255,153
@@ -159,13 +160,13 @@ vector<string> listVideos(const fs::path& dir){
 
 void printUsage(){
 	cout << "Usage: ProcessHiLites [options]" << endl
-		<< "  --config PATH   ProcessHiLites.cfg to use [ProcessHiLites.cfg]" << endl
+		<< "  --config PATH   ProcessHiLites.cfg to use [./ProcessHiLites.cfg, else the per-user config, created on first run]" << endl
 		<< "  --input PATH    highlights video to edit [prompt for one in <dataPathPrefix>/HiLites]" << endl
 		<< "  --output PATH   edited video [<input dir>/forPosting/forPost_<input name>]" << endl;
 }
 
 int main(int argc, char** argv){
-	string configPath = "ProcessHiLites.cfg";
+	string configPath;  // empty = userpaths::resolveConfig("ProcessHiLites.cfg")
 	string inputPath, outputPath;
 	for (int i = 1; i < argc; i++){
 		string a = argv[i];
@@ -178,7 +179,8 @@ int main(int argc, char** argv){
 	}
 
 // Get data path prefix and crop corner from ProcessHiLites.cfg
-	if (!readConfig(configPath)) return -1;
+	if (configPath.empty()) configPath = userpaths::resolveConfig("ProcessHiLites.cfg");
+	if (configPath.empty() || !readConfig(configPath)) return -1;
 
 	fs::path dirPath;
 	if (!inputPath.empty()){

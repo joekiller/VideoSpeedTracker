@@ -13,7 +13,7 @@
 # Outputs (all built against the platform's own OpenCV 4 and checked with the sample-video ctest):
 #   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
 #                                                amd64 + arm64; apt pulls in the matching OpenCV runtime
-#   VideoSpeedTracker-<ver>-windows-x64.zip      exes + OpenCV/FFmpeg DLLs, no install needed
+#   VideoSpeedTracker-<ver>-windows-x64.zip      exes + OpenCV/FFmpeg/MSVC runtime DLLs and their licenses
 #   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv`
 #   SHA256SUMS
 name: release
@@ -126,6 +126,11 @@ jobs:
           Get-ChildItem $env:OPENCV_BIN -Filter *.dll |
             Where-Object { $_.Name -match '^opencv_(world\d+|videoio_ffmpeg\d+_64)\.dll$' } |
             Copy-Item -Destination "pkg/$name"
+          # Third-party notices for what the zip redistributes: OpenCV (Apache-2.0) and the libraries
+          # inside its DLLs, including FFmpeg (LGPL-2.1) in opencv_videoio_ffmpeg.
+          $lic = New-Item -ItemType Directory "pkg/$name/licenses/opencv"
+          Copy-Item C:\tools\opencv\LICENSE "$lic/LICENSE.txt"
+          Copy-Item C:\tools\opencv\build\etc\licenses\* $lic
           New-Item -ItemType Directory dist | Out-Null
           Compress-Archive -Path "pkg/$name" -DestinationPath "dist/$name.zip"
           Get-ChildItem -Recurse pkg
