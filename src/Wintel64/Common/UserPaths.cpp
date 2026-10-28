@@ -75,7 +75,8 @@ bool seedConfig(const fs::path& from, const fs::path& to){
 	error_code ec;
 	fs::create_directories(to.parent_path(), ec);
 	ofstream out(to);
-	for (const string& l : lines) out << l << '\n';
+	// No newline after the last line: the 2016 VST.cfg reader treats a trailing empty line as an error.
+	for (size_t i = 0; i < lines.size(); i++) out << (i ? "\n" : "") << lines[i];
 	return bool(out);
 }
 

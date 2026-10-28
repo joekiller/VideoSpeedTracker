@@ -45,6 +45,16 @@ add_test(NAME sample_video_baseline
     -DSRC=${CMAKE_SOURCE_DIR}
     -DOUT=${CMAKE_BINARY_DIR}/test-out
     -P ${CMAKE_SOURCE_DIR}/tests/run_sample.cmake)
+# Windows resolves %APPDATA% through the Known Folder API, which an env override can't redirect,
+# so the first-run test would touch the real profile there; it runs on Linux and macOS only.
+if(NOT WIN32)
+  add_test(NAME first_run_user_config
+    COMMAND ${CMAKE_COMMAND}
+      -DBUILD=${CMAKE_BINARY_DIR}
+      -DSRC=${CMAKE_SOURCE_DIR}
+      -DOUT=${CMAKE_BINARY_DIR}/first-run
+      -P ${CMAKE_SOURCE_DIR}/tests/first_run.cmake)
+endif()
 
 # Packaging for release builds (.github/workflows/release.yml).
 # Linux installs into the usual bin/ + share/ tree so `cpack -G DEB` can build a .deb whose OpenCV
