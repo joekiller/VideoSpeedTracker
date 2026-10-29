@@ -16,6 +16,7 @@
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes + OpenCV/FFmpeg/MSVC runtime DLLs and their licenses
 #   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv`
 #   SHA256SUMS
+# Each package also gets a GitHub artifact attestation (Sigstore-signed build provenance).
 name: release
 
 on:
@@ -155,6 +156,8 @@ jobs:
   macos:
     permissions:
       contents: write
+      id-token: write      # Sigstore signing for the provenance attestation
+      attestations: write
     needs: [meta, publish]
     if: always() && needs.meta.result == 'success' && needs.publish.result != 'failure'
     runs-on: macos-latest
@@ -186,6 +189,11 @@ jobs:
         with:
           name: dist-macos-arm64
           path: dist/*
+      - name: Attest build provenance
+        if: needs.publish.result == 'success'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
       - name: Add to the release
         if: needs.publish.result == 'success'
         working-directory: dist
@@ -207,12 +215,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write      # Sigstore signing for the provenance attestations
+      attestations: write
     steps:
       - uses: actions/download-artifact@v5
         with:
           pattern: dist-*
           merge-multiple: true
           path: dist
+      # Signed SLSA provenance for every package, tying each file's digest to this workflow run,
+      # commit and tag; verify with `gh attestation verify <file> -R joekiller/VideoSpeedTracker`.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.zip
       - name: Create or update the release
         working-directory: dist
         env:

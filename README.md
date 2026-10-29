@@ -80,6 +80,20 @@ To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`
 tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the
 packages and a `SHA256SUMS` file.
 
+### Verifying a download
+
+Every package is signed by GitHub at build time with an [artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
+(Sigstore-backed SLSA build provenance), which proves the file was built by this repository's release workflow from the
+tagged commit. With the [GitHub CLI](https://cli.github.com/):
+
+```
+gh attestation verify videospeedtracker_1.0.0_debian-bookworm_arm64.deb -R joekiller/VideoSpeedTracker
+```
+
+`SHA256SUMS` lists every file's checksum (`sha256sum -c SHA256SUMS --ignore-missing`). These attestations are not
+Windows Authenticode or Apple notarization, so Windows SmartScreen and macOS Gatekeeper still warn on first launch
+(on macOS, clear it with `xattr -d com.apple.quarantine VideoSpeedTracker ProcessHiLites`).
+
 ### Where config and data live
 
 Without `--config`, each program uses `VST.cfg` / `ProcessHiLites.cfg` from the working directory if one is there
