@@ -1,5 +1,5 @@
 # Cross-platform build for VideoSpeedTracker (VST) and the highlights processor (ProcessHiLites).
-# Builds the original sources in src/Wintel64 against OpenCV 4 on Linux, macOS or Windows.
+# Builds the original sources in src/Wintel64 against OpenCV 4 or 5 on Linux, macOS or Windows.
 cmake_minimum_required(VERSION 3.16)
 project(VideoSpeedTracker CXX)
 
@@ -18,7 +18,6 @@ elseif(OpenCV_VERSION VERSION_GREATER_EQUAL 5)
   find_package(OpenCV REQUIRED COMPONENTS core imgproc geometry highgui videoio)
 endif()
 message(STATUS "Using OpenCV ${OpenCV_VERSION} (${OpenCV_INSTALL_PATH})")
-message(STATUS "Using OpenCV ${OpenCV_VERSION}")
 
 set(VST_DIR ${CMAKE_SOURCE_DIR}/src/Wintel64/VideoSpeedTracker)
 set(COMMON_DIR ${CMAKE_SOURCE_DIR}/src/Wintel64/Common)

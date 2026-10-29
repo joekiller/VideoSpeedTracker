@@ -1,40 +1,18 @@
-========================================================================
-    CONSOLE APPLICATION : VideoSpeedTracker Project Overview
-========================================================================
+VideoSpeedTracker sources
+=========================
 
-AppWizard has created this VideoSpeedTracker application for you.
+The Visual Studio AppWizard notes that used to be here described project files
+(VideoSpeedTracker.vcxproj, StdAfx.h/.cpp) that were never committed. The
+programs now build with CMake from the top-level CMakeLists.txt; see
+"Building from source" in README.md.
 
-This file contains a summary of what you will find in each of the files that
-make up your VideoSpeedTracker application.
-
-
-VideoSpeedTracker.vcxproj
-    This is the main project file for VC++ projects generated using an Application Wizard.
-    It contains information about the version of Visual C++ that generated the file, and
-    information about the platforms, configurations, and project features selected with the
-    Application Wizard.
-
-VideoSpeedTracker.vcxproj.filters
-    This is the filters file for VC++ projects generated using an Application Wizard. 
-    It contains information about the association between the files in your project 
-    and the filters. This association is used in the IDE to show grouping of files with
-    similar extensions under a specific node (for e.g. ".cpp" files are associated with the
-    "Source Files" filter).
-
-VideoSpeedTracker.cpp
-    This is the main application source file.
-
-/////////////////////////////////////////////////////////////////////////////
-Other standard files:
-
-StdAfx.h, StdAfx.cpp
-    These files are used to build a precompiled header (PCH) file
-    named VideoSpeedTracker.pch and a precompiled types file named StdAfx.obj.
-
-/////////////////////////////////////////////////////////////////////////////
-Other notes:
-
-AppWizard uses "TODO:" comments to indicate parts of the source code you
-should add to or customize.
-
-/////////////////////////////////////////////////////////////////////////////
+videoSpeedTracker.cpp   main(): command-line options, interactive setup, the
+                        frame-differencing loop, csv/trace/highlights output
+Globals.cpp/.h          VST.cfg settings, their defaults and the config parser
+VehicleDynamics.cpp/.h  per-vehicle predictive tracker and speed computation
+Projection.cpp/.h       a predicted vehicle box, direction state and velocity
+Snapshot.cpp/.h         one observed vehicle box at a frame number
+VST.cfg                 copy of bin/VST.cfg, the sample config that is
+                        installed and used by the tests
+../Common/UserPaths.*   per-user config and data folders shared with
+                        ProcessHiLites
