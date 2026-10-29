@@ -106,6 +106,13 @@ jobs:
   windows:
     needs: meta
     runs-on: windows-2022
+    permissions:
+      contents: read
+      id-token: write      # OIDC login to Azure for Artifact Signing
+    env:
+      # Authenticode signing runs only once the Azure Artifact Signing secrets/variables are set
+      # (see "Code signing" in README.md); without them the zip ships unsigned as before.
+      SIGN_WINDOWS: ${{ secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
     defaults:
       run:
         shell: pwsh
@@ -124,9 +131,10 @@ jobs:
           cmake --build build --config Release
       - name: Sample video regression test
         run: ctest --test-dir build -C Release --output-on-failure
-      - name: Package
+      - name: Stage package
         run: |
           $name = "VideoSpeedTracker-${{ needs.meta.outputs.version }}-windows-x64"
+          "PKG_NAME=$name" | Out-File -Append $env:GITHUB_ENV
           cmake --install build --config Release --prefix "pkg/$name"
           # Release DLLs only (the debug ones end in d.dll).
           Get-ChildItem $env:OPENCV_BIN -Filter *.dll |
@@ -141,9 +149,32 @@ jobs:
           Copy-Item $opencvLicense "$lic/LICENSE.txt"
           Copy-Item C:\tools\opencv\build\etc\licenses\* $lic -ErrorAction Stop
           Get-ChildItem $lic
+      - name: Azure login
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      # Signs only our two exes; the OpenCV DLLs are third-party and the MSVC runtime is Microsoft-signed.
+      - name: Authenticode-sign the executables
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\pkg\${{ env.PKG_NAME }}
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Zip
+        run: |
           New-Item -ItemType Directory dist | Out-Null
-          Compress-Archive -Path "pkg/$name" -DestinationPath "dist/$name.zip"
+          Compress-Archive -Path "pkg/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
           Get-ChildItem -Recurse pkg
+          Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" | Format-Table Status, Path -AutoSize
       - uses: actions/upload-artifact@v5
         with:
           name: dist-windows-x64
@@ -164,6 +195,9 @@ jobs:
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
+      # Developer ID signing + notarization runs only once the Apple secrets are set (see
+      # "Code signing" in README.md); without them the binaries keep the linker's ad-hoc signature.
+      SIGN_MACOS: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
       - uses: actions/checkout@v5
       - name: Install OpenCV
@@ -177,11 +211,46 @@ jobs:
         run: ctest --test-dir build --output-on-failure
       # Links against Homebrew's OpenCV dylibs rather than bundling them (that would drag in
       # FFmpeg and most of its codec stack), so the archive is for machines with Homebrew.
-      - name: Package
+      - name: Stage package
         run: |
           name="VideoSpeedTracker-${{ needs.meta.outputs.version }}-macos-arm64"
+          echo "PKG_NAME=$name" >> "$GITHUB_ENV"
           cmake --install build --prefix "pkg/$name"
           printf 'Requires Homebrew OpenCV:  brew install opencv\n' > "pkg/$name/REQUIREMENTS.txt"
+      # Hardened runtime is required for notarization; the entitlement lets it load Homebrew's
+      # OpenCV dylibs, which aren't signed by our team. Bare executables can't be stapled, so
+      # Gatekeeper looks the notarization ticket up online on first launch.
+      - name: Sign and notarize
+        if: env.SIGN_MACOS == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          kc_pass="$(uuidgen)"
+          security create-keychain -p "$kc_pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$kc_pass" "$keychain"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          for exe in VideoSpeedTracker ProcessHiLites; do
+            codesign --force --timestamp --options runtime \
+              --entitlements packaging/macos-entitlements.plist \
+              --sign "Developer ID Application" --keychain "$keychain" "pkg/$PKG_NAME/$exe"
+            codesign --verify --strict --verbose=2 "pkg/$PKG_NAME/$exe"
+          done
+          ditto -c -k --keepParent "pkg/$PKG_NAME" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          security delete-keychain "$keychain"
+      - name: Tar
+        run: |
+          name="$PKG_NAME"
           mkdir dist
           tar -C pkg -czf "dist/$name.tar.gz" "$name"
           otool -L "pkg/$name/VideoSpeedTracker"
