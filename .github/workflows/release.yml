@@ -156,7 +156,9 @@ jobs:
           $dll.DirectoryName | Out-File -Append $env:GITHUB_PATH
       - name: Build
         run: |
-          cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH=C:/opencv -DVST_VERSION=${{ needs.meta.outputs.version }}
+          # OpenCV's Windows config picks shared libs unless told otherwise. The -D values are quoted
+          # because pwsh splits an unquoted 0.0.0~sha at the first dot.
+          cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH=C:/opencv -DOpenCV_STATIC=ON "-DVST_VERSION=${{ needs.meta.outputs.version }}"
           cmake --build build --config Release
       - name: Sample video regression test
         run: ctest --test-dir build -C Release --output-on-failure
