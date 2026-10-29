@@ -44,12 +44,13 @@ the scene. Setting up as you see in Figure 2 of the included overview
 
 4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile.
 
-   *Note:* the [CMake build](#building-on-linux--macos) added later uses OpenCV 5 (or 4) instead, and the
+   *Note:* the [CMake build](#building-from-source) added later uses OpenCV 5 (or 4) instead, and the
    [release packages](#downloads) are built on OpenCV 5.
 
 5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included [pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf) under docs
 ([Markdown version](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)).
-   Keys can be in any order, and blank and `#` comment lines are fine. See [Calibrating speed](#calibrating-speed).
+   Keys can be in any order and any letter case, blank and `#` comment lines are fine, and a key left out keeps its
+   built-in default. See [Calibrating speed](#calibrating-speed).
 
 6. Create a location (the “prefixPath”) for five directories used by VST (and the final highlights
 video processor):
@@ -68,6 +69,11 @@ All of the files VST creates are given names derived from the input video file n
 directory if you answer “*” when asked for which file in a directory full of video files to process.) For
 the IPCam directory, I create subdirectories with syntax yyyymmdd (e.g. 20160205) in which I place
 that day’s video files.
+
+*Note:* when no `VST.cfg` is in the working directory and `--config` isn't given, the first run creates a per-user
+config and these folders for you (see [Where config and data live](#where-config-and-data-live)). Interactive mode
+also creates `Stats`, `Trace` and `HiLites` under `dataPathPrefix` if they are missing; `IPCam` must already hold at
+least one folder of videos.
 
 ## Downloads
 
@@ -148,17 +154,35 @@ The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live 
 still in the git history before the release workflow was added. Every package contains both `VideoSpeedTracker` and
 the highlights editor `ProcessHiLites`, with their sample configs.
 
-## Building on Linux / macOS
+## Building from source
 
-The sources under `src/Wintel64` build with CMake against OpenCV 5 or 4. The distro's OpenCV 4 is the quickest
-start (tested with 4.6 on Ubuntu 24.04); `packaging/build-opencv.sh <prefix>` builds the static OpenCV 5 the
-release packages use, then pass `-DCMAKE_PREFIX_PATH=<prefix>`. On macOS, `brew install opencv` gives 5.x.
+The sources under `src/Wintel64` build with CMake (3.16 or newer, C++17) against OpenCV 4 or 5; CMake stops with an
+error on anything older. The distro's OpenCV 4 is the quickest start (tested with 4.6 on Ubuntu 24.04, which is what
+`.github/workflows/build.yml` uses):
 
 ```
 sudo apt-get install libopencv-dev cmake g++
 cmake -S . -B build && cmake --build build -j
-ctest --test-dir build          # runs the bundled 2016 sample video and checks speeds against tests/baseline_*.csv
+ctest --test-dir build
 ```
+
+`ctest` runs three checks: the bundled 2016 sample video against `tests/baseline_*.csv` (same vehicles and directions,
+speeds within 1 MPH), the `VST.cfg` parser and argument errors, and the first-run per-user config (Linux and macOS
+only).
+
+To build what the release packages use instead:
+
+- **Linux:** `packaging/build-opencv.sh /opt/opencv` builds a static OpenCV 5.0.0 (it needs the FFmpeg and GTK 3
+  `-dev` packages listed in `.github/workflows/release.yml`), then add `-DCMAKE_PREFIX_PATH=/opt/opencv` to the first
+  `cmake` line.
+- **macOS:** `brew install opencv cmake`, then
+  `cmake -S . -B build -DCMAKE_PREFIX_PATH="$(brew --prefix opencv)"`.
+- **Windows** (Visual Studio 2022 and Git Bash): `packaging/build-opencv.sh C:/opencv`, then
+  `cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH=C:/opencv -DOpenCV_STATIC=ON` and
+  `cmake --build build --config Release`. Put the `opencv_videoio_ffmpeg*_64.dll` found under `C:\opencv` next to the
+  exes (or its folder on `PATH`) so videos can be decoded; run the tests with `ctest --test-dir build -C Release`.
+
+`OPENCV_VERSION=<tag>` makes `build-opencv.sh` build another OpenCV tag.
 
 Run with no arguments for the original interactive mode. Pass options to skip the prompts and run without windows:
 
@@ -169,16 +193,22 @@ build/VideoSpeedTracker --headless \
   --highlights hilites.mp4 --hl-min 35
 ```
 
-`--help` lists every option. The 8.6 minute sample processes in about 20 seconds headless (roughly 25× real time).
+`--help` lists every option; `--opt=value` works too. Without `--stats` the csv is `stats_<input name>.csv` in the
+working directory, and `--egregious` defaults to the speed limit + 10. The 8.6 minute sample processes in about
+20 seconds headless (roughly 25× real time).
 
 `ProcessHiLites` (the highlights editor, also built by CMake) steps through a highlights video one vehicle at a time
-and writes the ones you keep, cropped to 640×360, to `forPosting/forPost_<name>`. It needs a display. With no arguments
-it reads `ProcessHiLites.cfg` from the working directory and offers the videos in `<dataPathPrefix>/HiLites`; or name
-the files directly:
+and writes the ones you keep, cropped to 640×360 at (`CropLeft`, `CropTop`), to `forPosting/forPost_<name>` in the input
+video's folder. It needs a display. With no arguments it finds `ProcessHiLites.cfg` the same way VST finds `VST.cfg`
+(working directory, else the per-user copy) and offers the `.avi` and `.mp4` files in `<dataPathPrefix>/HiLites` one at
+a time; or name the files directly:
 
 ```
 build/ProcessHiLites --config bin/ProcessHiLites.cfg --input hilites.mp4 [--output keepers.mp4]
 ```
+
+Unlike `VST.cfg`, `ProcessHiLites.cfg` keeps the strict 2016 format: exactly three settings, `dataPathPrefix`,
+`CropLeft` and `CropTop`, in that order. Blank lines and trailing `# comments` are fine; comment-only lines are not.
 
 ## Calibrating speed
 
@@ -191,9 +221,10 @@ speed = CalibrationSpeed × CalibrationFrames × (video fps / CalibrationFPS) / 
 
 Record yourself driving through the zone in each direction at a steady, known speed, count the frames each pass took,
 and put them in `CalibrationFramesL2R` / `CalibrationFramesR2L`, with the speed you drove as `CalibrationSpeed` (default
-25 MPH) and the camera's frame rate as `CalibrationFPS` (default 30). The speed limit you give VST (`--speed-limit` or
-the interactive prompt) only colors the results (green at or under, yellow over, red at or above the egregious bound).
-It does not change the measured speeds.
+25 MPH) and the frame rate of the calibration video as `CalibrationFPS` (default 30). The speed limit you give VST (`--speed-limit` or
+the interactive prompt) only colors the results (green at or under, yellow over, red at or above the egregious bound),
+and the csv marks a speed with `*****` when it is more than 20 MPH over the egregious bound. Neither changes the
+measured speeds. If a video doesn't report a frame rate, VST assumes `CalibrationFPS`.
 
 ## Troubleshooting
 
