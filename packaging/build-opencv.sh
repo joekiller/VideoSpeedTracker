@@ -20,7 +20,10 @@ git clone --depth 1 --branch "$version" https://github.com/opencv/opencv.git "$w
 
 extra=()
 case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) extra+=(-A x64 -DBUILD_WITH_STATIC_CRT=OFF) ;;  # match VST's /MD runtime
+  # /MD to match VST's runtime. OpenCV probes for an optional ASM compiler and would pick the
+  # runner's MinGW gcc, which flips CMake's MINGW flag and adds pthread.lib to OpenCV's link
+  # interface; MSVC needs no generic ASM compiler, so the probe is skipped.
+  MINGW*|MSYS*|CYGWIN*) extra+=(-A x64 -DBUILD_WITH_STATIC_CRT=OFF -DCMAKE_ASM_COMPILER=CMAKE_ASM_COMPILER-NOTFOUND) ;;
 esac
 
 cmake -S "$work/src" -B "$work/build" "${extra[@]}" \
