@@ -71,9 +71,10 @@ the IPCam directory, I create subdirectories with syntax yyyymmdd (e.g. 20160205
 that day’s video files.
 
 *Note:* when no `VST.cfg` is in the working directory and `--config` isn't given, the first run creates a per-user
-config and these folders for you (see [Where config and data live](#where-config-and-data-live)). Interactive mode
-also creates `Stats`, `Trace` and `HiLites` under `dataPathPrefix` if they are missing; `IPCam` must already hold at
-least one folder of videos.
+config and these folders for you (see [Where config and data live](#where-config-and-data-live)). A blank
+`dataPathPrefix`, as shipped, means that per-user data folder. Interactive mode also creates `Stats`, `Trace` and
+`HiLites` under `dataPathPrefix` if they are missing. When `IPCam` has no folder of videos yet, it says so and offers
+to run the bundled sample instead.
 
 ## Downloads
 
@@ -85,6 +86,10 @@ built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`
 | Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
 | Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
 | macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
+
+Every package includes the 2016 sample video and a `VST.cfg` set up for it, so the first thing to run is
+`VideoSpeedTracker --demo`. [Getting started](docs/getting-started.md) (installed as `GETTING-STARTED.md`) then walks
+through setting VST up for your own camera: geometry, calibration and batch runs.
 
 To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`) or create a release with a new `v*`
 tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the
@@ -133,7 +138,9 @@ Without `--config`, each program uses `VST.cfg` / `ProcessHiLites.cfg` from the 
 (the original 2016 workflow), otherwise its per-user copy. The first run creates that copy from the template installed
 with the program, points its `dataPathPrefix` at the per-user data folder, and creates `IPCam`, `HiLites/forPosting`,
 `Stats` and `Trace` inside it. The install folder is never written, so the same binaries work from a .deb, an unzipped
-folder, or a Store/MSIX or `.app` package.
+folder, or a Store/MSIX or `.app` package. The shipped templates leave `dataPathPrefix` blank, which also means the
+per-user data folder, so running from the unzipped Windows folder (where the template is the working-directory
+`VST.cfg`) uses the same place.
 
 | | Config | Data |
 |---|---|---|
@@ -232,7 +239,8 @@ These come from the [issues filed against the original project](docs/upstream-is
 
 | Symptom | Cause and fix |
 |---|---|
-| Interactive mode seems to hang at start | The 2016 code looped forever when `<dataPathPrefix>/IPCam` was missing or empty. It now says what's missing and exits. Put each day's videos in their own folder under `IPCam`, point `dataPathPrefix` somewhere else, or skip the prompts with `--input`. |
+| Interactive mode seems to hang at start | The 2016 code looped forever when `<dataPathPrefix>/IPCam` was missing or empty. It now says what's missing and offers to run the bundled sample. Put each day's videos in their own folder under `IPCam`, point `dataPathPrefix` somewhere else, or skip the prompts with `--input`. |
+| `dataPathPrefix = g:\locustdata` and "No video folders found" on a first run | v1.0.0 shipped the 2016 author's data path in `VST.cfg`. Later releases leave it blank (the per-user data folder). In v1.0.0, set it to a folder of your own, or use `--input`. |
 | Exits right after reading the config, or "Frame width is not 1280" / "Frame rate is not 30" | The 2016 code accepted only exactly 1280x720 at exactly 30.000 fps, so 1080p, 29.97 fps and phone video all quit. Any size and rate now work. |
 | "Can't open video" | The file is missing or this OpenCV can't decode it. Convert it with `ffmpeg -i in.ext -c:v libx264 out.mp4`. |
 | Crash partway through an H.264 file | Likely cause: the 2016 loop trusted the container's frame count and read past the last real frame. VST now reads until the video ends. |
@@ -243,6 +251,8 @@ VideoSpeedTracker prints every error to stderr and exits with status 1 on any er
 
 ## Additional Documentation
 
+- [Getting started](docs/getting-started.md): first run, camera geometry, calibration and batch runs, with an
+  example for a narrow view of a one-way street.
 - A much more detailed version of this readme is available
 [**here.**](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)
 - PDF version of the manual: [Video Speed Tracker Overview and User Manual_v3.pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf)

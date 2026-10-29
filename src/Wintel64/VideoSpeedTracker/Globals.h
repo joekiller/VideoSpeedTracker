@@ -68,7 +68,7 @@ public:
 
 	// * * * * * * * * v v v v * * * * * * * * R e a d i n g   o f   C o n f i g    f i l e   s h o u l d    o v e r r i d e   t h e s e * * v v v v * * * * * * //
 
-	string dataPathPrefix = "g:\\locustdata";	// path to data directories, IPCam, Stats, etc.  Don't use double backslash in config file!.
+	string dataPathPrefix;						// path to data directories, IPCam, Stats, etc.  Empty = userpaths::dataDir().  Don't use double backslash in config file!.
 	string L2RDirection = "SE";					// Compass Direction L2R vehicles are heading
 	string R2LDirection = "NW";					// Compass Direction R2L vehicles are heading
 	int obstruction[2];				// left / right x coords bounding vertical obstructions in foreground.Max 2. Relative to AnalysisBoxLeft. ...pixels

@@ -114,6 +114,7 @@ Mat frame1, frame2; // Frames read by main, to use in frame differencing, and fo
 bool headless = false;    // --headless: never open a window or call waitKey (servers, containers, cron jobs)
 string inputPath;         // --input: full path of the single video to analyze; empty means interactive mode
 string configPath;        // --config; empty = userpaths::resolveConfig("VST.cfg")
+bool demo = false;        // --demo: analyze the bundled sample video with the settings it was recorded with
 //......................................................................................................................................................
 
 
@@ -233,33 +234,52 @@ void setup(){
 	AnalysisBox = Rect(g.AnalysisBoxLeft, g.AnalysisBoxTop, g.AnalysisBoxWidth, g.AnalysisBoxHeight);  // For use when performing speed analysis in cropped region
 
 	// Videos live in <dataPathPrefix>/IPCam/<one folder per day>/; outputs go to <dataPathPrefix>/Stats, Trace and HiLites.
-	fs::path data(g.dataPathPrefix);
+	// A blank dataPathPrefix (as shipped) means the per-user data folder, which is created with those subfolders.
+	fs::path data = userpaths::dataPath(g.dataPathPrefix);
 	fs::path camPath = data / "IPCam";
 	cout << endl << endl;
 
 // Get directory containing file(s) to be processed
 	vector<string> dirs = listDir(camPath, [](const fs::directory_entry& e){ return e.is_directory(); });
+	string dirName;
+	bool allFiles = false;
 	if (dirs.empty()){
-		cerr << "No video folders found in " << camPath.string() << endl
+		// Nothing to analyze yet, typically a first run: say where videos go, then offer the bundled sample so a bare run shows something.
+		cout << "No video folders found in " << camPath.string() << endl
 			<< "Put each day's videos in a folder of its own there (e.g. IPCam/20160130/), set dataPathPrefix in "
-			<< configPath << " to another location, or analyze one file with --input PATH (see --help)." << endl;
-		exit(EXIT_FAILURE);
+			<< configPath << " to another location, or analyze one file with --input PATH (see --help)." << endl
+			<< "Setting VST up for your own camera is covered in GETTING-STARTED.md." << endl;
+		fs::path sample = userpaths::sampleVideo();
+		fs::path sampleConfig = userpaths::installedFile("VST.cfg");
+		if (sample.empty() || sampleConfig.empty()) exit(EXIT_FAILURE);
+		cout << endl;
+		if (!askYesNo("Try it now on the bundled 2016 Locust Avenue sample video", true)) exit(EXIT_SUCCESS);
+		// The sample only tracks with the geometry it was recorded with, which the user's config may no longer have,
+		// so read the installed template over it.  Outputs still go to the data folder chosen above.
+		configPath = sampleConfig.string();
+		cout << endl << "Using the sample's settings from " << configPath << endl;
+		if (!g.readConfig(configPath)) exit(EXIT_FAILURE);
+		g.pixelRight = g.AnalysisBoxWidth;
+		AnalysisBox = Rect(g.AnalysisBoxLeft, g.AnalysisBoxTop, g.AnalysisBoxWidth, g.AnalysisBoxHeight);
+		filesToDo.push_back(sample.string());
 	}
-	cout << "Video folders in " << camPath.string() << ":" << endl;
-	string dirName = dirs[askChoice("folder", dirs, false)];
-	fs::path dirPath = camPath / dirName;
+	else {
+		cout << "Video folders in " << camPath.string() << ":" << endl;
+		dirName = dirs[askChoice("folder", dirs, false)];
+		fs::path dirPath = camPath / dirName;
 
 // Go through the file names in the selected directory for the user.
-	vector<string> videos = listDir(dirPath, [](const fs::directory_entry& e){ return e.is_regular_file() && isVideoFile(e.path()); });
-	if (videos.empty()){
-		cerr << "No video files (.avi, .mp4, .mkv, .mov, ...) in " << dirPath.string() << endl;
-		exit(EXIT_FAILURE);
+		vector<string> videos = listDir(dirPath, [](const fs::directory_entry& e){ return e.is_regular_file() && isVideoFile(e.path()); });
+		if (videos.empty()){
+			cerr << "No video files (.avi, .mp4, .mkv, .mov, ...) in " << dirPath.string() << endl;
+			exit(EXIT_FAILURE);
+		}
+		cout << endl << "Videos in " << dirPath.string() << ":" << endl;
+		int choice = askChoice("video", videos, true);
+		allFiles = choice < 0;
+		if (allFiles) for (const string& v : videos) filesToDo.push_back((dirPath / v).string());
+		else filesToDo.push_back((dirPath / videos[choice]).string());
 	}
-	cout << endl << "Videos in " << dirPath.string() << ":" << endl;
-	int choice = askChoice("video", videos, true);
-	bool allFiles = choice < 0;
-	if (allFiles) for (const string& v : videos) filesToDo.push_back((dirPath / v).string());
-	else filesToDo.push_back((dirPath / videos[choice]).string());
 	fileName = fs::path(filesToDo[0]).filename().string();
 
 	// Do a one-time setup of region of interest, obstructions and speed posts
@@ -338,7 +358,8 @@ void setup(){
 
 void printUsage(){
 	cout << "Usage: VideoSpeedTracker [options]        (no options = original interactive mode)" << endl
-		<< "  --input PATH          video file to analyze (required in command-line mode)" << endl
+		<< "  --demo                analyze the bundled 2016 sample video with the settings it was recorded with" << endl
+		<< "  --input PATH          video file to analyze (required in command-line mode, unless --demo)" << endl
 		<< "  --config PATH         VST.cfg to use [./VST.cfg, else the per-user config, created on first run]" << endl
 		<< "  --stats PATH          csv output [stats_<input name>.csv]" << endl
 		<< "  --trace PATH          write a debug trace file" << endl
@@ -350,7 +371,8 @@ void printUsage(){
 		<< "  --hl-area N           minimum profile area for large-vehicle highlights [100]" << endl
 		<< "  --headless            no windows; runs as fast as the CPU allows" << endl
 		<< "Video of any size or frame rate is accepted: frames are scaled to 1280x720 (the size VST.cfg coordinates" << endl
-		<< "refer to) and speeds are scaled by CalibrationFPS.  Exit status is 0 on success, 1 on any error." << endl;
+		<< "refer to) and speeds are scaled by CalibrationFPS.  Exit status is 0 on success, 1 on any error." << endl
+		<< "First time?  Try --demo, then see GETTING-STARTED.md to set VST up for your own camera." << endl;
 }
 
 // Command-line counterpart of setup(): same globals end up set, but from arguments instead of prompts,
@@ -389,8 +411,31 @@ bool setupFromArgs(int argc, char** argv){
 		else if (a == "--hl-max") highLightsSpeedUpper = nextInt();
 		else if (a == "--hl-area") minimumProfileArea = nextInt();
 		else if (a == "--headless") headless = true;
+		else if (a == "--demo") demo = true;
 		else if (a == "--help" || a == "-h"){ printUsage(); exit(EXIT_SUCCESS); }
 		else { cerr << "Unknown option: " << a << endl; printUsage(); return false; }
+	}
+	if (demo){
+		// The sample plus the template it was calibrated with (unless --config overrides it); the csv goes to the
+		// per-user Stats folder rather than the working directory, which may be the read-only install folder.
+		fs::path sample = userpaths::sampleVideo();
+		if (sample.empty()){
+			cerr << "The sample video isn't installed next to this program (looked for sample/manual_20160130172251.avi)." << endl
+				<< "Get it from https://github.com/joekiller/VideoSpeedTracker/tree/master/sampleData/IPCam/20160130 and pass it with --input." << endl;
+			return false;
+		}
+		if (!inputPath.empty()){ cerr << "--demo and --input can't be used together" << endl; return false; }
+		inputPath = sample.string();
+		if (configPath.empty()){
+			fs::path tmpl = userpaths::installedFile("VST.cfg");
+			if (!tmpl.empty()) configPath = tmpl.string();
+		}
+		if (statsPath.empty()){
+			fs::path stats = userpaths::dataDir() / "Stats";
+			error_code ec;
+			fs::create_directories(stats, ec);
+			statsPath = (stats / "stats_demo.csv").string();
+		}
 	}
 	if (inputPath.empty()){ cerr << "--input is required" << endl; printUsage(); return false; }
 
@@ -1248,11 +1293,14 @@ int main(int argc, char** argv){
 	Mat differenceImage;
 	Mat thresholdImage;  	//thresholded difference image (for use in findContours() function)
 
+	userpaths::holdConsoleOnExit();  // Windows: a double-clicked exe keeps its window open to show why it stopped
 	if (argc > 1){
 		if (!setupFromArgs(argc, argv)) return EXIT_FAILURE;  // Non-interactive: everything comes from the command line
 	}
-	else
+	else {
+		cout << "VideoSpeedTracker interactive mode.  Run VideoSpeedTracker --help for command-line options." << endl;
 		setup();  // Get config data and user preferences for files to process, tracing, debugging, start frame and others
+	}
 	bool showVideo = !headless;  // turning this off should make processing run faster.  toggled with a "v"
 
 //  * * * * * * * * * * * * * * * * * * * * * *  M a i n   L o o p   o v e r   o n e   o r   m o r e   i n p u t   f i l e s  * * * * * * * * * * * * * * * *
