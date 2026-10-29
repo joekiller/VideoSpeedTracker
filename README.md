@@ -74,7 +74,7 @@ built from the CMake/OpenCV 4 sources by `.github/workflows/release.yml`:
 |---|---|---|
 | Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (pulls in OpenCV) |
 | Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; the OpenCV, FFmpeg and MSVC runtime DLLs sit next to the exes |
-| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv@4`, then untar |
 
 To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`) or create a release with a new `v*`
 tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the

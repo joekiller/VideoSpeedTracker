@@ -14,7 +14,7 @@
 #   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
 #                                                amd64 + arm64; apt pulls in the matching OpenCV runtime
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes + OpenCV/FFmpeg/MSVC runtime DLLs and their licenses
-#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv`
+#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv@4`
 #   SHA256SUMS
 # Each package also gets a GitHub artifact attestation (Sigstore-signed build provenance).
 name: release
@@ -201,10 +201,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install OpenCV
-        run: brew install opencv
+        # Homebrew's plain "opencv" is 5.x, which moved boundingRect and other contour functions out of
+        # imgproc; the sources target the 4.x API, so build (and tell users to install) opencv@4.
+        run: brew install opencv@4
       - name: Build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix opencv)" \
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix opencv@4)" \
                 -DVST_VERSION=${{ needs.meta.outputs.version }}
           cmake --build build -j"$(sysctl -n hw.ncpu)"
       - name: Sample video regression test
@@ -216,7 +218,7 @@ jobs:
           name="VideoSpeedTracker-${{ needs.meta.outputs.version }}-macos-arm64"
           echo "PKG_NAME=$name" >> "$GITHUB_ENV"
           cmake --install build --prefix "pkg/$name"
-          printf 'Requires Homebrew OpenCV:  brew install opencv\n' > "pkg/$name/REQUIREMENTS.txt"
+          printf 'Requires Homebrew OpenCV 4:  brew install opencv@4\n' > "pkg/$name/REQUIREMENTS.txt"
       # Hardened runtime is required for notarization; the entitlement lets it load Homebrew's
       # OpenCV dylibs, which aren't signed by our team. Bare executables can't be stapled, so
       # Gatekeeper looks the notarization ticket up online on first launch.
