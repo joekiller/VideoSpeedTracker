@@ -9,7 +9,13 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc highgui videoio)
+# OpenCV 4 or newer (distros ship 4.x; Homebrew moved to 5.x). A plain "OpenCV 4" request would
+# reject 5.x as incompatible, so the minimum is checked by hand.
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
+if(OpenCV_VERSION VERSION_LESS 4)
+  message(FATAL_ERROR "OpenCV 4 or newer required, found ${OpenCV_VERSION}")
+endif()
+message(STATUS "Using OpenCV ${OpenCV_VERSION}")
 
 set(VST_DIR ${CMAKE_SOURCE_DIR}/src/Wintel64/VideoSpeedTracker)
 set(COMMON_DIR ${CMAKE_SOURCE_DIR}/src/Wintel64/Common)
