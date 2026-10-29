@@ -32,7 +32,9 @@ cmake -S "$work/src" -B "$work/build" "${extra[@]}" \
   -DWITH_FFMPEG=ON -DWITH_GSTREAMER=OFF -DWITH_1394=OFF \
   -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF -DWITH_LAPACK=OFF -DWITH_EIGEN=OFF -DWITH_PROTOBUF=OFF \
   -DWITH_TIFF=OFF -DWITH_WEBP=OFF -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF -DWITH_AVIF=OFF
-cmake --build "$work/build" --config Release --parallel
+# A bare --parallel means unlimited make jobs, which runs the runner out of memory.
+jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-2}")"
+cmake --build "$work/build" --config Release --parallel "$jobs"
 cmake --install "$work/build" --config Release
 
 # UNIX installs don't include OpenCV's own LICENSE; put it next to the third-party notices.
