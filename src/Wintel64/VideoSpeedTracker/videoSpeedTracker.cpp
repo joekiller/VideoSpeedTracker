@@ -54,6 +54,9 @@
 
 
 #include <opencv2/opencv.hpp>
+#if CV_VERSION_MAJOR >= 5
+#include <opencv2/geometry.hpp>  // OpenCV 5 moved boundingRect() out of imgproc
+#endif
 #include "Globals.h"
 #include <iostream>
 #include <fstream>

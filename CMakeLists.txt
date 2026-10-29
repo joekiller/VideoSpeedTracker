@@ -9,9 +9,15 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# OpenCV 4.x. 5.x moved boundingRect and other contour functions out of imgproc and doesn't build
-# yet; on macOS use Homebrew's opencv@4 (plain "opencv" is 5.x there).
-find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc highgui videoio)
+# OpenCV 5 (release builds, Homebrew) or 4 (distro packages for local builds). 5.x moved
+# boundingRect() into the new geometry module, which is linked when present.
+find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
+if(OpenCV_VERSION VERSION_LESS 4)
+  message(FATAL_ERROR "OpenCV 4 or newer required, found ${OpenCV_VERSION}")
+elseif(OpenCV_VERSION VERSION_GREATER_EQUAL 5)
+  find_package(OpenCV REQUIRED COMPONENTS core imgproc geometry highgui videoio)
+endif()
+message(STATUS "Using OpenCV ${OpenCV_VERSION} (${OpenCV_INSTALL_PATH})")
 message(STATUS "Using OpenCV ${OpenCV_VERSION}")
 
 set(VST_DIR ${CMAKE_SOURCE_DIR}/src/Wintel64/VideoSpeedTracker)
@@ -83,6 +89,21 @@ if(WIN32 OR APPLE)
   install(FILES ${CMAKE_SOURCE_DIR}/LICENSE DESTINATION . RENAME LICENSE.txt)
 else()
   install(FILES ${CMAKE_SOURCE_DIR}/packaging/copyright DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/videospeedtracker)
+endif()
+# A static OpenCV (packaging/build-opencv.sh) is compiled into the exes, so ship its Apache-2.0
+# LICENSE and the notices for the third-party code it bundles.
+if(NOT OpenCV_SHARED AND EXISTS ${OpenCV_INSTALL_PATH}/LICENSE)
+  if(WIN32 OR APPLE)
+    set(VST_OPENCV_NOTICE_DIR licenses/opencv)
+  else()
+    set(VST_OPENCV_NOTICE_DIR ${CMAKE_INSTALL_DATADIR}/doc/videospeedtracker/opencv)
+  endif()
+  install(FILES ${OpenCV_INSTALL_PATH}/LICENSE DESTINATION ${VST_OPENCV_NOTICE_DIR})
+  foreach(dir ${OpenCV_INSTALL_PATH}/share/licenses/opencv5 ${OpenCV_INSTALL_PATH}/etc/licenses)
+    if(IS_DIRECTORY ${dir})
+      install(DIRECTORY ${dir}/ DESTINATION ${VST_OPENCV_NOTICE_DIR})
+    endif()
+  endforeach()
 endif()
 if(WIN32)
   set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION .)

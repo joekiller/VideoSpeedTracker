@@ -10,11 +10,15 @@
 # branch, and publish when started on a tag.
 #
 # Every package holds VideoSpeedTracker and ProcessHiLites plus their sample configs.
-# Outputs (all built against the platform's own OpenCV 4 and checked with the sample-video ctest):
+# Outputs (all on OpenCV 5 and checked with the sample-video ctest):
 #   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
-#                                                amd64 + arm64; apt pulls in the matching OpenCV runtime
-#   VideoSpeedTracker-<ver>-windows-x64.zip      exes + OpenCV/FFmpeg/MSVC runtime DLLs and their licenses
-#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv@4`
+#                                                amd64 + arm64; OpenCV linked in statically, apt pulls
+#                                                in the distro's FFmpeg and GTK runtimes
+#   VideoSpeedTracker-<ver>-windows-x64.zip      exes (static OpenCV) + FFmpeg plugin/MSVC runtime DLLs
+#                                                and their licenses
+#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv` (Homebrew's 5.x)
+# Linux and Windows build OpenCV from source with packaging/build-opencv.sh; the install is
+# cached per platform, so only the first run (or a change to that script) pays for the build.
 #   SHA256SUMS
 # Each package also gets a GitHub artifact attestation (Sigstore-signed build provenance).
 name: release
@@ -26,6 +30,9 @@ on:
     paths:
       - .github/workflows/release.yml
       - CMakeLists.txt
+      - packaging/**
+      - src/**
+      - tests/**
   workflow_dispatch:
 
 permissions:
@@ -61,9 +68,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One .deb per distro release because each ships a different OpenCV soname
-        # (bookworm 4.6, trixie 4.10, noble 4.6 after the t64 rename). arm64 builds run
-        # natively on GitHub's arm runners and cover 64-bit Raspberry Pi OS.
+        # One .deb per distro release because each ships different FFmpeg/GTK sonames
+        # (OpenCV itself is static). arm64 builds run natively on GitHub's arm runners and
+        # cover 64-bit Raspberry Pi OS.
         distro: [debian-bookworm, debian-trixie, ubuntu-24.04]
         arch: [amd64, arm64]
         include:
@@ -78,16 +85,28 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Install toolchain and OpenCV
+      - name: Install toolchain and OpenCV's build dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file libopencv-dev
+          apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file \
+            pkg-config zlib1g-dev libpng-dev libjpeg-dev libgtk-3-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
       - uses: actions/checkout@v5
+      - name: Cache OpenCV
+        id: opencv-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/opencv
+          key: opencv-5.0.0-${{ matrix.distro }}-${{ matrix.arch }}-${{ hashFiles('packaging/build-opencv.sh') }}
+      - name: Build OpenCV
+        if: steps.opencv-cache.outputs.cache-hit != 'true'
+        run: packaging/build-opencv.sh /opt/opencv
       - name: Build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVST_VERSION=${{ needs.meta.outputs.version }}
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/opencv \
+                -DVST_VERSION=${{ needs.meta.outputs.version }}
           cmake --build build -j"$(nproc)"
       - name: Sample video regression test
         run: ctest --test-dir build --output-on-failure
@@ -118,16 +137,26 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v5
-      # Official OpenCV Windows build: a single opencv_world DLL plus the FFmpeg plugin DLL.
-      - name: Install OpenCV
+      # Static OpenCV 5; videoio loads FFmpeg from OpenCV's prebuilt opencv_videoio_ffmpeg plugin DLL.
+      - name: Cache OpenCV
+        id: opencv-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\opencv
+          key: opencv-5.0.0-windows-x64-${{ hashFiles('packaging/build-opencv.sh') }}
+      - name: Build OpenCV
+        if: steps.opencv-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: packaging/build-opencv.sh C:/opencv
+      - name: Locate the FFmpeg plugin
         run: |
-          choco install opencv -y --no-progress
-          $bin = (Get-ChildItem C:\tools\opencv\build\x64\vc*\bin | Select-Object -Last 1).FullName
-          "OPENCV_BIN=$bin" | Out-File -Append $env:GITHUB_ENV
-          $bin | Out-File -Append $env:GITHUB_PATH
+          $dll = Get-ChildItem C:\opencv -Recurse -File -Filter 'opencv_videoio_ffmpeg*_64.dll' | Select-Object -First 1
+          if (-not $dll) { throw "opencv_videoio_ffmpeg DLL not found under C:\opencv" }
+          "FFMPEG_DLL=$($dll.FullName)" | Out-File -Append $env:GITHUB_ENV
+          $dll.DirectoryName | Out-File -Append $env:GITHUB_PATH
       - name: Build
         run: |
-          cmake -S . -B build -A x64 -DOpenCV_DIR=C:/tools/opencv/build -DVST_VERSION=${{ needs.meta.outputs.version }}
+          cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH=C:/opencv -DVST_VERSION=${{ needs.meta.outputs.version }}
           cmake --build build --config Release
       - name: Sample video regression test
         run: ctest --test-dir build -C Release --output-on-failure
@@ -135,20 +164,12 @@ jobs:
         run: |
           $name = "VideoSpeedTracker-${{ needs.meta.outputs.version }}-windows-x64"
           "PKG_NAME=$name" | Out-File -Append $env:GITHUB_ENV
+          # The install step adds OpenCV's LICENSE and third-party notices (incl. FFmpeg's LGPL-2.1
+          # for the plugin DLL) under licenses/opencv.
           cmake --install build --config Release --prefix "pkg/$name"
-          # Release DLLs only (the debug ones end in d.dll).
-          Get-ChildItem $env:OPENCV_BIN -Filter *.dll |
-            Where-Object { $_.Name -match '^opencv_(world\d+|videoio_ffmpeg\d+_64)\.dll$' } |
-            Copy-Item -Destination "pkg/$name"
-          # Third-party notices for what the zip redistributes: OpenCV (Apache-2.0) and the libraries
-          # inside its DLLs, including FFmpeg (LGPL-2.1) in opencv_videoio_ffmpeg.
-          $lic = New-Item -ItemType Directory "pkg/$name/licenses/opencv"
-          # Top-level LICENSE of the extracted package (opencv\, opencv\build\ or opencv\sources\ depending on version).
-          $opencvLicense = Get-ChildItem C:\tools\opencv -Recurse -Depth 1 -File -Filter LICENSE* | Select-Object -First 1
-          if (-not $opencvLicense) { throw "OpenCV LICENSE not found under C:\tools\opencv" }
-          Copy-Item $opencvLicense "$lic/LICENSE.txt"
-          Copy-Item C:\tools\opencv\build\etc\licenses\* $lic -ErrorAction Stop
-          Get-ChildItem $lic
+          Copy-Item $env:FFMPEG_DLL "pkg/$name"
+          if (-not (Test-Path "pkg/$name/licenses/opencv/LICENSE")) { throw "OpenCV LICENSE missing from the package" }
+          Get-ChildItem "pkg/$name/licenses/opencv"
       - name: Azure login
         if: env.SIGN_WINDOWS == 'true'
         uses: azure/login@v3
@@ -201,12 +222,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install OpenCV
-        # Homebrew's plain "opencv" is 5.x, which moved boundingRect and other contour functions out of
-        # imgproc; the sources target the 4.x API, so build (and tell users to install) opencv@4.
-        run: brew install opencv@4
+        run: brew install opencv
       - name: Build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix opencv@4)" \
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix opencv)" \
                 -DVST_VERSION=${{ needs.meta.outputs.version }}
           cmake --build build -j"$(sysctl -n hw.ncpu)"
       - name: Sample video regression test
@@ -218,7 +237,7 @@ jobs:
           name="VideoSpeedTracker-${{ needs.meta.outputs.version }}-macos-arm64"
           echo "PKG_NAME=$name" >> "$GITHUB_ENV"
           cmake --install build --prefix "pkg/$name"
-          printf 'Requires Homebrew OpenCV 4:  brew install opencv@4\n' > "pkg/$name/REQUIREMENTS.txt"
+          printf 'Requires Homebrew OpenCV 5:  brew install opencv\n' > "pkg/$name/REQUIREMENTS.txt"
       # Hardened runtime is required for notarization; the entitlement lets it load Homebrew's
       # OpenCV dylibs, which aren't signed by our team. Bare executables can't be stapled, so
       # Gatekeeper looks the notarization ticket up online on first launch.

@@ -41,8 +41,8 @@ the scene. Setting up as you see in Figure 2 of the included overview
 
 4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile.
 
-   *Note:* the [CMake build](#building-on-linux--macos-with-opencv-4) added later uses OpenCV 4 instead, and the
-   [release packages](#downloads) bundle or depend on the OpenCV 4 runtime they need.
+   *Note:* the [CMake build](#building-on-linux--macos) added later uses OpenCV 5 (or 4) instead, and the
+   [release packages](#downloads) are built on OpenCV 5.
 
 5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included [pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf) under docs
 ([Markdown version](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)).
@@ -68,13 +68,13 @@ that day’s video files.
 ## Downloads
 
 Prebuilt binaries are attached to each [GitHub release](https://github.com/joekiller/VideoSpeedTracker/releases),
-built from the CMake/OpenCV 4 sources by `.github/workflows/release.yml`:
+built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`:
 
 | Platform | File | Install |
 |---|---|---|
-| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (pulls in OpenCV) |
-| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; the OpenCV, FFmpeg and MSVC runtime DLLs sit next to the exes |
-| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv@4`, then untar |
+| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
+| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
 
 To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`) or create a release with a new `v*`
 tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the
@@ -135,17 +135,20 @@ Each run prints the config file it used.
 
 ### Licenses
 
-VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. The Windows zip also redistributes OpenCV
-(Apache 2.0), its bundled FFmpeg (LGPL 2.1) and other third-party code, with their license texts in `licenses/opencv`.
-The Linux and macOS packages use the OpenCV installed by apt or Homebrew, which ships its own licenses.
+VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. The Linux and Windows packages link OpenCV
+(Apache 2.0) and its bundled third-party code statically, and the Windows zip also ships OpenCV's FFmpeg plugin
+(LGPL 2.1); their license texts are in `licenses/opencv` (Windows) or `/usr/share/doc/videospeedtracker/opencv`
+(Linux). FFmpeg and GTK on Linux, and OpenCV on macOS, come from apt or Homebrew with their own licenses.
 
 The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
 still in the git history before the release workflow was added. Every package contains both `VideoSpeedTracker` and
 the highlights editor `ProcessHiLites`, with their sample configs.
 
-## Building on Linux / macOS with OpenCV 4
+## Building on Linux / macOS
 
-The sources under `src/Wintel64` now build with CMake against OpenCV 4 (tested with 4.6 on Ubuntu 24.04):
+The sources under `src/Wintel64` build with CMake against OpenCV 5 or 4. The distro's OpenCV 4 is the quickest
+start (tested with 4.6 on Ubuntu 24.04); `packaging/build-opencv.sh <prefix>` builds the static OpenCV 5 the
+release packages use, then pass `-DCMAKE_PREFIX_PATH=<prefix>`. On macOS, `brew install opencv` gives 5.x.
 
 ```
 sudo apt-get install libopencv-dev cmake g++
