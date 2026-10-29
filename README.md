@@ -39,11 +39,10 @@ the oldest data) is what allows it to adapt to changing pixel rates as a vehicle
 the scene. Setting up as you see in Figure 2 of the included overview
 ([Overview and User Manual](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md)) helps the tracker produce high quality results.
 
-4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile. If
-you’re executing a provided executable the required OpenCV 2.4.11 x64/vc12 runtime libraries (dll’s in
-Windows) are provided in /bin.
+4. If you’re recompiling, you’ll need OpenCV 2.4.11 installed to have a successful compile.
 
-   *Note:* the [CMake build](#building-on-linux--macos-with-opencv-4) added later uses OpenCV 4 instead.
+   *Note:* the [CMake build](#building-on-linux--macos) added later uses OpenCV 5 (or 4) instead, and the
+   [release packages](#downloads) are built on OpenCV 5.
 
 5. Set critical one time setup values in VST.cfg. These values are described in the appendix of the included [pdf](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual_v3.pdf) under docs
 ([Markdown version](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)).
@@ -66,16 +65,90 @@ directory if you answer “*” when asked for which file in a directory full of
 the IPCam directory, I create subdirectories with syntax yyyymmdd (e.g. 20160205) in which I place
 that day’s video files.
 
-## Running on Windows
+## Downloads
 
-Win7telx64 executables have been added on 15 Feb 2016. `bin/` holds `VideoSpeedTracker.exe`, the final
-highlights video processor `ProcessHiLites.exe`, their config files (`VST.cfg`, `ProcessHiLites.cfg`)
-and the OpenCV 2.4.11 runtime dll’s. See the section named
-[Installing Executables](docs/Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#installing-executables) in the User Manual.
+Prebuilt binaries are attached to each [GitHub release](https://github.com/joekiller/VideoSpeedTracker/releases),
+built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`:
 
-## Building on Linux / macOS with OpenCV 4
+| Platform | File | Install |
+|---|---|---|
+| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
+| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
 
-The sources under `src/Wintel64` now build with CMake against OpenCV 4 (tested with 4.6 on Ubuntu 24.04):
+To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`) or create a release with a new `v*`
+tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the
+packages and a `SHA256SUMS` file.
+
+### Verifying a download
+
+Every package is signed by GitHub at build time with an [artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
+(Sigstore-backed SLSA build provenance), which proves the file was built by this repository's release workflow from the
+tagged commit. With the [GitHub CLI](https://cli.github.com/):
+
+```
+gh attestation verify videospeedtracker_1.0.0_debian-bookworm_arm64.deb -R joekiller/VideoSpeedTracker
+```
+
+`SHA256SUMS` lists every file's checksum (`sha256sum -c SHA256SUMS --ignore-missing`). These attestations are not
+Windows Authenticode or Apple notarization, so Windows SmartScreen and macOS Gatekeeper still warn on first launch
+(on macOS, clear it with `xattr -d com.apple.quarantine VideoSpeedTracker ProcessHiLites`).
+
+### Code signing (optional)
+
+Releases build and publish unsigned until these are configured; each platform's signing steps switch on by
+themselves once its secrets exist (repo **Settings → Secrets and variables → Actions**).
+
+**Windows — Azure Artifact Signing (~$9.99/month).** Individuals in the US/Canada qualify.
+1. Create an Azure subscription, then an Artifact Signing account and an identity validation (Public Trust,
+   individual; takes a few days) and a certificate profile.
+2. Create an app registration with a federated credential for this repo (GitHub OIDC), and give it the
+   *Artifact Signing Certificate Profile Signer* role on the account.
+3. Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. Variables: `AZURE_SIGNING_ENDPOINT`
+   (for example `https://eus.codesigning.azure.net/`), `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`.
+
+SmartScreen still warns until the signing identity builds reputation over a few releases.
+
+**macOS — Apple Developer Program ($99/year).**
+1. Enroll as an individual, create a *Developer ID Application* certificate and export it with its key as a .p12.
+2. Create an app-specific password for your Apple ID.
+3. Secrets: `MACOS_CERT_P12_BASE64` (`base64 -i cert.p12`), `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`,
+   `APPLE_APP_PASSWORD`.
+
+The binaries are then signed with the hardened runtime and notarized.
+
+### Where config and data live
+
+Without `--config`, each program uses `VST.cfg` / `ProcessHiLites.cfg` from the working directory if one is there
+(the original 2016 workflow), otherwise its per-user copy. The first run creates that copy from the template installed
+with the program, points its `dataPathPrefix` at the per-user data folder, and creates `IPCam`, `HiLites/forPosting`,
+`Stats` and `Trace` inside it. The install folder is never written, so the same binaries work from a .deb, an unzipped
+folder, or a Store/MSIX or `.app` package.
+
+| | Config | Data |
+|---|---|---|
+| Linux | `$XDG_CONFIG_HOME/videospeedtracker` (`~/.config/videospeedtracker`) | `$XDG_DATA_HOME/videospeedtracker` (`~/.local/share/videospeedtracker`) |
+| Windows | `%APPDATA%\VideoSpeedTracker` | `%LOCALAPPDATA%\VideoSpeedTracker` |
+| macOS | `~/Library/Application Support/VideoSpeedTracker` | `~/Library/Application Support/VideoSpeedTracker/Data` |
+
+Each run prints the config file it used.
+
+### Licenses
+
+VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. The Linux and Windows packages link OpenCV
+(Apache 2.0) and its bundled third-party code statically, and the Windows zip also ships OpenCV's FFmpeg plugin
+(LGPL 2.1); their license texts are in `licenses/opencv` (Windows) or `/usr/share/doc/videospeedtracker/opencv`
+(Linux). FFmpeg and GTK on Linux, and OpenCV on macOS, come from apt or Homebrew with their own licenses.
+
+The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
+still in the git history before the release workflow was added. Every package contains both `VideoSpeedTracker` and
+the highlights editor `ProcessHiLites`, with their sample configs.
+
+## Building on Linux / macOS
+
+The sources under `src/Wintel64` build with CMake against OpenCV 5 or 4. The distro's OpenCV 4 is the quickest
+start (tested with 4.6 on Ubuntu 24.04); `packaging/build-opencv.sh <prefix>` builds the static OpenCV 5 the
+release packages use, then pass `-DCMAKE_PREFIX_PATH=<prefix>`. On macOS, `brew install opencv` gives 5.x.
 
 ```
 sudo apt-get install libopencv-dev cmake g++
@@ -94,6 +167,15 @@ build/VideoSpeedTracker --headless \
 
 `--help` lists every option. The 8.6 minute sample processes in about 20 seconds headless (roughly 25× real time).
 
+`ProcessHiLites` (the highlights editor, also built by CMake) steps through a highlights video one vehicle at a time
+and writes the ones you keep, cropped to 640×360, to `forPosting/forPost_<name>`. It needs a display. With no arguments
+it reads `ProcessHiLites.cfg` from the working directory and offers the videos in `<dataPathPrefix>/HiLites`; or name
+the files directly:
+
+```
+build/ProcessHiLites --config bin/ProcessHiLites.cfg --input hilites.mp4 [--output keepers.mp4]
+```
+
 ## Additional Documentation
 
 - A much more detailed version of this readme is available
@@ -107,4 +189,4 @@ of December 2015 – January 2016 data)
 
 ## License
 
-- BSD 3-Clause
+- BSD 3-Clause, see [LICENSE](LICENSE)

@@ -54,6 +54,9 @@
 
 
 #include <opencv2/opencv.hpp>
+#if CV_VERSION_MAJOR >= 5
+#include <opencv2/geometry.hpp>  // OpenCV 5 moved boundingRect() out of imgproc
+#endif
 #include "Globals.h"
 #include <iostream>
 #include <fstream>
@@ -61,6 +64,7 @@
 #include "VehicleDynamics.h"
 #include "Projection.h"
 #include "Snapshot.h"
+#include "UserPaths.h"
 
 
 
@@ -110,7 +114,7 @@ Mat frame1, frame2; // Frames read by main, to use in frame differencing, and fo
 // Command-line mode (any arguments given): no prompts, no Windows "dir" calls, optional headless run with no GUI windows.
 bool headless = false;    // --headless: never open a window or call waitKey (servers, containers, cron jobs)
 string inputPath;         // --input: full path of the single video to analyze; empty means interactive mode
-string configPath = "VST.cfg";  // --config
+string configPath;        // --config; empty = userpaths::resolveConfig("VST.cfg")
 //......................................................................................................................................................
 
 // Substring that returns "" instead of throwing when a file name doesn't follow the Foscam "manual_yyyymmddhhmmss.avi" pattern.
@@ -136,7 +140,8 @@ string intToString(int number){
 void setup(){
 
 // Get configuration values from VST.cfg and set corresponding objects in Globals.h to read-in values.
-	if (!g.readConfig(configPath)){
+	if (configPath.empty()) configPath = userpaths::resolveConfig("VST.cfg");
+	if (configPath.empty() || !g.readConfig(configPath)){
 		cout << "Reading of config file appears to have failed.   Exiting" << endl;
 		exit(-1);
 	}
@@ -310,7 +315,7 @@ void setup(){
 void printUsage(){
 	cout << "Usage: VideoSpeedTracker [options]        (no options = original interactive mode)" << endl
 		<< "  --input PATH          video file to analyze (required in command-line mode)" << endl
-		<< "  --config PATH         VST.cfg to use [VST.cfg]" << endl
+		<< "  --config PATH         VST.cfg to use [./VST.cfg, else the per-user config, created on first run]" << endl
 		<< "  --stats PATH          csv output [stats_<input name>.csv]" << endl
 		<< "  --trace PATH          write a debug trace file" << endl
 		<< "  --speed-limit N       [25]" << endl
@@ -347,7 +352,8 @@ bool setupFromArgs(int argc, char** argv){
 	}
 	if (inputPath.empty()){ cout << "--input is required" << endl; printUsage(); return false; }
 
-	if (!g.readConfig(configPath)){
+	if (configPath.empty()) configPath = userpaths::resolveConfig("VST.cfg");
+	if (configPath.empty() || !g.readConfig(configPath)){
 		cout << "Reading of config file appears to have failed.   Exiting" << endl;
 		return false;
 	}
