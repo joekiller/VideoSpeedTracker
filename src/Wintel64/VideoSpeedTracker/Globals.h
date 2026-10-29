@@ -57,6 +57,12 @@ public:
 
 	bool readConfig(const string& path = "VST.cfg");
 
+	// VST works in 1280x720 frame coordinates; every config pixel value refers to them.  Input video of any
+	// other size is resized to this before analysis (see main() in videoSpeedTracker.cpp).
+	static constexpr int FrameWidth = 1280;
+	static constexpr int FrameHeight = 720;
+	double videoFPS = 30.0;			// Frame rate of the video being analyzed; set by main() from the input, not from the config.
+
 	const int pixelLeft = 0;				// This won't change.  It's used relative to AnalysisBoxLeft.
 	int pixelRight = 1279;                  // This will change to be AnalysisBoxWidth.  Change should happen after AnalysisBoxLeft and Width are read in from config.
 
@@ -79,6 +85,8 @@ public:
 	int largeVehicleArea = 109;		// After dividing a computed area by 300.  This value tends to separate buses and UPS trucks from large pickups.
 	int CalibrationFramesL2R = 35;	// Measured three times on 14 Jan 2016 for Locust Avenue, Charlottesville, VA
 	int CalibrationFramesR2L = 40;	// Measured three on 14 Jan 2016 for Locust Avenue, Charlottesville, VA
+	double CalibrationSpeed = 25.0;	// MPH the calibration vehicle drove when CalibrationFramesL2R/R2L were counted.  Speeds scale from it.
+	double CalibrationFPS = 30.0;	// Frame rate of the video the calibration frames were counted in, so other frame rates measure correctly.
 	int SENSITIVITY_VALUE = 30;		// Sensitivity value for the OpenCV absdiff funtion. Change with care.
 	int	BLUR_SIZE = 20;				// To smooth the intensity image output from absdiff() function. Change with care.
 	int	SLOP = 15;					// Margin of error when testing for vehicle overlap... pixels.

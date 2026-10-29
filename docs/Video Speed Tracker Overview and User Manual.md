@@ -55,6 +55,14 @@ through to select the directory “2016 02 05”, located in
 files from February 5th, 2016. Next I selected the specific file
 `manual_20160205_115810.avi` for processing.
 
+*Note:* the current build lists the folders and then the videos (`.avi`,
+`.mp4`, `.mkv`, `.mov` and other common types) as numbered choices
+instead of asking y/n about each one; type `*` at the video prompt to
+process the whole folder. Outputs are written to `Stats`, `Trace` and
+`HiLites` under the path prefix (created if missing), and highlights
+videos are `.mp4`. To skip the prompts entirely, use the command-line
+options listed by `VideoSpeedTracker --help`.
+
 Next up is the question asking whether the *Analysis Box* (yellow
 region, as depicted in figure 2) and related components are OK.
 Currently, if you answer that the analysis box, etc. are not OK, the
@@ -502,19 +510,23 @@ the IPCam directory, I create subdirectories with syntax yyyymmdd (e.g.
 ## Appendix
 ### Objects used in VST that need to be set in VST.cfg
 VST.cfg has been created to maximize the chances of being able to
-distribute an executable (i.e. not requiring a recompile). VST.cfg
-syntax is a little fragile. Currently you can’t have any blank lines,
-comment only lines, or extra lines at the end (Github issue to make
-VST.cfg more forgiving). Each line has the syntax:
+distribute an executable (i.e. not requiring a recompile). Each setting
+is one line:
 
 ```
-<known object name> = <value> #comment
+<known object name> = <value>   # optional comment
 ```
 
-Actual comments at the ends of lines can be omitted, but not the `#`.
-My parser looks for it. Also, the known object names must appear in the
-order they appear in the distributed VST.cfg file, and as they appear in
-the following table. Spaces are allowed on either side of the “=”.
+*Note:* the 2016 parser required every key, in the order below, with no
+blank or comment lines. The current parser accepts keys in any order and
+in any letter case, blank lines, lines that are only a `#` comment, CRLF
+or LF line endings, and a trailing newline. A key that is left out keeps
+its built-in default. A misspelled key or an unreadable value stops VST
+with the file name, line number and the list of known keys.
+
+All pixel values are in 1280x720 frame coordinates. Video of another
+size is scaled to 1280x720 before analysis, so a config written against
+a scaled screenshot works unchanged.
 
 | Known object | Purpose |
 |---|---|
@@ -533,8 +545,10 @@ the following table. Spaces are allowed on either side of the “=”.
 | `entryLookBack` | Used to determine how far back to look for rear bumper of entering vehicle. Units are pixels.  Making this value too large can create large tracked area (rearward extent of green box) behind entering vehicle that can cause excessive dead-reckoning of passing, opposite direction vehicles.  Large vehicles may not have their rear bumpers found when entering.  Often rear bumper tracker will slowly find actual rear bumper of large vehicles after front bumper has entered beyond entryLookBack pixels.  Still fails occasionally on UPS trucks and long single color panel trucks.  An improved solution, though low priority, is needed. |
 | `obstruction_extent` | Even after a vehicle has passed an obstruction it needs additional span to show up as a blob past the obstruction in frame differencing operation. |
 | `largeVehicleArea` | When choosing vehicles for the highlights video, this value is consulted to determine if the vehicle's (normalized) area exceeds it.  All computed areas are normalized so that buses and large trucks tend to be most of the vehicles over 100, which is this variable's default value.  Your value may vary. |
-| `CalibrationFramesL2R` | Turn your camera on in record mode and drive a vehicle left to right through the scene.  Try to go 25MPH.  Come back home and set this value to `(<speed limit>/<actual speed>) * <number of frames it took for you to drive though the zone in which you'll be measuring speed.>`.  It would be better to drive through multiple times with multiple vehicles to get best calibration. |
-| `CalibrationFramesR2L` | Same as process for L2R, but R2L.  Note that due to parallax, the R2L (farther away) lane will require more frames to travel through the speed measuring zone at a given speed (e.g. `<speed limit>`) than will be seen for L2R calibration.  My values are L2R: 40 frames, and R2L: 36 frames for about 50 feet of speed measuring zone and 25 MPH speed limit. |
+| `CalibrationFramesL2R` | Turn your camera on in record mode and drive a vehicle left to right through the scene at a steady, known speed (ideally the speed limit).  Set this to the number of frames it took to cross the speed measuring zone, and set `CalibrationSpeed` to the speed you drove.  If you couldn't hold `CalibrationSpeed` exactly, use `(<actual speed>/<CalibrationSpeed>) * <frames counted>`.  Several passes with several vehicles give the best calibration. |
+| `CalibrationFramesR2L` | Same process as for L2R, but R2L.  Note that due to parallax, the R2L (farther away) lane will require more frames to travel through the speed measuring zone at a given speed than will be seen for L2R calibration.  My values are L2R: 35 frames, and R2L: 40 frames for about 50 feet of speed measuring zone at 25 MPH. |
+| `CalibrationSpeed` | Speed (MPH) the calibration vehicle drove when the two `CalibrationFrames` values were counted.  Default 25.  Every measured speed is `CalibrationSpeed * CalibrationFrames / frames taken`, so this, not the speed limit, sets the scale.  The speed limit (`--speed-limit` or the interactive prompt) only picks the green/yellow/red colors. |
+| `CalibrationFPS` | Frame rate of the video the `CalibrationFrames` were counted in.  Default 30.  Video recorded at another rate is measured correctly: the calibration frame counts are scaled by `<video fps> / CalibrationFPS`.  Below about 20 fps vehicles move too far between frames for reliable tracking. |
 | `SENSITIVITY_VALUE` | Sensitivity value for the OpenCV absdiff funtion.  It probably doesn't need to be tweaked, but it is a fine tuning parameter for the speed tracker.  I set it early on and forgot it. |
 | `BLUR_SIZE` | Used to smooth the intensity image output from absdiff() function. Again, I set it once and didn't need to tweak it. |
 | `SLOP` | Margin of error allowed (units are pixels) in predictive tracker when trying to determine if two opposite direction vehicles are overlapping. |

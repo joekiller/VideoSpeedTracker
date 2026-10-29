@@ -54,6 +54,12 @@ add_test(NAME sample_video_baseline
     -DSRC=${CMAKE_SOURCE_DIR}
     -DOUT=${CMAKE_BINARY_DIR}/test-out
     -P ${CMAKE_SOURCE_DIR}/tests/run_sample.cmake)
+add_test(NAME config_parsing
+  COMMAND ${CMAKE_COMMAND}
+    -DVST=$<TARGET_FILE:VideoSpeedTracker>
+    -DSRC=${CMAKE_SOURCE_DIR}
+    -DOUT=${CMAKE_BINARY_DIR}/test-config
+    -P ${CMAKE_SOURCE_DIR}/tests/config_cases.cmake)
 # Windows resolves %APPDATA% through the Known Folder API, which an env override can't redirect,
 # so the first-run test would touch the real profile there; it runs on Linux and macOS only.
 if(NOT WIN32)
