@@ -110,6 +110,7 @@ export class Vst extends EventTarget {
   run(action) { return this.request('POST', '/api/run', { action }); }
   calibrationMark(dir, edge) { return this.request('POST', '/api/calibration/mark', { dir, edge }); }
   calibrationApply(body) { return this.request('POST', '/api/calibration/apply', body); }
+  calibrationCheck(body) { return this.request('POST', '/api/calibration/check', body); }
 
   // ---- media ------------------------------------------------------------------------------------
 
@@ -125,6 +126,12 @@ export class Vst extends EventTarget {
     return this.mode === 'demo' ? { kind: 'video', src: 'demo/clip.mp4' } : { kind: 'mjpeg', src: this.url('/api/stream.mjpg?overlay=0', true) };
   }
   csvUrl() { return this.mode === 'demo' ? null : this.url('/api/stats.csv', true); }
+  /** The printable street report for local dates `from`..`to` ("YYYY-MM-DD", either may be empty = all data). */
+  reportUrl({ from, to } = {}) {
+    if (this.mode === 'demo') return 'demo/report.html';
+    const q = new URLSearchParams(Object.entries({ from, to }).filter(([, v]) => v));
+    return this.url(`/api/report.html${q.size ? `?${q}` : ''}`, true);
+  }
 
   // ---- live events ------------------------------------------------------------------------------
 

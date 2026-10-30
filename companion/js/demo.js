@@ -16,6 +16,7 @@
  */
 
 const SNAPSHOTS = 6;
+const DIRS = ['L2R', 'R2L'];
 const DAY = 86400e3;
 
 /** Small deterministic PRNG (mulberry32) so the demo looks the same on every load. */
@@ -64,6 +65,9 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     frameWidth: 1280, frameHeight: 720,
   };
   const state = { running: true, paused: false, frame: 0, marks: {} };
+  // VST Studio's calibration-history.csv, in memory: { time, kind: 'apply'|'check', dir, calFrames, error }.
+  // Empty at start, like a calibration made before the history existed, so both directions read "unchecked".
+  const history = [];
   const vehicles = [];   // oldest first; ids ascend
   const listeners = new Set();
   let nextId = 1;
@@ -124,6 +128,44 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
   /** Hand-marked calibration frames as VST Studio reports them: [start, end] per direction, -1 = not marked. */
   const marks = (dir) => [state.marks[dir]?.start ?? -1, state.marks[dir]?.end ?? -1];
 
+  /**
+   * One direction's calibration standing, by VST Studio's rule (src/Gui/Calibration.cpp): verified when the latest
+   * check after the latest apply is within ±2 mph and was made against the CalibrationFrames still in force.
+   * The demo config counts as calibrated, so with no check on record a direction is "unchecked", never "none".
+   */
+  function calState(dir) {
+    let apply = null, check = null;
+    for (const e of history) {
+      if (e.dir !== dir) continue;
+      if (e.kind === 'check') check = e; else { apply = e; check = null; }
+    }
+    const current = config[`CalibrationFrames${dir}`];
+    const checked = check && check.calFrames === current;
+    return {
+      state: checked ? (Math.abs(check.error) <= 2 ? 'verified' : 'failed') : 'unchecked',
+      error: checked ? check.error : null,
+      applied: apply ? apply.time : null,
+      checked: checked ? check.time : null,
+      frames: current,
+    };
+  }
+
+  /** The pass a calibration request names: a logged vehicle, or the hand-marked span. `{ frames, fps, dir }` or `{ problem }`. */
+  function calibrationPass(body) {
+    const { dir, speed, vehicleId } = body || {};
+    if (!(Number(speed) > 0)) return { problem: 'Pick a direction and the speed you drove' };
+    if (vehicleId != null) {
+      const v = vehicles.find((x) => x.id === Number(vehicleId));
+      if (!v) return { problem: 'That pass is no longer available' };
+      return { frames: v.frames, fps: v.fps, dir: DIRS.includes(dir) ? dir : v.dir };
+    }
+    if (!DIRS.includes(dir)) return { problem: 'Pick a direction and the speed you drove' };
+    const mk = state.marks[dir] || {};
+    const frames = mk.end - mk.start;
+    if (!(frames > 0)) return { problem: 'Mark the start and then the end of the pass first' };
+    return { frames, fps: 30, dir };
+  }
+
   const status = () => ({
     version: '1.1.0-demo',
     running: state.running, paused: state.paused,
@@ -136,6 +178,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     legalDirection: config.legalDirection, siteName: config.siteName,
     batch: { index: 0, count: 1 },
     calibrationMarks: { L2R: marks('L2R'), R2L: marks('R2L') },
+    calibration: { L2R: calState('L2R'), R2L: calState('R2L') },
   });
 
   const emit = (event, data) => { for (const fn of listeners) fn(event, data); };
@@ -233,22 +276,34 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         return ok({ ok: true, frame: state.marks[body.dir][body.edge], marks: marks(body.dir) });
       }
       case 'POST /api/calibration/apply': {
-        const { dir, speed, vehicleId } = body || {};
-        if (!['L2R', 'R2L'].includes(dir) || !(speed > 0)) return ok({ ok: false, problems: ['Pick a direction and the speed you drove'] });
-        let frames, fps = 30;
-        if (vehicleId != null) {
-          const v = vehicles.find((x) => x.id === Number(vehicleId));
-          if (!v) return ok({ ok: false, problems: ['That pass is no longer available'] });
-          ({ frames, fps } = v);
-        } else {
-          const mk = state.marks[dir] || {};
-          frames = mk.end - mk.start;
-          if (!(frames > 0)) return ok({ ok: false, problems: ['Mark the start and then the end of the pass first'] });
-        }
+        const pass = calibrationPass(body);
+        if (pass.problem) return ok({ ok: false, problems: [pass.problem] });
+        const { frames, fps, dir } = pass;
         // Like VST Studio's App::applyCalibration: keep CalibrationSpeed/CalibrationFPS (the other direction is
         // expressed against them) and rescale this direction's frames so the pass reads `speed` mph.
-        const cal = Math.max(1, Math.round(frames * Number(speed) / config.CalibrationSpeed * config.CalibrationFPS / fps));
-        return ok(setConfig({ [`CalibrationFrames${dir}`]: cal }));
+        const cal = Math.max(1, Math.round(frames * Number(body.speed) / config.CalibrationSpeed * config.CalibrationFPS / fps));
+        const r = setConfig({ [`CalibrationFrames${dir}`]: cal });
+        if (r.ok) history.push({ time: localIso(now()), kind: 'apply', dir, calFrames: cal, error: null });
+        return ok(r);
+      }
+      case 'POST /api/calibration/check': {
+        const pass = calibrationPass(body);
+        if (pass.problem) return ok({ ok: false, problems: [pass.problem] });
+        const { frames, fps, dir } = pass;
+        const drivenMph = Number(body.speed);
+        const calFrames = config[`CalibrationFrames${dir}`];
+        // What the calibration in force says the pass was (VST's speed formula, unrounded), and its error, both to
+        // 0.1 mph before the ±2 mph verdict so the numbers shown and the verdict agree.
+        const measuredMph = Math.round(config.CalibrationSpeed * calFrames * (fps / config.CalibrationFPS) / frames * 10) / 10;
+        const error = Math.round((measuredMph - drivenMph) * 10) / 10;
+        history.push({ time: localIso(now()), kind: 'check', dir, calFrames, error });
+        emit('status', status());
+        return ok({ ok: true, problems: [], direction: dir, drivenMph, measuredMph, error, verified: Math.abs(error) <= 2 });
+      }
+      case 'GET /api/report.html': {
+        // A static sample (built by tests/report_test from tests/fixtures/report); VST Studio builds it from the data folder.
+        const bad = ['from', 'to'].find((k) => query.get(k) && !/^\d{4}-\d{2}-\d{2}$/.test(query.get(k)));
+        return bad ? err(400, 'from and to must be dates like 2026-11-02') : { status: 200, file: 'demo/report.html' };
       }
       case 'GET /api/stats.csv': {
         const rows = vehicles.map((v) => [v.time.slice(0, 10).replace(/-/g, ''), v.time.slice(11, 19).replace(/:/g, ''),

@@ -5,10 +5,11 @@
  *   1. Camera & spot   - what a good view looks like, checked against the live frame;
  *   2. Mark the street - drag the analysis box, speed lines, lane lines and obstruction on the frame;
  *   3. Rules           - which way is legal, compass headings, limit, "way too fast", site name;
- *   4. Calibration drive - drive through at a known speed, tap your pass, done.
+ *   4. Calibration drive - drive through at a known speed, tap your pass, then drive once more to check it.
  *
  * Steps 2 and 3 edit a draft and save it with PUT /api/config; VST validates and the problems it
- * reports are shown in plain words. Step 4 uses POST /api/calibration/apply with the chosen pass.
+ * reports are shown in plain words. Step 4 uses POST /api/calibration/apply with the chosen pass,
+ * then POST /api/calibration/check with a second one.
  */
 import { html, $, $$, icon, sign, band, arrow, clock, ago, toast, sheet, confirmSheet } from '../ui.js';
 import { zonesSvg, applyHandle, geometry, W, H, LANE } from '../overlay.js';
@@ -221,12 +222,33 @@ function rules({ vst, body, cfg, n }) {
   paint();
 }
 
-// ---- 4. calibration drive -----------------------------------------------------------------------
+// ---- 4. calibration drive, then a check drive ---------------------------------------------------
 
+const DIR_WORDS = { L2R: 'left to right', R2L: 'right to left' };
+
+/** A direction's calibration standing (GET /api/status `calibration`) as a pill. */
+function calPill(c) {
+  if (!c) return '';
+  if (c.state === 'verified') return html`<span class="pill ok">${icon('check')}Verified ±${Math.abs(c.error).toFixed(1)}</span>`;
+  if (c.state === 'failed') return html`<span class="pill bad">${icon('warn')}Off by ${Math.abs(c.error).toFixed(1)}</span>`;
+  if (c.state === 'none') return html`<span class="pill warn">Not calibrated</span>`;
+  return html`<span class="pill">Not checked</span>`;
+}
+
+/**
+ * The drive step runs in two phases on one screen:
+ *   calibrate - tap your pass, confirm, and VST sets the calibration for that direction (POST /api/calibration/apply);
+ *   check     - straight after, drive once more (ideally at another speed) and tap that pass. POST /api/calibration/check
+ *               says what the new calibration makes of it, and the result card shows Verified or Off by X mph.
+ * The pass list, the speed stepper and the hand-marking fallback serve both; `phase` decides what a tap does.
+ */
 function drive({ vst, body, cfg, st, n }) {
   const opened = Date.now();
   const recent = [];
   let speed = cfg.CalibrationSpeed || st.speedLimit;
+  let phase = 'calibrate';
+  let current = cfg;   // the config as the latest apply left it
+  let appliedId = 0;   // the pass the calibration came from: checking it against itself proves nothing
   const preselect = Number(sessionStorage.getItem('vst.calPass') || 0);
   sessionStorage.removeItem('vst.calPass');
 
@@ -236,12 +258,15 @@ function drive({ vst, body, cfg, st, n }) {
     <div class="card">
       <div class="check"><b class="num" style="color:var(--accent)">1</b><p><b>Pick a calm moment</b> and set cruise control (or hold steady) at the speed below.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">2</b><p><b>Drive past the camera</b> at that speed the legal way${st.legalDirection === 'both' ? ', then once the other way' : ''}. Keep this screen open; your pass appears below within seconds.</p></div>
-      <div class="check"><b class="num" style="color:var(--accent)">3</b><p><b>Tap your pass</b> and confirm. Repeat a couple of times; the latest one counts.</p></div>
+      <div class="check"><b class="num" style="color:var(--accent)">3</b><p><b>Tap your pass</b> and confirm.</p></div>
+      <div class="check"><b class="num" style="color:var(--accent)">4</b><p><b>Drive once more to check.</b> Ideally at a different speed; VST says how close it gets.</p></div>
     </div>
+    <div id="phase"></div>
     <h3>Speed you will drive</h3>
     <div class="stepper" style="max-width:240px"><button data-d="-1" aria-label="Slower">−</button><output id="spd"></output><button data-d="1" aria-label="Faster">+</button></div>
     <div class="row between"><h3>Passes since you opened this</h3><span class="pill rec small" id="listening"><i style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></i>Listening</span></div>
     <div id="passes"></div>
+    <div id="result"></div>
     <h3>Current calibration</h3>
     <div class="list" id="cal"></div>
     <details style="margin-top:16px"><summary class="small muted" style="cursor:pointer">No pass showing up? Count it by hand</summary>
@@ -256,39 +281,94 @@ function drive({ vst, body, cfg, st, n }) {
   const paintSpeed = () => { $('#spd').textContent = `${speed} mph`; };
   $('.stepper').onclick = (e) => { const d = Number(e.target.closest('[data-d]')?.dataset.d || 0); if (d) { speed = Math.max(5, Math.min(60, speed + d)); paintSpeed(); } };
 
-  const paintCal = (c) => {
-    $('#cal').innerHTML = html`
-      <div class="item"><div class="label"><b>← Right to left</b><small>Frames to cross the zone at ${c.CalibrationSpeed} mph</small></div><div class="value">${c.CalibrationFramesR2L} frames</div></div>
-      <div class="item"><div class="label"><b>Left to right →</b><small>Frames to cross the zone at ${c.CalibrationSpeed} mph</small></div><div class="value">${c.CalibrationFramesL2R} frames</div></div>
-      <div class="item"><div class="label"><b>Measured at</b></div><div class="value">${c.CalibrationFPS} fps</div></div>`.__html;
+  /** The banner above the speed stepper says which phase this is, and the hand-marking button follows it. */
+  const paintPhase = () => {
+    $('#phase').innerHTML = phase === 'check'
+      ? html`<div class="callout" style="margin-top:12px">${icon('ruler')}<p><b>Now drive once more to check it.</b> Pick a different speed from the first pass if you can, set it below, and tap the new pass. Nothing changes; VST just tells you how close it gets.
+          <br><button class="btn ghost small" id="recal" style="margin-top:8px">Calibrate again instead</button></p></div>`.__html
+      : '';
+    $('#recal')?.addEventListener('click', () => { phase = 'calibrate'; $('#result').innerHTML = ''; paintPhase(); paintPasses(); });
+    $('#mapply').textContent = phase === 'check' ? 'Check' : 'Apply';
   };
 
+  const paintCal = (c, cal) => {
+    const row = (dir, label) => html`
+      <div class="item"><div class="label"><b>${label}</b><small>Frames to cross the zone at ${c.CalibrationSpeed} mph</small></div>
+        <div class="value">${c[`CalibrationFrames${dir}`]} frames<br>${calPill(cal?.[dir])}</div></div>`;
+    $('#cal').innerHTML = html`
+      ${row('R2L', '← Right to left')}
+      ${row('L2R', 'Left to right →')}
+      <div class="item"><div class="label"><b>Measured at</b></div><div class="value">${c.CalibrationFPS} fps</div></div>`.__html;
+  };
+  /** Re-reads the calibration standing after anything that changes it (an apply or a check). */
+  const refreshCal = async (c) => { const s = await vst.status().catch(() => null); paintCal(c, s?.calibration); };
+
   const paintPasses = () => {
+    const action = (v) => phase === 'check' ? (v.id === appliedId ? 'Calibrated from' : 'Check with this') : 'That was me';
     $('#passes').innerHTML = recent.length
-      ? recent.map((v) => html`<button class="pass" style="width:100%;text-align:left;cursor:pointer" data-id="${v.id}">
+      ? recent.map((v) => html`<button class="pass" style="width:100%;text-align:left;cursor:pointer" data-id="${v.id}" ${phase === 'check' && v.id === appliedId ? 'disabled' : ''}>
           ${sign(v.speed, band(v))}
           <div class="meta"><b>${v.dir === 'L2R' ? 'Left to right' : 'Right to left'} ${arrow(v.dir)}</b><small>${clock(v.time)} · ${ago(v.time)} · ${v.frames} frames</small></div>
-          <span class="btn ghost small">That was me</span></button>`.__html).join('')
+          <span class="btn ghost small">${action(v)}</span></button>`.__html).join('')
       : html`<div class="empty-state" style="padding:28px 16px">${icon('car')}<p>Waiting for a vehicle to cross the speed zone…</p></div>`.__html;
+  };
+
+  /** After an apply: show the new values and move on to the check drive. */
+  const calibrated = (r, id) => {
+    appliedId = id || 0;
+    current = r.config;
+    phase = 'check';
+    $('#result').innerHTML = '';
+    refreshCal(r.config);
+    paintPhase();
+    paintPasses();
+  };
+
+  /** The check result: what you drove, what VST says, the error, and the verdict in words. */
+  const showResult = (r) => {
+    const off = Math.abs(r.error).toFixed(1);
+    $('#result').innerHTML = html`
+      <h3>Check, ${DIR_WORDS[r.direction]}</h3>
+      <div class="kpis three">
+        <div class="kpi"><b>${r.drivenMph}</b><span>You drove (mph)</span></div>
+        <div class="kpi"><b>${r.measuredMph.toFixed(1)}</b><span>VST says (mph)</span></div>
+        <div class="kpi ${r.verified ? 'ok' : 'bad'}"><b>${r.error > 0 ? '+' : ''}${r.error.toFixed(1)}</b><span>Error (mph)</span></div>
+      </div>
+      ${r.verified
+        ? html`<div class="callout ok" style="margin-top:12px">${icon('check')}<p><b>Verified.</b> VST is within ${off} mph of your speedometer on a second, independent pass. Both drives are on record in VST.</p></div>`
+        : html`<div class="callout bad" style="margin-top:12px">${icon('warn')}<p><b>Off by ${off} mph.</b> More than ±2 mph, so this isn't verified yet. Usual causes: your speedometer reads high (a GPS speed app is a better reference), the camera or zones moved, or the two passes were in different lanes.
+            <br><button class="btn small" id="again" style="margin-top:8px">Calibrate again</button></p></div>`}`.__html;
+    $('#again')?.addEventListener('click', () => { phase = 'calibrate'; $('#result').innerHTML = ''; paintPhase(); paintPasses(); });
+  };
+
+  const check = async (req) => {
+    const r = await vst.calibrationCheck(req);
+    if (!r.ok) { toast(r.problems.join('. ')); return; }
+    showResult(r);
+    refreshCal(current);
+    $('#result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
   /** Confirms and applies a pass as the calibration for its direction. */
   const choose = async (v) => {
     const okd = await sheet(html`
       <h2>Calibrate from this pass?</h2>
-      <p>You drove <b>${v.dir === 'L2R' ? 'left to right' : 'right to left'}</b> at <b>${speed} mph</b> and took <b>${v.frames} frames</b> to cross the zone. VST will use this for every ${v.dir === 'L2R' ? 'left-to-right' : 'right-to-left'} vehicle.</p>
+      <p>You drove <b>${DIR_WORDS[v.dir]}</b> at <b>${speed} mph</b> and took <b>${v.frames} frames</b> to cross the zone. VST will use this for every ${v.dir === 'L2R' ? 'left-to-right' : 'right-to-left'} vehicle.</p>
       <div class="btn-row"><button class="btn" data-v="0">Cancel</button><button class="btn primary" data-v="1">Calibrate</button></div>`,
     (el, close) => $$('[data-v]', el).forEach((b) => b.onclick = () => close(b.dataset.v === '1')));
     if (!okd) return;
     const r = await vst.calibrationApply({ dir: v.dir, speed, vehicleId: v.id });
     if (!r.ok) { toast(r.problems.join('. ')); return; }
-    paintCal(r.config);
-    toast(html`${icon('check')}<span>Calibrated ${v.dir === 'L2R' ? 'left to right' : 'right to left'}: ${v.frames} frames at ${speed} mph</span>`);
+    toast(html`${icon('check')}<span>Calibrated ${DIR_WORDS[v.dir]}: ${v.frames} frames at ${speed} mph</span>`);
+    calibrated(r, v.id);
   };
   $('#passes').onclick = (e) => {
     const id = Number(e.target.closest('[data-id]')?.dataset.id);
     const v = recent.find((x) => x.id === id);
-    if (v) choose(v);
+    if (!v) return;
+    // A check changes nothing, so it needs no confirmation.
+    if (phase === 'check') { if (v.id !== appliedId) check({ dir: v.dir, speed, vehicleId: v.id }); }
+    else choose(v);
   };
 
   // Manual marking fallback.
@@ -296,8 +376,9 @@ function drive({ vst, body, cfg, st, n }) {
   $('#mdir').onclick = (e) => { const v = e.target.closest('[data-v]')?.dataset.v; if (v) { mdir = v; $$('#mdir button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.v === v)); } };
   $$('[data-edge]').forEach((b) => b.onclick = async () => { await vst.calibrationMark(mdir, b.dataset.edge); toast(`Marked ${b.dataset.edge}`); });
   $('#mapply').onclick = async () => {
+    if (phase === 'check') return check({ dir: mdir, speed });
     const r = await vst.calibrationApply({ dir: mdir, speed });
-    if (!r.ok) toast(r.problems.join('. ')); else { paintCal(r.config); toast('Calibrated by hand'); }
+    if (!r.ok) toast(r.problems.join('. ')); else { toast('Calibrated by hand'); calibrated(r, 0); }
   };
 
   const onVehicle = (e) => { recent.unshift(e.detail); paintPasses(); $('#passes .pass')?.classList.add('fresh'); };
@@ -316,6 +397,6 @@ function drive({ vst, body, cfg, st, n }) {
     paintPasses();
   })();
 
-  paintSpeed(); paintCal(cfg); paintPasses();
+  paintSpeed(); paintCal(cfg, st.calibration); paintPhase(); paintPasses();
   return () => vst.removeEventListener('vehicle', onVehicle);
 }

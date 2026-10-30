@@ -182,6 +182,7 @@ bool validGap(int gap){
 
 void VehicleDynamics::markInvalidSpeed(){
 	trackEndPixel = -1;
+	seenInZone = true;
 }
 
 int VehicleDynamics::computeFinalSpeed(Globals& g, direction dir, int trackStartFrame, int trackEndFrame, int trackStartPixel, int trackEndPixel, int entryGap, int endGap, double estVel){

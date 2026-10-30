@@ -23,6 +23,7 @@ struct Job {
 	State state = Queued;
 	int vehicles = 0;
 	std::string statsPath, highlightsPath, message;
+	std::string manifestPath;   // the engine's run manifest beside statsPath (vst::manifestPathFor), once the job has started
 };
 
 struct Vehicle {

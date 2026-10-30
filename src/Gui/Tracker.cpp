@@ -99,6 +99,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 		currentInput_ = job.input;
 		std::string stem = jobStem(job.input);
 		job.statsPath = (data / "Stats" / ("stats_" + stem + ".csv")).string();
+		job.manifestPath = vst::manifestPathFor(job.statsPath);
 		std::vector<std::string> args = {
 			"--input", job.input, "--config", opt.configPath, "--stats", job.statsPath,
 			"--speed-limit", std::to_string(opt.speedLimit), "--egregious", std::to_string(opt.egregious),

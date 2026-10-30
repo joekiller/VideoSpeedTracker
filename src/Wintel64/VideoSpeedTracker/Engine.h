@@ -31,7 +31,7 @@ struct FrameInfo {
 	const std::vector<TrackBox>& boxes;
 };
 
-// A vehicle the tracker logged to the stats csv (same rule as the csv: speed >= 18 and a clean track).
+// A vehicle the tracker logged to the stats csv (same rule as the csv: timed, a clean track, and speed >= minLoggedSpeed).
 struct VehicleEvent {
 	bool leftToRight;
 	bool wrongWay;                   // travelling against LegalDirection (never set when LegalDirection = Both)
@@ -70,5 +70,11 @@ struct Hooks {
 // files do, except that a camera, or a URL that reports no length, is reopened after a dropout instead of ending the
 // run (see SourceStatus).  Returns the process exit status the CLI would have returned.
 int run(const std::vector<std::string>& args, const Hooks& hooks);
+
+// The run manifest written beside a stats csv: the same folder and stem, with "stats_" swapped for "run_" (or "run_" put in
+// front), and .json, e.g. Stats/stats_front.csv -> Stats/run_front.json.  run() writes it at the end of each video and of
+// the run, and for a live source also every 10 minutes ("complete": false until the run ends).  The format is described
+// at writeManifest() in videoSpeedTracker.cpp.
+std::string manifestPathFor(const std::string& statsPath);
 
 }  // namespace vst

@@ -1,0 +1,57 @@
+# Reading the run manifest (run_<name>.json) that VST writes beside each stats csv, for the tests.
+#
+#   include(manifest.cmake)
+#   read_manifest(<path> <prefix>)   sets <prefix>_<field> for every field the tests look at, e.g. M_logged, M_complete
+#                                    (booleans read as ON / OFF), M_config_CalibrationSpeed, M_outages (their count)
+#   csv_rows(<csv> <out>)            number of vehicle rows in a stats csv
+#
+# string(JSON) needs CMake 3.19; it also proves the file parses as JSON, which is half the point of reading it this way.
+cmake_policy(VERSION 3.16)
+if(CMAKE_VERSION VERSION_LESS 3.19)
+  message(FATAL_ERROR "The run manifest checks need CMake 3.19 or newer (string(JSON)); this is ${CMAKE_VERSION}")
+endif()
+
+function(read_manifest path prefix)
+  if(NOT EXISTS ${path})
+    message(FATAL_ERROR "No run manifest at ${path}")
+  endif()
+  if(EXISTS ${path}.tmp)
+    message(FATAL_ERROR "${path}.tmp was left behind: the manifest is written to it and then renamed")
+  endif()
+  file(READ ${path} json)
+  string(JSON err ERROR_VARIABLE parse_error TYPE "${json}")
+  if(parse_error)
+    message(FATAL_ERROR "${path} isn't valid JSON: ${parse_error}\n${json}")
+  endif()
+  # Top-level fields, then the nested ones as <object>_<field>.
+  foreach(f format vst stats started ended complete frames fps)
+    string(JSON v ERROR_VARIABLE e GET "${json}" ${f})
+    if(e)
+      message(FATAL_ERROR "${path}: no \"${f}\" (${e})")
+    endif()
+    set(${prefix}_${f} "${v}" PARENT_SCOPE)
+  endforeach()
+  foreach(f input kind)
+    string(JSON v GET "${json}" source ${f})
+    set(${prefix}_source_${f} "${v}" PARENT_SCOPE)
+  endforeach()
+  foreach(f CalibrationSpeed CalibrationFPS CalibrationFramesL2R CalibrationFramesR2L LegalDirection L2RDirection
+            R2LDirection speedLineLeft speedLineRight minLoggedSpeed)
+    string(JSON v GET "${json}" config ${f})
+    set(${prefix}_config_${f} "${v}" PARENT_SCOPE)
+  endforeach()
+  foreach(f logged belowMinSpeed untimed)
+    string(JSON v GET "${json}" counts ${f})
+    set(${prefix}_${f} "${v}" PARENT_SCOPE)
+  endforeach()
+  string(JSON n LENGTH "${json}" outages)
+  set(${prefix}_outages ${n} PARENT_SCOPE)
+  set(${prefix}_json "${json}" PARENT_SCOPE)
+endfunction()
+
+function(csv_rows csv out)
+  file(STRINGS ${csv} lines)
+  list(LENGTH lines n)
+  math(EXPR n "${n} - 1")
+  set(${out} ${n} PARENT_SCOPE)
+endfunction()

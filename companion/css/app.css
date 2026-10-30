@@ -197,6 +197,9 @@ p { margin: 0 0 12px; color: var(--text-2); }
 .callout svg { flex: none; width: 22px; height: 22px; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .callout p { margin: 0; font-size: 14px; }
 .callout.warn svg { stroke: var(--warn); }
+.callout.ok svg { stroke: var(--ok); }
+.callout.bad { border-color: var(--bad-soft); }
+.callout.bad svg { stroke: var(--bad); }
 
 /* The speed sign: a regulatory-sign tile, rimmed in the status colour. */
 .sign {
@@ -241,7 +244,8 @@ p { margin: 0 0 12px; color: var(--text-2); }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 10px; min-width: 0; }
 .kpi b { display: block; font-size: 24px; font-weight: 750; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .kpi span { display: block; font-size: 11px; color: var(--muted); font-weight: 600; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kpi.warn b { color: var(--warn); } .kpi.bad b { color: var(--bad); } .kpi.wrong b { color: var(--wrong); }
+.kpi.warn b { color: var(--warn); } .kpi.bad b { color: var(--bad); } .kpi.wrong b { color: var(--wrong); } .kpi.ok b { color: var(--ok); }
+.kpis.three { grid-template-columns: repeat(3, 1fr); }   /* the calibration check: drove, measured, error */
 @media (max-width: 380px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
 
 /* ---- passes ------------------------------------------------------------------------------------ */
@@ -348,6 +352,8 @@ details.table td, details.table th { text-align: left; padding: 4px 6px; border-
   animation: up .3s cubic-bezier(.2,.9,.3,1);
 }
 .toast .sign { width: 44px; height: 52px; box-shadow: 0 0 0 2px var(--rim); }
+/* An icon leading a toast ("Calibrated ..."): line-drawn like the rest, not an unsized filled shape. */
+.toast > svg { flex: none; width: 22px; height: 22px; margin-left: 4px; fill: none; stroke: var(--ok); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
 .toast .sign b { font-size: 20px; }
 .toast .sign small { font-size: 7px; }
 .toast.out { opacity: 0; transform: translateY(10px); transition: all .3s; }

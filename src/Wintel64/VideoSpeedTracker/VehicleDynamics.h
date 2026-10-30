@@ -74,6 +74,10 @@ public:
 
 	void markInvalidSpeed();
 
+	// True when markInvalidSpeed() was called because the vehicle was first seen already inside the speed zone (usually a
+	// track picked up again after it was lost), so it can never be timed.
+	bool firstSeenInZone() const { return seenInZone; }
+
 	int getFinalSpeed();
 
 	void holdFrame(Mat inMat);
@@ -134,6 +138,7 @@ private:
 
 	int trackStartPixel = 0;
 	int trackEndPixel= 0;
+	bool seenInZone = false;  // see firstSeenInZone()
 	int trackStartFrame = 0;
 	int trackEndFrame = 0;
 

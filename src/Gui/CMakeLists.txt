@@ -117,10 +117,19 @@ add_library(vst_engine STATIC
   ${VST_DIR}/Projection.cpp
   ${VST_DIR}/Snapshot.cpp)
 target_include_directories(vst_engine PUBLIC ${VST_DIR})
-target_compile_definitions(vst_engine PUBLIC VST_EMBEDDED)
+target_compile_definitions(vst_engine PUBLIC VST_EMBEDDED PRIVATE VST_VERSION="${VST_VERSION}")
 target_link_libraries(vst_engine PUBLIC vst_common ${OpenCV_LIBS})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(vst_engine PRIVATE -ffp-contract=off)
+endif()
+
+# The street report (Report.cpp) and the stats csv reader it builds on: no ImGui or OpenGL, so tests/report_test.cpp
+# links it on its own.
+add_library(vst_report STATIC Report.cpp Results.cpp)
+target_include_directories(vst_report PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${SINGLE_DIR})
+target_link_libraries(vst_report PUBLIC ${OpenCV_LIBS})
+if(MSVC)
+  target_compile_options(vst_report PRIVATE /utf-8)
 endif()
 
 find_package(OpenGL REQUIRED)
@@ -131,7 +140,7 @@ add_executable(VSTStudio WIN32
   Canvas.cpp
   Media.cpp
   Guide.cpp
-  Results.cpp
+  Calibration.cpp
   Server.cpp
   Settings.cpp
   Theme.cpp
@@ -142,7 +151,7 @@ target_include_directories(VSTStudio PRIVATE ${pfd_SOURCE_DIR} ${SINGLE_DIR})
 # Long-lived MJPEG and server-sent-event connections each hold a worker, so allow more than the default 8.
 target_compile_definitions(VSTStudio PRIVATE CPPHTTPLIB_THREAD_POOL_COUNT=16)
 target_compile_definitions(VSTStudio PRIVATE VST_VERSION="${VST_VERSION}")
-target_link_libraries(VSTStudio PRIVATE vst_engine imgui_lib OpenGL::GL Threads::Threads)
+target_link_libraries(VSTStudio PRIVATE vst_engine vst_report imgui_lib OpenGL::GL Threads::Threads)
 if(WIN32)
   # Keep windows.h from defining min/max macros and from dragging in winsock 1 ahead of cpp-httplib's winsock2.
   target_compile_definitions(VSTStudio PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _HAS_STD_BYTE=0)

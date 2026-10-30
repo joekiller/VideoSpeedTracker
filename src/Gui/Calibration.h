@@ -1,0 +1,64 @@
+// Calibration evidence: the history file and what it says about each direction.
+//
+// Every calibration VST Studio applies, and every check pass a user drives to test one, is appended as a row to
+// <configDir>/calibration-history.csv (the shared v1.2 format; see docs/vst-studio.md "Calibrate"):
+//
+//   Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, MeasuredMph, Error
+//
+// The file is never rewritten, so it is a record a traffic engineer can be shown: when each calibration was made,
+// from which pass, and how far a second, independent pass disagreed with it.  One file serves every VST.cfg on the
+// machine; the Config column says which one a row belongs to.
+//
+// The per-direction state (Not calibrated / Calibrated, not checked / Verified / Check failed) is computed from
+// those rows rather than kept anywhere else, so it survives restarts and can't drift from the record.
+#pragma once
+#include <string>
+#include <vector>
+
+struct CalEvent {
+	std::string time;            // ISO 8601 local with the UTC offset
+	std::string config;          // the VST.cfg the event belongs to
+	bool check = false;          // false: "apply" (set the calibration), true: "check" (a verification pass)
+	bool l2r = true;
+	double drivenMph = 0;        // what the driver's speedometer / cruise control said
+	int frames = 0;              // frames the pass took between the speed lines
+	double fps = 30;             // at this frame rate
+	int calFrames = 0;           // CalibrationFrames<dir> in force after the event
+	double measuredMph = 0;      // check only: what the calibration in force says the pass was
+	double error = 0;            // check only: measuredMph - drivenMph
+};
+
+// One direction's standing, for the Calibrate page and GET /api/status.
+struct CalState {
+	enum Kind { None, Unchecked, Verified, Failed } kind = None;
+	double error = 0;            // the deciding check's error (Verified / Failed)
+	std::string applied;         // time of the latest apply, "" if none on record
+	std::string checked;         // time of the deciding check, "" if none
+	const char* apiName() const { return kind == None ? "none" : kind == Unchecked ? "unchecked" : kind == Verified ? "verified" : "failed"; }
+};
+
+namespace calib {
+
+constexpr double kVerifiedMph = 2.0;   // a check within this many mph of the speedometer verifies the calibration
+
+std::string historyPath();             // <configDir>/calibration-history.csv
+std::string nowIso();                  // "2026-10-30T14:03:22-04:00"
+
+// Appends one row, writing the header first when the file is new.  Returns false (with err) if it can't write.
+bool append(const CalEvent& e, std::string& err);
+// The rows for one VST.cfg (paths compared after canonicalising), oldest first.  Lines it can't parse are skipped.
+std::vector<CalEvent> load(const std::string& configPath);
+
+// The CalibrationFrames a pass implies: a pass at `mph` taking `frames` at `fps` reads `mph` when
+// CalibrationFrames = frames × mph / CalibrationSpeed × CalibrationFPS / fps (inverse of the engine's formula).
+double impliedFrames(double mph, int frames, double fps, double calSpeed, double calFps);
+// What a calibration of `calFrames` says a pass of `frames` at `fps` was, unrounded (the engine rounds to whole mph):
+// speed = CalibrationSpeed × CalibrationFrames × (fps / CalibrationFPS) / frames.
+double measuredMph(int calFrames, int frames, double fps, double calSpeed, double calFps);
+
+// A direction's state from its history.  `currentFrames` is the CalibrationFrames<dir> now in VST.cfg and
+// `calibratedOffRecord` says whether the setup counts as calibrated without a history row (a v1.1 calibration made
+// before the history existed, or the bundled sample's VST.cfg).
+CalState state(const std::vector<CalEvent>& rows, bool l2r, int currentFrames, bool calibratedOffRecord);
+
+}  // namespace calib

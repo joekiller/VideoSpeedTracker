@@ -18,6 +18,12 @@
 namespace fs = std::filesystem;
 using namespace theme;
 
+// Font Awesome "file-lines" for the street report, kept here rather than in Icons.h while only the report uses it.
+#define ICON_REPORT "\xef\x85\x9c"
+#ifndef VST_VERSION
+#define VST_VERSION "dev"
+#endif
+
 static ImTextureID tid(Texture& t) { return (ImTextureID)(intptr_t)t.imguiId(); }
 
 static const char* pageTitle(Page p) {
@@ -227,11 +233,102 @@ void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
 	if (fps <= 0) fps = g.CalibrationFPS;
 	// speed = CalibrationSpeed × CalibrationFrames × (fps / CalibrationFPS) / frames, so a pass at `mph` taking
 	// `frames` at `fps` corresponds to CalibrationFrames = frames × mph / CalibrationSpeed × CalibrationFPS / fps.
-	int calFrames = std::max(1, int(std::lround(frames * mph / g.CalibrationSpeed * g.CalibrationFPS / fps)));
+	int calFrames = std::max(1, int(std::lround(calib::impliedFrames(mph, frames, fps, g.CalibrationSpeed, g.CalibrationFPS))));
 	(l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
 	prefs.calibratedFor = cfg.path();   // autosave writes it to VST.cfg on the next frame
+	// The record of it: which pass, at what speed, and the value it set.  A new apply also makes any earlier check
+	// of this direction moot, so the page's last check result goes too.
+	CalEvent e;
+	e.l2r = l2r;
+	e.drivenMph = mph;
+	e.frames = frames;
+	e.fps = fps;
+	e.calFrames = calFrames;
+	recordCalibration(e);
+	if (lastCheck_.l2r == l2r) lastCheck_ = CalCheck();
 	toast(std::string("Calibrated ") + (l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
 		+ std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
+}
+
+CalCheck App::checkCalibration(bool l2r, double mph, int frames, double fps) {
+	const Globals& g = cfg.g;
+	CalCheck r;
+	if (mph <= 0 || frames <= 0) return r;
+	if (fps <= 0) fps = g.CalibrationFPS;
+	r.valid = true;
+	r.l2r = l2r;
+	r.drivenMph = mph;
+	r.frames = frames;
+	r.fps = fps;
+	r.calFrames = l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L;
+	// Measured and error are rounded to 0.1 mph before the verdict, so the number on screen, the one in the history
+	// file and the verdict always agree (an error shown as 2.0 is never a failure).
+	r.measuredMph = std::round(calib::measuredMph(r.calFrames, frames, fps, g.CalibrationSpeed, g.CalibrationFPS) * 10) / 10;
+	r.error = std::round((r.measuredMph - mph) * 10) / 10;
+	r.verified = std::fabs(r.error) <= calib::kVerifiedMph + 1e-9;
+	CalEvent e;
+	e.check = true;
+	e.l2r = l2r;
+	e.drivenMph = mph;
+	e.frames = frames;
+	e.fps = fps;
+	e.calFrames = r.calFrames;
+	e.measuredMph = r.measuredMph;
+	e.error = r.error;
+	recordCalibration(e);
+	lastCheck_ = r;
+	return r;
+}
+
+void App::averageCalibration(const CalCheck& check) {
+	Globals& g = cfg.g;
+	if (!check.valid) return;
+	// Each pass implies a CalibrationFrames value.  The first pass's is the one the check was made against; the
+	// check pass's comes from its own frames and speed, the same way an apply works it out.  The new calibration
+	// is their mean, rounded, so neither pass's speedometer reading or lane position wins outright.
+	double second = calib::impliedFrames(check.drivenMph, check.frames, check.fps, g.CalibrationSpeed, g.CalibrationFPS);
+	int calFrames = std::max(1, int(std::lround((check.calFrames + second) / 2)));
+	(check.l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
+	prefs.calibratedFor = cfg.path();
+	// Recorded as an apply of the check pass (its speed, frames and fps) with the averaged value in force.  That
+	// starts a fresh calibration, so the direction reads "not checked" until a third pass checks the average.
+	CalEvent e;
+	e.l2r = check.l2r;
+	e.drivenMph = check.drivenMph;
+	e.frames = check.frames;
+	e.fps = check.fps;
+	e.calFrames = calFrames;
+	recordCalibration(e);
+	lastCheck_ = CalCheck();
+	toast(std::string("Averaged ") + (check.l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
+		+ std::to_string(int(g.CalibrationSpeed)) + " mph. Check it once more.", c::ok, ICON_CHECK_CIRCLE);
+}
+
+// Appends a calibration event to calibration-history.csv and to the in-memory copy the page reads.  The
+// documentation tour (--shots) keeps it in memory only, as it never writes settings either.
+void App::recordCalibration(CalEvent e) {
+	e.time = calib::nowIso();
+	e.config = cfg.path();
+	calibrationHistory();   // make sure the cache is for this config before adding to it
+	calHistory_.push_back(e);
+	std::string err;
+	if (!screenshotMode && !calib::append(e, err)) toast(err, c::bad, ICON_WARN);
+}
+
+const std::vector<CalEvent>& App::calibrationHistory() {
+	// Read once per config: only this process appends to the file, and it adds each row to the cache as it goes.
+	if (!calHistoryLoaded_ || calHistoryFor_ != cfg.path()) {
+		calHistory_ = screenshotMode ? std::vector<CalEvent>() : calib::load(cfg.path());
+		calHistoryFor_ = cfg.path();
+		calHistoryLoaded_ = true;
+	}
+	return calHistory_;
+}
+
+CalState App::calibrationState(bool l2r) {
+	// calibrationDone() covers calibrations made before the history existed (v1.1) and the bundled sample, whose
+	// VST.cfg comes calibrated for that video: those count as calibrated, not checked, until a check says more.
+	return calib::state(calibrationHistory(), l2r, l2r ? cfg.g.CalibrationFramesL2R : cfg.g.CalibrationFramesR2L, calibrationDone());
 }
 
 void App::toast(const std::string& text, unsigned color, const char* icon) {
@@ -983,6 +1080,7 @@ void App::zoneInspector() {
 		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 400, "Fastest trackable motion, pixels per two frames.");
 		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 400, "Fastest trackable motion, pixels per two frames.");
 		intRow("Entry look-back", &g.entryLookBack, 0, 1280);
+		intRow("Slowest logged", &g.minLoggedSpeed, 0, 100, "Vehicles timed below this many mph (walkers, cyclists) are counted in the run manifest but not written to the csv. 0 logs every timed vehicle.");
 	}
 
 	// Validation from the engine itself, then save/revert.
@@ -1079,16 +1177,21 @@ void App::pageCalibrate() {
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
-	beginCard("how", ICON_INFO, "How VST turns frames into speed", ImVec2(canvasW, 0));
-	ImGui::PushTextWrapPos(0);
-	dimText("VST never measures feet. It counts the frames a front bumper takes to get from one white line to the other and "
-		"compares that with your calibration pass:");
-	ImGui::PopTextWrapPos();
-	ImGui::PushFont(fonts.strong);
-	ImGui::TextUnformatted("speed  =  calibration speed  ×  calibration frames  ÷  frames this car took");
-	ImGui::PopFont();
-	dimText("So a car that crosses in half the frames you did was going twice your speed. Different frame rates are scaled automatically.");
-	endCard();
+	// Under the picture: the latest check pass's result when there is one (it has the room to sit beside the
+	// numbers), otherwise how the calibration is used.
+	if (lastCheck_.valid) calibrationCheckCard(canvasW);
+	else {
+		beginCard("how", ICON_INFO, "How VST turns frames into speed", ImVec2(canvasW, 0));
+		ImGui::PushTextWrapPos(0);
+		dimText("VST never measures feet. It counts the frames a front bumper takes to get from one white line to the other and "
+			"compares that with your calibration pass:");
+		ImGui::PopTextWrapPos();
+		ImGui::PushFont(fonts.strong);
+		ImGui::TextUnformatted("speed  =  calibration speed  ×  calibration frames  ÷  frames this car took");
+		ImGui::PopFont();
+		dimText("So a car that crosses in half the frames you did was going twice your speed. Different frame rates are scaled automatically.");
+		endCard();
+	}
 	ImGui::EndGroup();
 
 	ImGui::SameLine(0, px(20));
@@ -1097,8 +1200,33 @@ void App::pageCalibrate() {
 	segmented("cmode", &calibMode_, modes, 2);
 	ImGui::Dummy(ImVec2(0, px(4)));
 
+	// The check pass reuses the calibration controls (the pass list or the frame marks, and the speed you drove):
+	// calibChecking_ switches what the button does, from setting the calibration to testing it.  Checking only
+	// makes sense once a direction has a calibration to test.
+	CalState calL2R = calibrationState(true), calR2L = calibrationState(false);
+	bool anyCalibrated = calL2R.kind != CalState::None || calR2L.kind != CalState::None;
+	if (!anyCalibrated) calibChecking_ = false;
+	auto checkOffer = [&] {
+		if (!anyCalibrated) return;
+		ImGui::Dummy(ImVec2(0, px(2)));
+		if (calibChecking_) {
+			if (ImGui::SmallButton(ICON_ARROW_LEFT "  Back to calibrating")) calibChecking_ = false;
+		}
+		else if (ghostButton(ICON_BULLSEYE "  Check it with a second drive", ImVec2(-FLT_MIN, 0))) {
+			calibChecking_ = true;
+			calibPickId_ = 0;   // a check needs a new pass, not the one just used
+		}
+	};
+	// A pass can be checked once its direction has a calibration, and never against the pass that calibration was
+	// made from (it would agree with itself to the rounding).  Returns why not, or nullptr.
+	auto whyNoCheck = [&](bool l2r, int vehicleId) -> const char* {
+		if ((l2r ? calL2R : calR2L).kind == CalState::None) return "Calibrate this direction first; then a second pass can check it.";
+		if (vehicleId && vehicleId == calibAppliedId_) return "That's the pass the calibration came from. Pick a new pass.";
+		return nullptr;
+	};
+
 	if (calibMode_ == 0) {
-		beginCard("drive", ICON_CAR, "Drive through at a known speed");
+		beginCard("drive", calibChecking_ ? ICON_BULLSEYE : ICON_CAR, calibChecking_ ? "Check it with a second drive" : "Drive through at a known speed");
 		auto stepLine = [&](int n, const char* text) {
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1112,19 +1240,28 @@ void App::pageCalibrate() {
 			ImGui::PopTextWrapPos();
 			ImGui::Dummy(ImVec2(0, px(2)));
 		};
-		stepLine(1, "Start tracking (live, or record a video). The zones should already be set.");
-		stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph. Once each way on a two-way street.");
-		stepLine(3, "Pick your pass below, enter the speed you drove, and apply.");
+		if (calibChecking_) {
+			stepLine(1, "Drive past again on cruise control, ideally at a different speed from your first pass.");
+			stepLine(2, "Pick that pass and enter the speed you drove. Within ±2 mph is verified.");
+		}
+		else {
+			stepLine(1, "Start tracking (live, or record a video). The zones should already be set.");
+			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph. Once each way on a two-way street.");
+			stepLine(3, "Pick your pass below, enter the speed you drove, and apply.");
+		}
 		ImGui::Dummy(ImVec2(0, px(2)));
 		auto vs = tracker.vehiclesSince(0);
 		if (vs.empty()) dimText("No vehicles measured yet this session. Run tracking first, then come back here.");
 		else {
-			ImGui::BeginChild("picklist", ImVec2(0, px(240)), ImGuiChildFlags_FrameStyle);
+			// Five rows while checking (the newest passes are the likely ones), so the Current calibration card with
+			// the per-direction verdicts stays in view below.
+			ImGui::BeginChild("picklist", ImVec2(0, calibChecking_ ? ImGui::GetTextLineHeightWithSpacing() * 5 + ImGui::GetStyle().FramePadding.y * 2 : px(240)), ImGuiChildFlags_FrameStyle);
 			for (auto it = vs.rbegin(); it != vs.rend(); ++it) {
 				ImGui::PushID(it->id);
-				char label[160];
-				snprintf(label, sizeof label, "%s  %s   %d frames   (now reads %d mph)   %s", it->ev.leftToRight ? "→" : "←",
-					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->time.substr(11).c_str());
+				char label[180];
+				snprintf(label, sizeof label, "%s  %s   %d frames   (now reads %d mph)   %s%s", it->ev.leftToRight ? "→" : "←",
+					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
+					it->id == calibAppliedId_ ? "   calibrated from" : "");
 				if (ImGui::Selectable(label, calibPickId_ == it->id)) calibPickId_ = it->id;
 				ImGui::PopID();
 			}
@@ -1134,14 +1271,30 @@ void App::pageCalibrate() {
 		speedStepper("##spd", &calibSpeed_);
 		Vehicle picked;
 		bool have = calibPickId_ > 0 && tracker.vehicle(calibPickId_, picked);
-		ImGui::BeginDisabled(!have);
-		if (primaryButton(ICON_CHECK "  Use this pass", ImVec2(-FLT_MIN, 0))) applyCalibration(picked.ev.leftToRight, calibSpeed_, picked.frames(), picked.fps);
-		ImGui::EndDisabled();
+		if (calibChecking_) {
+			const char* why = have ? whyNoCheck(picked.ev.leftToRight, picked.id) : nullptr;
+			ImGui::BeginDisabled(!have || why);
+			if (primaryButton(ICON_BULLSEYE "  Check this pass", ImVec2(-FLT_MIN, 0))) checkCalibration(picked.ev.leftToRight, calibSpeed_, picked.frames(), picked.fps);
+			ImGui::EndDisabled();
+			if (why) { ImGui::PushTextWrapPos(0); dimText("%s", why); ImGui::PopTextWrapPos(); }
+		}
+		else {
+			ImGui::BeginDisabled(!have);
+			if (primaryButton(ICON_CHECK "  Use this pass", ImVec2(-FLT_MIN, 0))) {
+				applyCalibration(picked.ev.leftToRight, calibSpeed_, picked.frames(), picked.fps);
+				calibAppliedId_ = picked.id;
+			}
+			ImGui::EndDisabled();
+		}
+		checkOffer();
 		endCard();
 	}
 	else {
-		beginCard("manual", ICON_STOPWATCH, "Count the frames yourself");
-		dimText("Step through your calibration video frame by frame. Mark when the front bumper touches the first line, then the second.");
+		beginCard("manual", calibChecking_ ? ICON_BULLSEYE : ICON_STOPWATCH, calibChecking_ ? "Check it with a second pass" : "Count the frames yourself");
+		ImGui::PushTextWrapPos(0);
+		dimText(calibChecking_ ? "Find a second pass in the video, ideally at a different speed. Clear the marks, mark it the same way and enter the speed you drove."
+			: "Step through your calibration video frame by frame. Mark when the front bumper touches the first line, then the second.");
+		ImGui::PopTextWrapPos();
 		static const char* const dirs[] = { "→  Left to right", "←  Right to left" };
 		segmented("cdir", &calibDir_, dirs, 2);
 		ImGui::Dummy(ImVec2(0, px(4)));
@@ -1164,10 +1317,20 @@ void App::pageCalibrate() {
 		}
 		formLabel("I drove at (mph)", px(130));
 		speedStepper("##spd2", &calibSpeed_);
-		ImGui::BeginDisabled(!frames);
-		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
-		ImGui::EndDisabled();
+		if (calibChecking_) {
+			const char* why = whyNoCheck(calibDir_ == 0, 0);
+			ImGui::BeginDisabled(!frames || why);
+			if (primaryButton(ICON_BULLSEYE "  Check", ImVec2(-FLT_MIN, 0))) checkCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
+			ImGui::EndDisabled();
+			if (why) { ImGui::PushTextWrapPos(0); dimText("%s", why); ImGui::PopTextWrapPos(); }
+		}
+		else {
+			ImGui::BeginDisabled(!frames);
+			if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
+			ImGui::EndDisabled();
+		}
 		if (ImGui::SmallButton("Clear marks")) m[0] = m[1] = -1;
+		checkOffer();
 		endCard();
 	}
 
@@ -1184,6 +1347,29 @@ void App::pageCalibrate() {
 	calTile("Left to right", g.CalibrationFramesL2R, c::l2r);
 	ImGui::SameLine(0, px(10));
 	calTile("Right to left", g.CalibrationFramesR2L, c::r2l);
+	// Under each tile, how far that calibration has been shown to hold: the history's verdict for the direction.
+	auto statePill = [&](const CalState& s) {
+		char t[96];
+		ImU32 col = c::dim;
+		switch (s.kind) {
+		case CalState::None: snprintf(t, sizeof t, ICON_WARN "  Not calibrated"); col = c::warn; break;
+		case CalState::Unchecked: snprintf(t, sizeof t, ICON_CIRCLE "  Not checked"); break;
+		case CalState::Verified: snprintf(t, sizeof t, ICON_CHECK_CIRCLE "  Verified (±%.1f mph)", std::fabs(s.error)); col = c::ok; break;
+		case CalState::Failed: snprintf(t, sizeof t, ICON_X_CIRCLE "  Check failed (%+.1f mph)", s.error); col = c::bad; break;
+		}
+		pill(t, col, alpha(col, .14f), fonts.caption);
+		if (ImGui::IsItemHovered()) {
+			std::string tip = s.kind == CalState::None ? "No calibration for this direction yet."
+				: s.kind == CalState::Unchecked ? "Calibrated" + (s.applied.empty() ? std::string(" before VST kept a history") : " " + s.applied.substr(0, 16))
+					+ ", not yet checked with a second pass."
+				: "Checked " + s.checked.substr(0, 16) + " with a second pass.";
+			ImGui::SetTooltip("%s", tip.c_str());
+		}
+	};
+	float rowX = ImGui::GetCursorPosX();
+	statePill(calL2R);
+	ImGui::SameLine(rowX + half + px(10));
+	statePill(calR2L);
 	// What a given crossing time reads as, so the numbers mean something.
 	// Each direction has its own calibration, so each gets its own row of crossing times.
 	dimText("Frames a car takes to cross the zone at each speed:");
@@ -1212,9 +1398,77 @@ void App::pageCalibrate() {
 	ImGui::PushTextWrapPos(0);
 	dimText(calibrationDone() ? ICON_CHECK "  Calibration is saved with your settings."
 		: "Not calibrated for this camera yet. Apply one pass above; it saves automatically.");
+	dimText(ICON_FILE_CSV "  History: calibration-history.csv");
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every calibration and check is appended to\n%s", calib::historyPath().c_str());
 	ImGui::PopTextWrapPos();
 	endCard();
 	ImGui::EndChild();
+}
+
+// The latest check pass: what you drove beside what the calibration says, the error, and the verdict.  A failed
+// check explains the usual causes and offers the two ways forward: calibrate again from scratch, or average the
+// two passes (when both drives were honest, the mean is a better estimate than either).
+void App::calibrationCheckCard(float width) {
+	const CalCheck& k = lastCheck_;
+	const Globals& g = cfg.g;
+	beginCard("calcheck", ICON_BULLSEYE, k.l2r ? "Check result: left to right" : "Check result: right to left", ImVec2(width, 0));
+	// Left: the three numbers side by side.  Right: the verdict in words and, for a failed check, what to do.
+	float tileW = px(128), tileH = px(96), gap = px(8);
+	char drove[16], said[16], err[16];
+	snprintf(drove, sizeof drove, "%g", k.drivenMph);
+	snprintf(said, sizeof said, "%.1f", k.measuredMph);
+	snprintf(err, sizeof err, "%+.1f", k.error);
+	ImU32 verdict = k.verified ? c::ok : c::bad;
+	ImGui::BeginGroup();
+	statTile(ICON_CAR, "You drove", drove, "mph", k.l2r ? c::l2r : c::r2l, ImVec2(tileW, tileH));
+	ImGui::SameLine(0, gap);
+	statTile(ICON_GAUGE, "VST says", said, "mph", c::accent, ImVec2(tileW, tileH));
+	ImGui::SameLine(0, gap);
+	statTile(k.verified ? ICON_CHECK_CIRCLE : ICON_WARN, "Error", err, "mph", verdict, ImVec2(tileW, tileH));
+	ImGui::EndGroup();
+	ImGui::SameLine(0, px(20));
+	ImGui::BeginGroup();
+	float textW = ImGui::GetContentRegionAvail().x;
+	ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + textW);
+	ImGui::PushFont(fonts.strong);
+	ImGui::PushStyleColor(ImGuiCol_Text, v4(verdict));
+	if (k.verified) ImGui::Text(ICON_CHECK_CIRCLE "  Verified: within ±%.0f mph of what you drove", calib::kVerifiedMph);
+	else ImGui::Text(ICON_WARN "  Off by %.1f mph, more than ±%.0f mph", std::fabs(k.error), calib::kVerifiedMph);
+	ImGui::PopStyleColor();
+	ImGui::PopFont();
+	if (k.verified)
+		dimText("A second, independent pass agrees with the calibration, and both passes are recorded in calibration-history.csv. "
+			"If you can, check the other direction too.");
+	else {
+		dimText("Likely causes:");
+		for (const char* t : {
+			"Speedometer error: most read high. A GPS speed app is a better reference.",
+			"The zones moved: the camera or the speed lines shifted since the first pass.",
+			"A different lane: the far lane crosses more road between the lines." })
+			dimText("•  %s", t);
+	}
+	ImGui::PopTextWrapPos();
+	if (!k.verified) {
+		// What averaging would set, so the button says exactly what it does.
+		double second = calib::impliedFrames(k.drivenMph, k.frames, k.fps, g.CalibrationSpeed, g.CalibrationFPS);
+		int avg = std::max(1, int(std::lround((k.calFrames + second) / 2)));
+		ImGui::Dummy(ImVec2(0, px(2)));
+		float bw = (textW - px(10)) * .5f;
+		if (ghostButton(ICON_ROTATE "  Redo calibration", ImVec2(bw, 0))) {
+			calibChecking_ = false;
+			calibPickId_ = 0;
+			lastCheck_ = CalCheck();
+		}
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive past again and calibrate from that pass.");
+		ImGui::SameLine(0, px(10));
+		char label[64];
+		snprintf(label, sizeof label, ICON_ARROWS_LR "  Average: %d frames", avg);
+		if (primaryButton(label, ImVec2(bw, 0))) averageCalibration(k);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Average the two passes: %d frames from the first, %.1f from this one.\nThen check the average with one more pass.", k.calFrames, second);
+	}
+	ImGui::EndGroup();
+	endCard();
 }
 
 // ======================================================================================================
@@ -1475,6 +1729,9 @@ void App::pageResults() {
 	if (ghostButton(ICON_FILM " Highlights")) openWithSystem((fs::path(dataDir()) / "HiLites").string());
 	ImGui::SameLine();
 	if (ghostButton(ICON_FOLDER_OPEN " Folder")) openWithSystem((fs::path(dataDir()) / "Stats").string());
+	ImGui::SameLine();
+	if (primaryButton(ICON_REPORT "  Make report")) { reportForm_.saved.clear(); reportForm_.error.clear(); ImGui::OpenPopup("Street report"); }
+	reportDialog();
 
 	// Filtered view.
 	int minSpeed = 0;
@@ -1514,7 +1771,7 @@ void App::pageResults() {
 		speeds.push_back(r.speed);
 	}
 	std::sort(speeds.begin(), speeds.end());
-	int p85 = speeds.empty() ? 0 : speeds[std::min(speeds.size() - 1, size_t(speeds.size() * .85))];
+	int p85 = report::percentile(speeds, 85);   // nearest rank, the same definition as the street report and the phone
 	float tw = (avail - px(48)) / 5, th = px(100);
 	char sub[64];
 	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
@@ -1659,6 +1916,7 @@ void App::pageResults() {
 		if (r.vehicleId && ghostButton(ICON_RULER "  This was me: calibrate from it", ImVec2(-FLT_MIN, 0))) {
 			calibPickId_ = r.vehicleId;
 			calibMode_ = 0;
+			calibChecking_ = false;   // "calibrate from it", not check it
 			page = Page::Calibrate;
 		}
 		endCard();
@@ -1741,6 +1999,126 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		if (hov) ImGui::SetTooltip("%d mph %s%s", hov->speed, hov->l2r ? "→" : "←", hov->wrongWay ? "  (wrong way)" : "");
 	}
 	endCard();
+}
+
+// ---- street report ----------------------------------------------------------------------------------------
+
+report::Input App::reportInput(bool snapshots, const std::string& from, const std::string& to) {
+	const Globals& g = cfg.g;
+	report::Input in;
+	in.dataDir = dataDir();
+	in.configPath = cfg.path();
+	// calibration-history.csv lives in the config folder: next to this VST.cfg, or the per-user config folder.
+	if (!cfg.path().empty()) in.historyFiles.push_back((fs::path(cfg.path()).parent_path() / "calibration-history.csv").string());
+	in.historyFiles.push_back((userpaths::configDir() / "calibration-history.csv").string());
+	// Runs recorded before manifests existed are read with the current settings.
+	in.current.l2rCompass = g.L2RDirection;
+	in.current.r2lCompass = g.R2LDirection;
+	in.current.legal = g.LegalDirection;
+	in.current.framesL2R = g.CalibrationFramesL2R;
+	in.current.framesR2L = g.CalibrationFramesR2L;
+	in.current.calSpeed = g.CalibrationSpeed;
+	in.current.calFps = g.CalibrationFPS;
+	in.current.minLoggedSpeed = g.minLoggedSpeed;
+	if (!snapshots) return in;
+	// Example frames exist only for this session's vehicles (kept in memory).  Take the six fastest in the date range,
+	// each made safe by blurForReport before it ever reaches the report.
+	std::vector<Vehicle> vs = tracker.vehiclesSince(0);
+	std::sort(vs.begin(), vs.end(), [](const Vehicle& a, const Vehicle& b) { return a.ev.speed > b.ev.speed; });
+	for (const Vehicle& v : vs) {
+		if (in.snapshots.size() >= 6) break;
+		std::string when = v.live ? v.time : v.recorded;
+		std::string day = when.substr(0, 10);
+		if (v.snapshot.empty() || (!from.empty() && (day.empty() || day < from)) || (!to.empty() && (day.empty() || day > to))) continue;
+		std::string jpeg = report::blurForReport(v.snapshot);
+		if (!jpeg.empty()) in.snapshots.push_back({ jpeg, v.ev.speed, v.ev.leftToRight, when });
+	}
+	return in;
+}
+
+report::Settings App::reportSettings() {
+	report::Settings s;
+	s.siteName = prefs.siteName;
+	s.speedLimit = prefs.speedLimit;
+	s.wayOver = prefs.egregious;
+	s.version = VST_VERSION;
+	return s;
+}
+
+// The "Make report" dialog: a few choices, then one HTML file in <data>/Reports that prints cleanly to PDF.
+void App::reportDialog() {
+	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Appearing);
+	if (!ImGui::BeginPopupModal("Street report", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+	ReportForm& f = reportForm_;
+	float col = px(150);
+	dimText("A printable study of the speeds in your data folder, for a city council or a traffic engineer. "
+		"It lists coverage, speeds per direction, the calibration record and the error band.");
+	ImGui::Dummy(ImVec2(0, px(6)));
+	formLabel("Site name", col);
+	char site[96];
+	snprintf(site, sizeof site, "%s", prefs.siteName.c_str());
+	if (ImGui::InputTextWithHint("##rsite", "Street and block, e.g. Locust Ave, 600 block", site, sizeof site)) prefs.siteName = site;
+	ImGui::SetCursorPosX(col);
+	dimText("Street and block only, never a house number.");
+	float half = (ImGui::GetContentRegionAvail().x - col - px(8)) / 2;
+	formLabel("Dates", col);
+	ImGui::SetNextItemWidth(half);
+	ImGui::InputTextWithHint("##rfrom", "from YYYY-MM-DD", f.from, sizeof f.from);
+	ImGui::SameLine(0, px(8));
+	ImGui::SetNextItemWidth(half);
+	ImGui::InputTextWithHint("##rto", "to YYYY-MM-DD", f.to, sizeof f.to);
+	ImGui::SetCursorPosX(col);
+	dimText("Leave blank for all the data.");
+	ImGui::SetCursorPosX(col);
+	ImGui::Checkbox("Compare with another period (before/after)", &f.compare);
+	if (f.compare) {
+		ImGui::SetCursorPosX(col);
+		ImGui::SetNextItemWidth(half);
+		ImGui::InputTextWithHint("##rcf", "from YYYY-MM-DD", f.cmpFrom, sizeof f.cmpFrom);
+		ImGui::SameLine(0, px(8));
+		ImGui::SetNextItemWidth(half);
+		ImGui::InputTextWithHint("##rct", "to YYYY-MM-DD", f.cmpTo, sizeof f.cmpTo);
+	}
+	ImGui::SetCursorPosX(col);
+	ImGui::Checkbox("Include example frames (blurred)", &f.snapshots);
+	if (f.snapshots) { ImGui::SetCursorPosX(col); dimText("Only this session's vehicles have snapshots. Plates are blurred and nothing identifying is added."); }
+	formLabel("Note", col);
+	ImGui::InputTextMultiline("##rnote", f.note, sizeof f.note, ImVec2(-FLT_MIN, px(70)));
+	ImGui::SetCursorPosX(col);
+	dimText("Limit %d mph, way over %d mph (set on the Live page).", prefs.speedLimit, prefs.egregious);
+
+	if (!f.error.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad)); ImGui::TextWrapped("%s", f.error.c_str()); ImGui::PopStyleColor(); }
+	if (!f.saved.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok)); ImGui::TextWrapped(ICON_CHECK_CIRCLE "  Saved %s", f.saved.c_str()); ImGui::PopStyleColor(); }
+	ImGui::Dummy(ImVec2(0, px(6)));
+	if (primaryButton(ICON_REPORT "  Make report")) {
+		f.error.clear();
+		f.saved.clear();
+		// Dates must be blank or YYYY-MM-DD; the report reads anything else as "all data", so say so here instead.
+		int64_t d;
+		for (const char* v : { f.from, f.to, f.cmpFrom, f.cmpTo })
+			if (*v && !report::parseDay(v, d)) f.error = std::string("\"") + v + "\" isn't a date like 2026-11-02.";
+		if (f.compare && (!*f.cmpFrom || !*f.cmpTo)) f.error = "Give both dates of the period to compare with.";
+		if (f.error.empty()) {
+			report::Settings s = reportSettings();
+			s.from = f.from;
+			s.to = f.to;
+			s.note = f.note;
+			s.includeSnapshots = f.snapshots;
+			if (f.compare) { s.compareFrom = f.cmpFrom; s.compareTo = f.cmpTo; }
+			std::string path, html;
+			if (report::writeReport(reportInput(f.snapshots, s.from, s.to), s, path, html, f.error)) {
+				f.saved = path;
+				toast("Report saved: " + fs::path(path).filename().string(), c::ok, ICON_REPORT);
+			}
+		}
+	}
+	ImGui::SameLine();
+	ImGui::BeginDisabled(f.saved.empty());
+	if (ghostButton(ICON_ARROW_UP_RIGHT "  Open")) openWithSystem(f.saved);
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ghostButton("Close")) ImGui::CloseCurrentPopup();
+	ImGui::EndPopup();
 }
 
 // ======================================================================================================

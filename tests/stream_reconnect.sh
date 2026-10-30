@@ -74,10 +74,23 @@ awk -F', *' -v lost="$lost" -v today="$today" '
 	}' "$CSV" > "$OUT/csv-check.txt" || fail "$(cat "$OUT/csv-check.txt")"
 echo "command line: lost the stream at frame $lost, reconnected, vehicles logged on both sides of the gap"
 
+# The run manifest beside the csv is rewritten as soon as a dropout ends, so even though VST was killed rather than stopped
+# it must be there, still marked incomplete, naming the stream and recording the first gap with both of its ends.
+MANIFEST=$OUT/run_live.json
+[ -f "$MANIFEST" ] || fail "no run manifest at $MANIFEST"
+stamp='"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}"'
+grep -q '"complete": false' "$MANIFEST" || fail "manifest isn't marked incomplete: $(cat "$MANIFEST")"
+grep -qF "\"source\": { \"input\": \"$URL\", \"kind\": \"stream\" }" "$MANIFEST" || fail "manifest doesn't name the stream: $(cat "$MANIFEST")"
+grep -qE "\{ \"from\": $stamp, \"to\": $stamp \}" "$MANIFEST" || fail "manifest has no complete outage: $(cat "$MANIFEST")"
+echo "command line: the run manifest records the outage"
+
 # ---- 2. embedded: Stop during the backoff wait ----
 if [ -n "$ENGINE_TEST" ]; then
 	serve 0 3
 	"$ENGINE_TEST" "$URL" "$SRC/bin/VST.cfg" "$OUT/embedded.csv" > "$OUT/engine.log" 2>&1 || { cat "$OUT/engine.log"; echo "FAIL: embedded stop while reconnecting"; exit 1; }
 	tail -1 "$OUT/engine.log"
+	# Stopped while down: the final manifest is complete, and its gap runs to the stop.
+	grep -q '"complete": true' "$OUT/run_embedded.json" && grep -qE "\{ \"from\": $stamp, \"to\": $stamp \}" "$OUT/run_embedded.json" \
+		|| { cat "$OUT/run_embedded.json"; echo "FAIL: embedded run manifest after a stop while reconnecting"; exit 1; }
 fi
 echo "PASS"

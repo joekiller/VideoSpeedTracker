@@ -10,7 +10,8 @@
 #   hello, auth (401 without the token), status and config fields, a rejected PUT /api/config that must leave
 #   VST.cfg byte-identical, the /api/live stream (status and config events), POST /api/run start, polling until
 #   the run ends, the vehicle count and the stats csv against tests/baseline_manual_20160130172251.csv (with the
-#   same drift rules as the command-line regression test), a snapshot JPEG, a clip MP4, and 404s with JSON bodies
+#   same drift rules as the command-line regression test), the street report (/api/report.html), a snapshot JPEG,
+#   a clip MP4, and 404s with JSON bodies
 #   for missing things and path-traversal probes.  Where Node 20+ is installed it also runs the companion's
 #   contract suite (companion/test/*.test.mjs) against the app: read-only first, the MUTATE=1 tests last.
 #
@@ -232,6 +233,19 @@ else
   fail "stats csv differs from the baseline:"; cat "$OUT/compare.txt"
 fi
 
+echo "Street report"
+req GET "/api/report.html?from=2016-01-30&to=bad"
+expect 400 "GET /api/report.html with a bad date"
+json_error "400"
+req GET /api/report.html
+expect 200 "GET /api/report.html"
+[[ $TYPE == text/html* ]] && pass "the report is HTML" || fail "the report should be text/html, got $TYPE"
+grep -q 'Community traffic study. Estimated speeds, ±' "$OUT/body" && pass "it carries the study label" || fail "no study label in the report"
+grep -q "Vehicles logged</dt><dd class='num'>$EXPECTED<" "$OUT/body" && pass "it counts $EXPECTED vehicles" \
+  || fail "the report doesn't count $EXPECTED vehicles: $(grep -o "Vehicles logged</dt><dd[^<]*<" "$OUT/body")"
+grep -qE 'https?://' "$OUT/body" && fail "the report references an external URL" || pass "the report is self-contained"
+ls "$OUT"/data/videospeedtracker/Reports/report_*.html > /dev/null 2>&1 && pass "a copy is saved in Reports/" || fail "no report in the data folder's Reports/"
+
 req GET "/api/vehicles/$FIRST"
 expect 200 "GET /api/vehicles/$FIRST"
 req GET "/api/vehicles/$FIRST/snapshot.jpg"
@@ -297,6 +311,25 @@ if [ -n "${NODE_OK:-}" ]; then
     pass "node --test, MUTATE=1: $(grep -E '^# (pass|skipped)' "$OUT/node-test-mutate.txt" | tr '\n' ' ')"
   else
     fail "node --test, MUTATE=1, against VST Studio:"; grep -E '^not ok|error:|expected|actual' "$OUT/node-test-mutate.txt" | head -40
+  fi
+
+  # The calibration tests above applied and checked calibrations through the API; each must have left a row in
+  # calibration-history.csv in the (throwaway) config folder, under the shared header, for this VST.cfg.
+  echo "Calibration history"
+  HIST=$OUT/config/videospeedtracker/calibration-history.csv
+  if [ -f "$HIST" ]; then
+    [ "$(head -1 "$HIST")" = "Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, MeasuredMph, Error" ] \
+      && pass "calibration-history.csv has the header" || fail "calibration-history.csv header: $(head -1 "$HIST")"
+    grep -q ", apply, \(L2R\|R2L\), " "$HIST" && pass "it records an apply" || fail "no apply row in: $(cat "$HIST")"
+    grep -q ", check, \(L2R\|R2L\), " "$HIST" && pass "it records a check" || fail "no check row in: $(cat "$HIST")"
+    grep -q "^[0-9T:-]*[+-][0-9][0-9]:[0-9][0-9], $OUT/VST.cfg, " "$HIST" \
+      && pass "rows carry an ISO time with its offset and this VST.cfg" || fail "unexpected row format: $(sed -n 2p "$HIST")"
+    # The MUTATE run makes two applies and three checks (refused requests in the read-only run add nothing), and
+    # rows are only ever appended, so all five must be there.
+    ROWS=$(($(grep -c . "$HIST") - 1))
+    [ "$ROWS" -ge 5 ] && pass "$ROWS history rows" || fail "only $ROWS history rows: $(cat "$HIST")"
+  else
+    fail "the calibration tests left no $HIST"
   fi
 fi
 

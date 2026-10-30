@@ -214,6 +214,28 @@ describe('media', () => {
   });
 });
 
+describe('GET /api/report.html', () => {
+  it('is one self-contained HTML page carrying the study label', async () => {
+    const r = await api.get('/api/report.html');
+    assert.equal(r.status, 200);
+    assert.match(r.type, /text\/html/);
+    assert.match(r.data, /^<!doctype html>/i);
+    assert.match(r.data, /Community traffic study\. Estimated speeds, ±\d+(\.\d)? mph/);
+    assert.match(r.data, /@media print/, 'prints cleanly');
+    // Nothing loaded from elsewhere: every src/href is a data: URI or an in-page link, and no URL has a scheme.
+    for (const [, url] of r.data.matchAll(/(?:src|href)\s*=\s*['"]?([^'"\s>]{0,12})/gi)) assert.match(url, /^(data:|#)/, `external reference ${url}`);
+    assert.doesNotMatch(r.data, /https?:\/\//);
+    for (const banned of ['radar-accurate', 'enforcement-grade', 'evidence for a ticket']) assert.ok(!r.data.includes(banned), banned);
+  });
+
+  it('takes from/to dates; anything else is 400 {error}; it needs the token', async () => {
+    assert.equal((await api.get('/api/report.html?from=2016-01-01&to=2030-12-31')).status, 200);
+    assertError(await api.get('/api/report.html?from=yesterday'), 400, 'bad from');
+    assertError(await api.get('/api/report.html?to=2026-13-45x'), 400, 'bad to');
+    assertError(await api.get('/api/report.html', { auth: false }), 401, 'no token');
+  });
+});
+
 describe('GET /api/live', () => {
   it('sends status and config as soon as it opens', async () => {
     const evs = await readEvents(t, `/api/live?token=${encodeURIComponent(t.token)}`,
@@ -339,5 +361,118 @@ describe('calibration', () => {
     assert.equal(a.status, 200);
     assert.equal(a.data.ok, false);
     assert.ok(a.data.problems.length > 0);
+  });
+});
+
+// ---- calibration checks (v1.2) ------------------------------------------------------------------------
+
+const CAL_STATES = ['none', 'unchecked', 'verified', 'failed'];
+const CAL_DIR = {
+  state: (s) => CAL_STATES.includes(s),
+  error: (e) => e === null || isNum(e),
+  applied: (s) => s === null || (isStr(s) && !Number.isNaN(Date.parse(s))),
+  checked: (s) => s === null || (isStr(s) && !Number.isNaN(Date.parse(s))),
+  frames: isInt,
+};
+
+/** "error is null unless state is verified or failed, and verified means |error| <= 2". */
+function assertCalState(c, where) {
+  assertShape(c, CAL_DIR, where);
+  const checked = c.state === 'verified' || c.state === 'failed';
+  assert.equal(c.error !== null, checked, `${where}: error is set exactly when a check decides the state`);
+  assert.equal(c.checked !== null, checked, `${where}: checked is set exactly when a check decides the state`);
+  if (checked) assert.equal(c.state === 'verified', Math.abs(c.error) <= 2, `${where}: verified means within ±2 mph`);
+}
+
+/** What the calibration in `cfg` says a pass was, to 0.1 mph (the document's formula). */
+const measured = (cfg, dir, frames, fps) =>
+  Math.round(cfg.CalibrationSpeed * cfg[`CalibrationFrames${dir}`] * (fps / cfg.CalibrationFPS) / frames * 10) / 10;
+
+describe('calibration state and checks', () => {
+  it('GET /api/status has calibration per direction', async () => {
+    const { data: st } = await api.get('/api/status');
+    assert.ok(st.calibration && typeof st.calibration === 'object', 'status.calibration');
+    for (const d of DIRS) assertCalState(st.calibration[d], `status.calibration.${d}`);
+    const { data: cfg } = await api.get('/api/config');
+    for (const d of DIRS) assert.equal(st.calibration[d].frames, cfg[`CalibrationFrames${d}`], `${d} frames match the config`);
+  });
+
+  it('check refuses what it cannot measure with 200 {ok:false, problems}', async () => {
+    for (const bad of [{ dir: 'L2R', speed: 0, vehicleId: 1 }, { dir: 'L2R', speed: 25, vehicleId: 987654321 }]) {
+      const r = await api.post('/api/calibration/check', bad);
+      assert.equal(r.status, 200, `${JSON.stringify(bad)}: refused in-band`);
+      assert.equal(r.data.ok, false);
+      assert.ok(Array.isArray(r.data.problems) && r.data.problems.length > 0 && r.data.problems.every(isStr));
+    }
+    assertError(await api.post('/api/calibration/check', 'not json'), 400, 'check with a body that is not JSON');
+  });
+
+  it('check reports measured vs driven, changes no settings, and sets the state', async (ctx) => {
+    if (!t.mutate) return ctx.skip('adds rows to calibration-history.csv; set MUTATE=1 to run against a real VST Studio');
+    const { data: vs } = await api.get('/api/vehicles?limit=1');
+    if (!vs.length) return ctx.skip('no logged pass to check with');
+    const v = vs[0];
+    const { data: before } = await api.get('/api/config');
+    const want = measured(before, v.dir, v.frames, v.fps);
+
+    // A pass 10 mph slower than the calibration says: off by about +10, not verified.
+    const far = Math.max(1, Math.round(want) - 10);
+    const bad = await api.post('/api/calibration/check', { dir: v.dir, speed: far, vehicleId: v.id });
+    assert.equal(bad.status, 200);
+    assertShape(bad.data, { ok: (x) => x === true, direction: (d) => d === v.dir, drivenMph: isNum, measuredMph: isNum, error: isNum, verified: isBool }, 'check reply');
+    assert.ok(Math.abs(bad.data.measuredMph - want) < 0.051, `measuredMph ${bad.data.measuredMph}, expected ${want}`);
+    assert.equal(bad.data.drivenMph, far);
+    assert.ok(Math.abs(bad.data.error - (bad.data.measuredMph - far)) < 0.051, 'error = measuredMph - drivenMph');
+    assert.equal(bad.data.verified, false);
+    let { data: st } = await api.get('/api/status');
+    assert.equal(st.calibration[v.dir].state, 'failed');
+    assert.ok(Math.abs(st.calibration[v.dir].error - bad.data.error) < 0.051);
+
+    // The same pass at the speed the calibration says it was: verified, and the state follows.
+    const near = Math.round(want);
+    const good = await api.post('/api/calibration/check', { dir: v.dir, speed: near, vehicleId: v.id });
+    assert.equal(good.data.ok, true);
+    assert.equal(good.data.verified, true);
+    assert.ok(Math.abs(good.data.error) <= 0.5);
+    ({ data: st } = await api.get('/api/status'));
+    assertCalState(st.calibration[v.dir], 'after a good check');
+    assert.equal(st.calibration[v.dir].state, 'verified');
+
+    const { data: after } = await api.get('/api/config');
+    assert.deepEqual(after, before, 'a check changes no settings');
+  });
+
+  it('a new apply makes the direction "unchecked" again', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
+    const { data: vs } = await api.get('/api/vehicles?limit=1');
+    if (!vs.length) return ctx.skip('no logged pass to calibrate from');
+    const v = vs[0], key = `CalibrationFrames${v.dir}`;
+    const { data: before } = await api.get('/api/config');
+    try {
+      await api.post('/api/calibration/check', { dir: v.dir, speed: Math.round(measured(before, v.dir, v.frames, v.fps)), vehicleId: v.id });
+      const r = await api.post('/api/calibration/apply', { dir: v.dir, speed: 30, vehicleId: v.id });
+      assert.equal(r.data.ok, true, JSON.stringify(r.data.problems));
+      const { data: st } = await api.get('/api/status');
+      assertCalState(st.calibration[v.dir], 'after an apply');
+      assert.equal(st.calibration[v.dir].state, 'unchecked');
+      assert.ok(st.calibration[v.dir].applied, 'the apply is on record');
+    } finally {
+      await api.put('/api/config', { [key]: before[key] });
+    }
+  });
+
+  it('check from hand-marked frames uses the marked span', async (ctx) => {
+    // VST Studio marks the frame on screen, which only moves while video plays; the mock's clock always runs.
+    if (!t.mock) return ctx.skip('needs a moving frame counter (the mock)');
+    const s = await api.post('/api/calibration/mark', { dir: 'L2R', edge: 'start' });
+    await new Promise((res) => setTimeout(res, 250));
+    const e = await api.post('/api/calibration/mark', { dir: 'L2R', edge: 'end' });
+    const frames = e.data.frame - s.data.frame;
+    assert.ok(frames > 0, 'the clock moved between the marks');
+    const { data: cfg } = await api.get('/api/config');
+    const r = await api.post('/api/calibration/check', { dir: 'L2R', speed: 25 });
+    assert.equal(r.data.ok, true, JSON.stringify(r.data.problems));
+    assert.equal(r.data.direction, 'L2R');
+    assert.ok(Math.abs(r.data.measuredMph - measured(cfg, 'L2R', frames, 30)) < 0.051);
   });
 });

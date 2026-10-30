@@ -1,0 +1,6 @@
+Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, MeasuredMph, Error
+2026-11-01T10:14:03-05:00, /home/joe/.config/videospeedtracker/VST.cfg, apply, L2R, 25, 35, 30, 35, ,
+2026-11-01T10:21:40-05:00, /home/joe/.config/videospeedtracker/VST.cfg, apply, R2L, 25, 40, 30, 40, ,
+2026-11-01T10:30:00-05:00, /home/joe/.config/videospeedtracker/other.cfg, apply, L2R, 30, 20, 30, 20, ,
+2026-11-01T10:40:12-05:00, /home/joe/.config/videospeedtracker/VST.cfg, check, R2L, 30, 33, 30, 40, 30.3, 0.3
+2026-11-01T10:46:55-05:00, /home/joe/.config/videospeedtracker/VST.cfg, check, L2R, 30, 31, 30, 35, 28.2, -1.8

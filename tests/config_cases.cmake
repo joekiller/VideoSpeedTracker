@@ -48,3 +48,8 @@ expect_run(bad_arg "${sample}" "--speed-limit needs a whole number" --speed-limi
 expect_run(legal_compass "${sample}LegalDirection = nw\n" "Can't open video")
 expect_run(legal_l2r "${sample}LegalDirection = L2R\n" "Can't open video")
 expect_run(legal_bad "${sample}LegalDirection = uphill\n" "LegalDirection must be Both, L2R, R2L, SE or NW")
+
+# minLoggedSpeed (MPH; 0 logs every timed vehicle) must be a whole number, not negative.
+expect_run(min_speed_zero "${sample}minLoggedSpeed = 0\n" "Can't open video")
+expect_run(min_speed_negative "${sample}minLoggedSpeed = -5\n" "minLoggedSpeed must be >= 0")
+expect_run(min_speed_bad "${sample}minLoggedSpeed = 12.5\n" "can't read a value for minLoggedSpeed from \"12.5\"")

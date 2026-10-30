@@ -9,16 +9,24 @@
 # checked on their own: the header must be the current one, every row must have all 15 columns,
 # Date/Time must be the Foscam name's 20160130, 172251, and Timestamp must be the name's start
 # time plus the row's Frame at 30 fps, with a UTC offset (whatever this machine's zone is).
+#
+# Then the run manifest beside the csv (run_manual_20160130172251.json; see writeManifest() in videoSpeedTracker.cpp):
+# complete, as many vehicles logged as the baseline has rows (61), the calibration and zone from bin/VST.cfg, and
+# started / ended at the Foscam name's start time and that plus the frames analyzed at 30 fps.
+# min_logged_speed.cmake reuses this run's manifest (the sample_run fixture).
 cmake_policy(VERSION 3.16)  # keep empty csv fields as list elements (CMP0007)
 include(${CMAKE_CURRENT_LIST_DIR}/compare_vehicles.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/manifest.cmake)
 set(BASELINE ${SRC}/tests/baseline_manual_20160130172251.csv)
+# Named the way VST names it without --stats, so the manifest gets the name a user would see.
+set(CSV ${OUT}/stats_manual_20160130172251.csv)
 
 file(MAKE_DIRECTORY ${OUT})
 execute_process(
   COMMAND ${VST} --headless
           --input ${SRC}/sampleData/IPCam/20160130/manual_20160130172251.avi
           --config ${SRC}/bin/VST.cfg
-          --stats ${OUT}/sample.csv
+          --stats ${CSV}
   RESULT_VARIABLE rc OUTPUT_QUIET)
 if(NOT rc EQUAL 0)
   message(FATAL_ERROR "VideoSpeedTracker exited with ${rc}")
@@ -26,7 +34,7 @@ endif()
 
 # The time columns of this run (see the note at the top).
 set(HEADER "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp")
-file(STRINGS ${OUT}/sample.csv lines)
+file(STRINGS ${CSV} lines)
 list(GET lines 0 got_header)
 if(NOT got_header STREQUAL HEADER)
   message(FATAL_ERROR "csv header is\n  ${got_header}\nexpected\n  ${HEADER}")
@@ -66,7 +74,62 @@ foreach(line IN LISTS lines)
   endif()
 endforeach()
 if(time_errors)
-  message(FATAL_ERROR "Time columns are wrong in ${OUT}/sample.csv:\n${time_errors}")
+  message(FATAL_ERROR "Time columns are wrong in ${CSV}:\n${time_errors}")
 endif()
 
-compare_vehicles(${BASELINE} ${OUT}/sample.csv)
+compare_vehicles(${BASELINE} ${CSV})
+
+# ---- the run manifest ----
+read_manifest(${OUT}/run_manual_20160130172251.json M)
+csv_rows(${BASELINE} baseline_rows)
+csv_rows(${CSV} rows)
+set(errors "")
+macro(expect name got want)
+  if(NOT "${got}" STREQUAL "${want}")
+    string(APPEND errors "  ${name} is \"${got}\", expected \"${want}\"\n")
+  endif()
+endmacro()
+expect(format "${M_format}" 1)
+expect(stats "${M_stats}" stats_manual_20160130172251.csv)
+expect(source.input "${M_source_input}" manual_20160130172251.avi)
+expect(source.kind "${M_source_kind}" file)
+expect(complete "${M_complete}" ON)
+expect(fps "${M_fps}" 30)
+expect(outages "${M_outages}" 0)
+expect("counts.logged (baseline rows)" "${M_logged}" ${baseline_rows})
+expect("counts.logged (csv rows)" "${M_logged}" ${rows})
+# bin/VST.cfg: the 2016 Locust Avenue calibration and zone; minLoggedSpeed isn't set there, so it's the default 18.
+foreach(kv CalibrationSpeed=25 CalibrationFPS=30 CalibrationFramesL2R=35 CalibrationFramesR2L=40 LegalDirection=Both
+           L2RDirection=SE R2LDirection=NW speedLineLeft=350 speedLineRight=909 minLoggedSpeed=18)
+  string(REPLACE "=" ";" kv "${kv}")
+  list(GET kv 0 k)
+  list(GET kv 1 v)
+  expect(config.${k} "${M_config_${k}}" ${v})
+endforeach()
+foreach(k belowMinSpeed untimed)
+  if(NOT M_${k} MATCHES "^[0-9]+$")
+    string(APPEND errors "  counts.${k} is \"${M_${k}}\", expected a count\n")
+  endif()
+endforeach()
+# The sample is 8.6 minutes at 30 fps.  started = the name's 17:22:51; ended = that plus the frames analyzed / 30, whole seconds.
+if(NOT M_frames GREATER 15000)
+  string(APPEND errors "  frames is ${M_frames}, expected the whole 8.6 minute sample (about 15458)\n")
+endif()
+math(EXPR t "17 * 3600 + 22 * 60 + 51 + ${M_frames} / 30")
+math(EXPR hh "${t} / 3600")
+math(EXPR mm "${t} % 3600 / 60")
+math(EXPR ss "${t} % 60")
+foreach(v hh mm ss)
+  if(${v} LESS 10)
+    set(${v} "0${${v}}")
+  endif()
+endforeach()
+if(NOT M_started MATCHES "^2016-01-30T17:22:51[+-][0-9][0-9]:[0-9][0-9]$")
+  string(APPEND errors "  started is ${M_started}, expected 2016-01-30T17:22:51+hh:mm\n")
+endif()
+if(NOT M_ended MATCHES "^2016-01-30T${hh}:${mm}:${ss}[+-][0-9][0-9]:[0-9][0-9]$")
+  string(APPEND errors "  ended is ${M_ended}, expected 2016-01-30T${hh}:${mm}:${ss}+hh:mm (${M_frames} frames after the start)\n")
+endif()
+if(errors)
+  message(FATAL_ERROR "The run manifest is wrong:\n${errors}${M_json}")
+endif()

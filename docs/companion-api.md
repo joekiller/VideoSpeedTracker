@@ -69,6 +69,23 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
 * VST Studio also reports `counts.avgSpeed` (mph, not rounded), `batch` (`{"index", "count"}`: which
   of the queued videos is being processed) and `calibrationMarks` (`{"L2R": [start, end], "R2L": […]}`,
   the hand-marked frames, `-1` when unmarked). The companion doesn't need them; the mock reports them too.
+* `calibration` is how far each direction's calibration has been shown to hold (see [Calibration](#calibration)):
+
+  ```json
+  "calibration": {
+    "L2R": { "state": "verified", "error": 0.3, "applied": "2026-11-02T10:14:03-05:00", "checked": "2026-11-02T10:21:40-05:00", "frames": 34 },
+    "R2L": { "state": "unchecked", "error": null, "applied": null, "checked": null, "frames": 40 }
+  }
+  ```
+
+  `state` is `none` (not calibrated), `unchecked` (calibrated, no check since), `verified` (the latest check
+  after the latest calibration was within ±2 mph) or `failed` (it was off by more). `error` is that check's
+  `measuredMph - drivenMph`, and `checked` its time; both are `null` unless `state` is `verified` or `failed`.
+  `applied` is the time of the latest calibration on record, `null` for one made before VST kept a history (the
+  state is then `unchecked` rather than `none`). `frames` is `CalibrationFrames<dir>` now in force. A check only
+  counts while that value is the one it was made against: changing it any other way (`PUT /api/config`,
+  editing `VST.cfg`) puts the direction back to `unchecked`. VST Studio works this out from
+  `calibration-history.csv` in its config folder, so it survives restarts.
 
 ### `GET /api/vehicles?since=<id>&from=<iso>&to=<iso>&limit=<n>`
 
@@ -205,6 +222,25 @@ Both ways of applying return `{"ok": true, "problems": [], "config": { … }}`, 
 `{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked or `speed` isn't
 positive.
 
+**Checking it.** One pass at a speedometer reading is easy to get wrong, so after calibrating, drive past
+once more (ideally at a different speed) and send that pass to
+`POST /api/calibration/check`. It takes the same body as apply (`{"dir", "speed", "vehicleId"}`, or
+`{"dir", "speed"}` for the hand-marked span; `dir` may be left out with a `vehicleId`) and changes no
+settings. It answers:
+
+```json
+{ "ok": true, "problems": [], "direction": "R2L", "drivenMph": 30, "measuredMph": 30.3, "error": 0.3, "verified": true }
+```
+
+`measuredMph` is what the calibration in force says the pass was, unrounded except to 0.1 mph
+(`CalibrationSpeed × CalibrationFrames<dir> × (fps / CalibrationFPS) / frames`), `error` is
+`measuredMph - drivenMph` (also to 0.1), and `verified` is `|error| <= 2`. Refusals are as for apply: `200`
+`{"ok": false, "problems": [ … ]}`. The new state shows in `GET /api/status` `calibration` at once.
+
+Every apply and check, from the phone or the desktop, is appended to `calibration-history.csv` in VST
+Studio's config folder (the format is in [vst-studio.md](vst-studio.md#calibrate)), so the record of how a
+calibration was made and tested outlives the session.
+
 ### `GET /api/stats.csv`
 
 The session's stats csv, same columns as the command-line `stats_*.csv`. `404` `{"error"}` before the
@@ -218,6 +254,19 @@ Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, 
 UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The columns are described
 in the [README](../README.md#the-stats-csv).
 
+### `GET /api/report.html?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+The street report: one self-contained HTML page (inline CSS and SVG charts, no external requests) that prints to
+PDF from any browser. It's the same report as **Make report** on VST Studio's Results page, built from every stats csv
+in the data folder for the local dates `from` to `to` (inclusive; either can be left out for "from the first" or "to
+the last" data), with the site name, speed limit and "way over" speed from VST Studio's settings. Example frames
+are never included through the API. VST Studio also saves the page as
+`<data>/Reports/report_<site>_<from>_<to>.html`.
+
+`Content-Type: text/html; charset=utf-8`. A `from` or `to` that isn't a date is `400` `{"error"}`. The token can go
+in the query string (`&token=`), so the phone can open the page in a new tab and share it from there. The phone's
+**Stats** view links to it as **Street report**, for the period on screen.
+
 ## Checking an implementation
 
 `companion/test/contract.test.mjs` checks this document over HTTP (Node 20+, no dependencies):
@@ -228,5 +277,6 @@ BASE=http://127.0.0.1:8787 TOKEN=<pairing code> node --test companion/test/*.tes
 ```
 
 Against a real VST Studio it only reads and sends requests that must be refused; `MUTATE=1` adds the
-ones that change settings (and put them back). `tests/api_smoke.sh`, run by `ctest`, starts VST
+ones that change settings (and put them back; the calibration tests' rows stay in `calibration-history.csv`,
+which is never rewritten). `tests/api_smoke.sh`, run by `ctest`, starts VST
 Studio under Xvfb, tracks the sample video through this API, and runs the suite against it.
