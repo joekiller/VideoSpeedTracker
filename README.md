@@ -175,6 +175,22 @@ ctest --test-dir build
 speeds within 1 MPH), the `VST.cfg` parser and argument errors, and the first-run per-user config (Linux and macOS
 only).
 
+### Pre-commit hook and CI
+
+Pull requests get one CI job (Linux, `.github/workflows/build.yml`), and only when they touch code, tests or config.
+The full release matrix (six Linux packages, Windows and macOS) runs only after a merge to master, so a change that
+breaks a platform shows up there rather than on the PR. Catch what you can before committing by turning on the repo's hook once per clone:
+
+```
+git config core.hooksPath .githooks
+```
+
+`.githooks/pre-commit` looks at what is staged: companion changes run `node --test companion/test/*.test.mjs`, and
+changes under `src/`, `tests/`, `bin/`, `cmake/`, `sampleData/` or `CMakeLists.txt` rebuild `build/` (or
+`$VST_BUILD_DIR`) and run `ctest`, leaving the two slow real-time tests to CI unless `VST_HOOK_FULL=1`. `git commit --no-verify` skips it.
+To run the full matrix on a branch before merging, start the release workflow by hand:
+`gh workflow run release.yml --ref <branch>`.
+
 To build what the release packages use instead:
 
 - **Linux:** `packaging/build-opencv.sh /opt/opencv` builds a static OpenCV 5.0.0 (it needs the FFmpeg and GTK 3

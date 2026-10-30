@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Local gate before each commit. CI no longer builds pull requests across every platform; the full release matrix
+# (Linux x6, Windows, macOS) runs after merge to master, so this hook is what keeps a broken change off a PR.
+#
+# Install once per clone:   git config core.hooksPath .githooks
+# Skip once:                git commit --no-verify     (or VST_HOOK_SKIP=1 git commit ...)
+#
+# What runs depends on what is staged:
+#   companion/**      node --test on the phone companion's tests (needs Node 20+)
+#   src/** tests/** bin/** cmake/** sampleData/** CMakeLists.txt
+#                     incremental build of $VST_BUILD_DIR (default: build) and ctest, configuring it first if it
+#                     doesn't exist (needs OpenCV, see README "Building from source")
+# The two slow wall-clock tests, live_stream_reconnect (~45 s) and companion_api_smoke (VST Studio under Xvfb), are
+# left to CI unless VST_HOOK_FULL=1. The hook tests the working tree, so unstaged edits are included.
+set -euo pipefail
+
+[[ "${VST_HOOK_SKIP:-}" == 1 ]] && exit 0
+cd "$(git rev-parse --show-toplevel)"
+
+staged="$(git diff --cached --name-only --diff-filter=ACMRD)"
+touches() { grep -qE "$1" <<<"$staged"; }
+
+if touches '^companion/'; then
+  echo "pre-commit: companion tests"
+  node --test companion/test/*.test.mjs
+fi
+
+if touches '^(src/|tests/|bin/|cmake/|sampleData/|CMakeLists\.txt$)'; then
+  build="${VST_BUILD_DIR:-build}"
+  jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+  if [[ ! -f "$build/CMakeCache.txt" ]]; then
+    echo "pre-commit: configuring $build (set VST_BUILD_DIR to reuse another build tree)"
+    cmake -S . -B "$build" -DCMAKE_BUILD_TYPE=Release
+  fi
+  echo "pre-commit: build + tests in $build"
+  # --config/-C matter only for multi-config generators (Visual Studio); single-config builds ignore them.
+  cmake --build "$build" --config Release -j"$jobs"
+  exclude=()
+  [[ "${VST_HOOK_FULL:-}" == 1 ]] || exclude=(-E '^(live_stream_reconnect|companion_api_smoke)$')
+  ctest --test-dir "$build" -C Release --output-on-failure -j"$jobs" ${exclude[@]+"${exclude[@]}"}  # empty-array form for macOS bash 3.2
+fi

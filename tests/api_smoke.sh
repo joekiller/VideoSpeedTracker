@@ -203,6 +203,13 @@ grep -q '^event: config' "$OUT/live.txt" && pass "/api/live sends config" || fai
 echo "Stream limit"
 # Four streams fill the slots (Server::kMaxStreams); the fifth is refused with a JSON 503 while the rest of the
 # API keeps answering, and closing them gives the slots back.
+# The "Live events" stream above has only just closed; its slot comes back once VST's next write to it fails, so
+# wait for that before taking all four, or one of them gets the 503 meant for the fifth.
+for _ in $(seq 1 50); do
+  req GET /api/status
+  grep -q '"liveViews":0' <<< "$BODY" && break
+  sleep 0.2
+done
 STREAM_PIDS=()
 for n in 1 2 3; do
   curl -sSN --max-time 20 "$BASE/api/live?token=$TOKEN" > /dev/null 2>&1 & STREAM_PIDS+=($!)

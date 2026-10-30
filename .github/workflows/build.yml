@@ -1,11 +1,26 @@
 name: build
 
-# Pushes to master and pull requests only: a push to a PR branch used to start a second, identical run
-# next to the pull_request one.
+# The one CI check pull requests get: a single Linux build and test job against the distro's OpenCV. The full
+# multi-platform matrix (release.yml) runs after merge, on master, and locally .githooks/pre-commit runs the same
+# build and tests before each commit. Pushes to master and pull requests only: a push to a PR branch used to
+# start a second, identical run next to the pull_request one.
+#
+# Only changes that can affect the build, the tests or the companion start a run; docs, README and release-only
+# packaging edits don't. With no matching files the check doesn't run at all, so don't make it a required check.
 on:
   push:
     branches: [master]
+    paths: &paths
+      - .github/workflows/build.yml
+      - CMakeLists.txt
+      - bin/**
+      - cmake/**
+      - companion/**
+      - sampleData/**
+      - src/**
+      - tests/**
   pull_request:
+    paths: *paths
   workflow_dispatch:
 
 # A new push to a PR supersedes its running build; master builds always finish.
