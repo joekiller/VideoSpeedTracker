@@ -14,7 +14,7 @@
 // 3) Neither the name of the copyright holder nor the names of the contributors may be used to endorse or promote products
 //    derived from this software without specific prior written permission.
 
-// This software is provided by the copyright holder and contributors “as is” and any express or implied warranties, including,
+// This software is provided by the copyright holder and contributors "as is" and any express or implied warranties, including,
 // but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed.In no event
 // shall copyright holders or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential
 // damages(including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business
@@ -911,13 +911,14 @@ void displayAnalysisGoingRight(int inFrameNum, int index, Rect rectangle, Overla
 		cv::line(AnalysisFrame, Point(x + wd, y), Point(x + wd, y + ht), Scalar(CVRed), 2);
 	else
 		cv::line(AnalysisFrame, Point(x + wd, y), Point(x + wd, y + ht), Scalar(CVBlue), 2);
-	if (estSpeed > 0)  
+	if (estSpeed > 0) {
 		if (estSpeed <= speedLimit)  
 			putText(AnalysisFrame, intToString(estSpeed) + " MPH", Point(g.pixelRight-180, 30), 2, 1, Scalar(CVGreen), 2);
 		else if (estSpeed < egregiousSpeedLowerBound) 
 			putText(AnalysisFrame, intToString(estSpeed) + " MPH", Point(g.pixelRight-180, 30), 2, 1, Scalar(CVYellow), 2);
 		else                         
 			putText(AnalysisFrame, intToString(estSpeed) + " MPH", Point(g.pixelRight-180, 30), 2, 1, Scalar(CVRed), 2);
+	}
 	if (highLightsPlease){
 		if (vehiclesGoingRight[index].getTrackStartPixel() == 0)
 			vehiclesGoingRight[index].holdFrame(AnalysisFrame); // if vehicle hasnt passed start post yet, keep last frame in case about to cross into speed zone.
@@ -956,13 +957,14 @@ void displayAnalysisGoingLeft(int inFrameNum, int index, Rect rectangle, Overlap
 		cv::line(AnalysisFrame, Point(x + wd, y), Point(x + wd, y + ht), Scalar(CVRed), 2);
 	else
 		cv::line(AnalysisFrame, Point(x + wd, y), Point(x + wd, y + ht), Scalar(CVGreen), 2);
-	if (estSpeed > 0)
+	if (estSpeed > 0) {
 		if(estSpeed <= speedLimit) 
 			putText(AnalysisFrame, intToString(estSpeed) + " MPH", Point(g.pixelLeft, 30), 2, 1, Scalar(CVGreen), 2);
 		else if (estSpeed < egregiousSpeedLowerBound)
 			putText(AnalysisFrame, intToString(estSpeed) + " MPH", Point(g.pixelLeft, 30), 2, 1, Scalar(CVYellow), 2);
 		else 
 			putText(AnalysisFrame, intToString(estSpeed) + " MPH", Point(g.pixelLeft, 30), 2, 1, Scalar(CVRed), 2);
+	}
 	if (highLightsPlease){
 		if (vehiclesGoingLeft[index].getTrackStartPixel() == 0) 
 			vehiclesGoingLeft[index].holdFrame(AnalysisFrame); // if vehicle hasnt passed start post yet, keep last frame in case about to cross into speed zone.

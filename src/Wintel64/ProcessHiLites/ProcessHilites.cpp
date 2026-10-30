@@ -14,7 +14,7 @@
 // 3) Neither the name of the copyright holder nor the names of the contributors may be used to endorse or promote products
 //    derived from this software without specific prior written permission.
 
-// This software is provided by the copyright holder and contributors “as is” and any express or implied warranties, including,
+// This software is provided by the copyright holder and contributors "as is" and any express or implied warranties, including,
 // but not limited to, the implied warranties of merchantability and fitness for a particular purpose are disclaimed.In no event
 // shall copyright holders or contributors be liable for any direct, indirect, incidental, special, exemplary, or consequential
 // damages(including, but not limited to, procurement of substitute goods or services; loss of use, data, or profits; or business
@@ -84,7 +84,7 @@ string trim(string toBeTrimmed){
 void replay(int inFramePTR, int inDelay){
 	for (int i = 0; i < inFramePTR; i++){
 		imshow("Next Frame", frames[i]);
-		switch (waitKey(inDelay));
+		waitKey(inDelay);
 	}
 }
 
@@ -230,7 +230,7 @@ int main(int argc, char** argv){
 // speed zone, this may not work for you...parts of your speed zone may be cropped off the ends.
 		rectangle(frames[0], Rect(Point(leftSide, top), Point(leftSide + 639, top + 359)), Scalar(CVCyan), 4);
 		imshow("Next Frame", frames[0]);
-		switch (waitKey(20));
+		waitKey(20);
 		string yesNo = "n";
 		cout << "Is this cropping OK for saved captures? (y/n) [y]: ";
 		getline(cin, yesNo);
@@ -238,7 +238,7 @@ int main(int argc, char** argv){
 	}
 
 	hiLiteVideoIn.release();
-	switch (waitKey(20));
+	waitKey(20);
 	hiLiteVideoIn.open(fullName);
 	if (!hiLiteVideoIn.isOpened()){
 		cout << "ERROR ACQUIRING VIDEO FEED\n";
@@ -272,7 +272,7 @@ int main(int argc, char** argv){
 			if (hiLiteVideoIn.read(frames[framePTR])){
 				if (!blackFrame(frames[framePTR])){  //  If this is a black frame, keep it but don't show it
 					imshow("Next Frame", frames[framePTR]);
-					switch (waitKey(20));
+					waitKey(20);
 				}
 				else {
 					atVehicleClipEnd = true;

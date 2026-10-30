@@ -74,12 +74,14 @@ static double now() { return glfwGetTime(); }
 App::App() = default;
 App::~App() { shutdown(); }
 
-void App::init(bool fresh) {
+void App::init(bool fresh, const std::string& configPath) {
 	// fresh: default preferences and a fixed pairing code, for reproducible documentation screenshots.
 	if (fresh) prefs.remoteToken = "demo-pairing-code";
 	else prefs.load();
-	std::string cfgPath = prefs.configPath;
-	if (cfgPath.empty() || !fs::exists(cfgPath)) cfgPath = userpaths::resolveConfig("VST.cfg");
+	// An explicit config wins and skips the lookup, which would otherwise seed a per-user VST.cfg (or complain
+	// that there is no template to seed it from) only for it to be replaced straight away.
+	std::string cfgPath = configPath.empty() ? prefs.configPath : configPath;
+	if (configPath.empty() && (cfgPath.empty() || !fs::exists(cfgPath))) cfgPath = userpaths::resolveConfig("VST.cfg");
 	if (!cfgPath.empty() && !loadConfig(cfgPath)) toast(cfg.error, c::bad, ICON_WARN);
 	page = prefs.guideDone ? Page::Source : Page::Guide;
 	if (!prefs.lastSource.empty() && classifySource(prefs.lastSource) != SourceInfo::Camera

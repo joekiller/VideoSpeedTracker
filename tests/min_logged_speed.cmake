@@ -1,6 +1,9 @@
 # minLoggedSpeed: runs the 2016 sample again with the threshold off (0) and raised (30), and checks them against the
 # default-18 run of sample_video_baseline (its manifest, through the sample_run fixture).
-# Invoked by ctest with -DVST=<exe> -DSRC=<repo root> -DOUT=<work dir> -DBASE=<sample_video_baseline's work dir>.
+# Invoked by ctest with -DVST=<exe> -DSRC=<repo root> -DOUT=<work dir> -DBASE=<sample_video_baseline's work dir>
+# and -DMIN=<threshold> (0 or 30; CMakeLists.txt registers one test for each). Without MIN it checks both in turn.
+# The files of each value carry it in their names (min0.cfg, stats_min0.csv, run_min0.json), so tests for different
+# values can share OUT and run at the same time.
 #
 # The threshold only decides which timed vehicles get a csv row, so for every value:
 #   - the csv has exactly counts.logged rows, none slower than minLoggedSpeed;
@@ -14,7 +17,10 @@ file(READ ${SRC}/bin/VST.cfg sample)
 read_manifest(${BASE}/run_manual_20160130172251.json D)
 math(EXPR timed "${D_logged} + ${D_belowMinSpeed}")
 
-foreach(min 0 30)
+if(NOT DEFINED MIN)
+  set(MIN 0 30)
+endif()
+foreach(min IN LISTS MIN)
   set(csv ${OUT}/stats_min${min}.csv)
   file(WRITE ${OUT}/min${min}.cfg "${sample}minLoggedSpeed = ${min}\n")
   execute_process(

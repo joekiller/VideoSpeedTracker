@@ -262,8 +262,7 @@ int main(int argc, char** argv) {
 	App app;
 	app.screenshotMode = shots;
 	app.persist = !shots;   // a documentation run must not overwrite the user's preferences
-	app.init(shots);
-	if (!configArg.empty() && !app.loadConfig(configArg)) app.toast(app.cfg.error, theme::c::bad, ICON_WARN);
+	app.init(shots, configArg);
 	DemoScript script{ app, shotsDir };
 	if (shots) {
 		fs::create_directories(shotsDir);
