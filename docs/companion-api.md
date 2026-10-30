@@ -185,6 +185,9 @@ The live view as `multipart/x-mixed-replace` JPEG frames (about 10 fps is plenty
 | `tracks` | `[{"id", "dir", "x", "y", "w", "h", "speed"}]` | optional, ~5/s, vehicles currently being tracked (frame coords; `speed` 0 until known) |
 | `config` | same body as `GET /api/config` | when the stream opens, then within about a second of any config change, from any client (the desktop included) |
 
+Between events VST also sends an SSE comment (`:`) about every 200 ms, which EventSource ignores. It lets
+VST notice a closed tab within a fraction of a second and give its stream slot back.
+
 Without `/api/live` the companion falls back to polling `/api/status` every 2 s and
 `/api/vehicles?since=` every 5 s.
 

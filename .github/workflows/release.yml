@@ -230,6 +230,10 @@ jobs:
           # azure/login leaves an Azure CLI session; skip the environment credential that DefaultAzureCredential
           # would otherwise try first.
           exclude-environment-credential: true
+          # Signing runs only on tags, and a tag can restore only its own or master's caches, so the action's
+          # cache of its tools (saved under this tag) would never be read again. The tools stay on disk for the
+          # installer's signing step below either way.
+          cache-dependencies: false
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -264,6 +268,7 @@ jobs:
           description: VideoSpeedTracker setup
           description-url: https://github.com/joekiller/VideoSpeedTracker
           exclude-environment-credential: true
+          cache-dependencies: false
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
