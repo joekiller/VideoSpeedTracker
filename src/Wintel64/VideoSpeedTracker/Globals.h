@@ -105,6 +105,7 @@ public:
 	int R2LStreetY = 122;			// Hubcap line for R2L vehicles on flat street.Orange. Locust Ave.  Relative to AnalysisBoxTop...pixels
 	int L2RStreetY = 158;			// Hubcap line for L2R vehicles on flat street.Purple. Locust Ave. Relative to AnalysisBoxTop...pixels
 	int nextHeight = 85;			// Initial best guess for height of entering vehicles...pixels.
+	int minLoggedSpeed = 18;		// MPH.  Vehicles timed slower than this (walkers, cyclists, cars turning in) are counted in the run manifest's belowMinSpeed but not written to the csv.  0 = log every timed vehicle.  18 was hard-coded until v1.2.
 
 private:
 

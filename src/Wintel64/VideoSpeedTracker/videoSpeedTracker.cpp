@@ -857,7 +857,7 @@ void logL2Rstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
-	if ((estSpeed >= 18.0) && isOK){
+	if ((estSpeed >= g.minLoggedSpeed) && isOK){  // minLoggedSpeed: VST.cfg, default 18 (hard-coded before v1.2)
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "
@@ -927,7 +927,7 @@ void logR2Lstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
-	if ((estSpeed >= 18.0) && isOK){
+	if ((estSpeed >= g.minLoggedSpeed) && isOK){  // minLoggedSpeed: VST.cfg, default 18 (hard-coded before v1.2)
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "

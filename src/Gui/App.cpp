@@ -983,6 +983,7 @@ void App::zoneInspector() {
 		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 400, "Fastest trackable motion, pixels per two frames.");
 		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 400, "Fastest trackable motion, pixels per two frames.");
 		intRow("Entry look-back", &g.entryLookBack, 0, 1280);
+		intRow("Slowest logged", &g.minLoggedSpeed, 0, 100, "Vehicles timed below this many mph (walkers, cyclists) are counted in the run manifest but not written to the csv. 0 logs every timed vehicle.");
 	}
 
 	// Validation from the engine itself, then save/revert.
