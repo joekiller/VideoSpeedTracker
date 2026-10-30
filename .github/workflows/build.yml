@@ -1,8 +1,17 @@
 name: build
 
+# Pushes to master and pull requests only: a push to a PR branch used to start a second, identical run
+# next to the pull_request one.
 on:
   push:
+    branches: [master]
   pull_request:
+  workflow_dispatch:
+
+# A new push to a PR supersedes its running build; master builds always finish.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   linux:

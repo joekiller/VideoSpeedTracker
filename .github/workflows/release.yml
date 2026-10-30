@@ -5,8 +5,8 @@
 # The release is created with generated notes if it doesn't exist yet, otherwise the
 # assets are uploaded to it, replacing any with the same name.
 #
-# Pull requests that touch the build run everything except the publish step, so a broken
-# platform shows up before the tag does. Manual runs (workflow_dispatch) do the same on a
+# Pull requests and master pushes that touch the build run everything except the publish step, so a
+# broken platform shows up before the tag does (master's run also keeps the OpenCV caches warm). Manual runs (workflow_dispatch) do the same on a
 # branch, and publish when started on a tag.
 #
 # Every package holds VideoSpeedTracker and ProcessHiLites plus their sample configs.
@@ -26,6 +26,16 @@ name: release
 on:
   push:
     tags: ['v[0-9]*']
+    # Master runs too, for the same paths: Actions caches are scoped to the ref that saved them, and a
+    # PR or tag can only restore its own or the default branch's. Without a master run nothing ever
+    # saved the OpenCV builds where PRs could see them, so every new PR rebuilt OpenCV (4-6 min a job).
+    branches: [master]
+    paths:
+      - .github/workflows/release.yml
+      - CMakeLists.txt
+      - packaging/**
+      - src/**
+      - tests/**
   pull_request:
     paths:
       - .github/workflows/release.yml
@@ -38,10 +48,10 @@ on:
 permissions:
   contents: read
 
-# A new push to a PR supersedes its running build; tag builds always finish.
+# A newer push to the same PR or branch supersedes its running build; tag builds always finish.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   meta:
@@ -121,6 +131,7 @@ jobs:
         with:
           name: dist-linux-${{ matrix.distro }}-${{ matrix.arch }}
           path: dist/*
+          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
 
   windows:
     needs: meta
@@ -202,22 +213,20 @@ jobs:
         with:
           name: dist-windows-x64
           path: dist/*
+          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
 
-  # macOS runners can sit queued far longer than the others (GitHub's macOS pool is small), so
-  # this job doesn't gate the release: it starts once publish has run (or been skipped on PRs)
-  # and adds its tarball and checksum to the existing release on its own.
+  # macOS builds alongside the others but doesn't gate the release: GitHub's macOS pool is small and
+  # its runners can sit queued far longer, so publish goes ahead without it and macos-release adds the
+  # tarball and checksum to the existing release afterwards. Uploading runs on Linux, so the macOS
+  # runner (billed at 10x) is held only for the build itself.
   # macos-latest is the current Apple-silicon image; macos-14 is retired on 2026-11-02.
   macos:
-    permissions:
-      contents: write
-      id-token: write      # Sigstore signing for the provenance attestation
-      attestations: write
-    needs: [meta, publish]
-    if: always() && needs.meta.result == 'success' && needs.publish.result != 'failure'
+    needs: meta
     runs-on: macos-latest
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
       # Developer ID signing + notarization runs only once the Apple secrets are set (see
       # "Code signing" in README.md); without them the binaries keep the linker's ad-hoc signature.
       SIGN_MACOS: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
@@ -281,26 +290,7 @@ jobs:
         with:
           name: dist-macos-arm64
           path: dist/*
-      - name: Attest build provenance
-        if: needs.publish.result == 'success'
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: dist/*.tar.gz
-      - name: Add to the release
-        if: needs.publish.result == 'success'
-        working-directory: dist
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.meta.outputs.tag }}
-        run: |
-          gh release upload "$TAG" *.tar.gz --clobber
-          gh release download "$TAG" --pattern SHA256SUMS
-          grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
-          shasum -a 256 *.tar.gz >> SHA256SUMS.new
-          mv SHA256SUMS.new SHA256SUMS
-          gh release upload "$TAG" SHA256SUMS --clobber
-
+          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
   publish:
     needs: [meta, linux, windows]
     if: needs.meta.outputs.tag != ''
@@ -337,3 +327,33 @@ jobs:
           else
             gh release create "$TAG" * --verify-tag --generate-notes --title "$TAG"
           fi
+
+  macos-release:
+    needs: [meta, publish, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write      # Sigstore signing for the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist-macos-arm64
+          path: dist
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Add to the release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          gh release upload "$TAG" *.tar.gz --clobber
+          gh release download "$TAG" --pattern SHA256SUMS
+          grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
+          sha256sum *.tar.gz >> SHA256SUMS.new
+          mv SHA256SUMS.new SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
