@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "vst": "1.2.0",
+  "stats": "stats_cam_20261103.csv",
+  "source": {
+    "input": "rtsp://camera.local/stream1",
+    "kind": "stream"
+  },
+  "started": "2026-11-03T17:00:00-05:00",
+  "ended": "2026-11-03T18:00:00-05:00",
+  "complete": true,
+  "frames": 108000,
+  "fps": 30,
+  "outages": [],
+  "config": {
+    "CalibrationSpeed": 25,
+    "CalibrationFPS": 30,
+    "CalibrationFramesL2R": 35,
+    "CalibrationFramesR2L": 40,
+    "LegalDirection": "R2L",
+    "L2RDirection": "SE",
+    "R2LDirection": "NW",
+    "speedLineLeft": 350,
+    "speedLineRight": 909,
+    "minLoggedSpeed": 18
+  },
+  "counts": {
+    "logged": 10,
+    "belowMinSpeed": 1,
+    "untimed": 0
+  }
+}

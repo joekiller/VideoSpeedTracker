@@ -143,6 +143,16 @@ if(VST_BUILD_GUI)
   add_subdirectory(src/Gui)
 endif()
 
+# The street report (src/Gui/Report.cpp) built from fixture csvs, manifests and calibration history
+# (tests/fixtures/report/) and from the 2016 sample csv: key numbers, graceful handling of old data, no external
+# references.  Links only the report library, no OpenGL.
+if(TARGET vst_report)
+  add_executable(report_test tests/report_test.cpp)
+  target_link_libraries(report_test PRIVATE vst_report)
+  add_test(NAME street_report
+    COMMAND report_test ${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/report-test)
+endif()
+
 # Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back
 # (tests/stream_reconnect.sh). Only where ffmpeg and bash are available; about 45 s. With VST Studio
 # built, it also checks that Stop ends an embedded run promptly while it is waiting to reconnect.
