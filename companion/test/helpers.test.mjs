@@ -6,7 +6,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { esc, raw, html, band, passPills } from '../js/ui.js';
-import { pct, summarize } from '../js/views/stats.js';
+import { pct, summarize, reportRange } from '../js/views/stats.js';
 import { geometry, applyHandle } from '../js/overlay.js';
 
 describe('ui.js esc', () => {
@@ -109,6 +109,15 @@ describe('stats.js summarize', () => {
     assert.equal(e.p85, 0);
     assert.equal(e.pctSpeeding, 0);
     assert.equal(e.top, 0);
+  });
+});
+
+describe('stats.js reportRange', () => {
+  it('gives the street report local dates covering the period', () => {
+    const now = new Date(2026, 10, 5, 9, 30);   // 5 Nov 2026, local
+    assert.deepEqual(reportRange('day', now), { from: '2026-11-04', to: '2026-11-05' });
+    assert.deepEqual(reportRange('week', now), { from: '2026-10-29', to: '2026-11-05' });
+    assert.deepEqual(reportRange('month', now), { from: '2026-10-06', to: '2026-11-05' });
   });
 });
 

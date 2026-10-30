@@ -155,6 +155,63 @@ recordings (`manual_yyyymmddhhmmss`) is when the recording started.
 
 ![Results](images/studio/06-results.jpg)
 
+The 85th percentile here, in the street report and on the phone all use the nearest-rank definition (see below).
+
+### Street report
+
+**Make report** on the Results page turns the data folder into a report a city council and a traffic engineer can
+read: one HTML file that opens in any browser and prints cleanly to PDF (A4 or Letter, one section per page). It is
+labelled *Community traffic study. Estimated speeds, ±X mph* throughout, where X is worked out from the setup (below).
+
+The dialog asks for:
+
+- **Site name**: the street and block, such as *Locust Ave, 600 block*. Never a house number. It's remembered.
+- **Dates**: from and to, as `YYYY-MM-DD`; leave them blank for all the data.
+- **Compare with another period**: a before/after table of the key numbers for a second date range, for example
+  before and after a speed hump went in.
+- **Include example frames**: off by default. Only vehicles tracked in this session have snapshots; each is shrunk
+  and the lower part of the vehicle (plate height) is blurred, and nothing identifying is added.
+- **Note**: a few lines for the cover.
+
+The speed limit and "way over" speed come from the Live page. The report is saved as
+`<data folder>/Reports/report_<site>_<from>_<to>.html`; **Open** shows it in the browser, ready to print.
+
+![Street report, first page](images/studio/09-report.jpg)
+
+*The first page of a report on the bundled 2016 sample: ten minutes of video, no run manifest and no calibration
+history, so the report says its coverage is estimated and the calibration unverified.*
+
+What's in it:
+
+| Section | Contents |
+|---|---|
+| Cover | Site, directions, posted limit, date range, the error band, the 85th percentile, % over the limit, % at 10+ over, the fastest vehicle, wrong-way share (one-way streets), and whether the calibration is verified |
+| Coverage and volumes | Hours observed per day and hour (from each run's start and end minus outages), gaps of an hour or more, vehicles logged, vehicles below the logging minimum and vehicles that couldn't be timed, and the capture rate. Counts are never scaled up to full days |
+| Speeds | Count, mean, median, 85th percentile, % over, % at 10+ over and the maximum, per direction and combined; a speed histogram with the limit; vehicles per observed hour and the 85th percentile by hour of day |
+| When speeding happens | % over the limit by weekday and hour, when the data covers more than one weekday |
+| Wrong-way drivers | One-way streets only: count and share of traffic by hour |
+| Before and after | When a comparison period was chosen |
+| Calibration and accuracy | Every calibration and check pass for this `VST.cfg` from `calibration-history.csv`, the verified state of each direction, and how the error band is made up |
+| Method | How VST measures, what's excluded and why, the percentile definition, limitations of this data, the files used and the VST version |
+
+**The error band** is the sum of three parts, for the worse direction: one frame of timing at the limit (a car at the
+limit crosses in N frames, so one frame is limit ÷ (N − 1)), the error of the latest check pass if there is one, and
+0.5 mph because speeds are logged as whole numbers. A direction is **verified** when its latest check pass after its
+latest calibration read within 2 mph and tested the `CalibrationFrames` the runs used; if `VST.cfg` was edited by hand
+since, that direction is *not checked* and the check's error is left out of the band.
+
+**Percentiles** use the nearest-rank method: sort the n speeds, and the p-th percentile is the value at position
+⌈p/100 × n⌉.
+
+**Older data still works.** Runs from before VST 1.2 have no run manifest: their observed time is taken from the
+first to the last vehicle and the report says so, and the logging-minimum and untimed counts are left out. Stats
+csvs from before the Timestamp column get their times from the Date and Time columns plus each vehicle's frame
+number. Without a calibration history the report says the calibration is unverified. Each of these is listed under
+*Limitations of this data*.
+
+The phone companion's **Stats** view has a **Street report** button that opens the same report for the period on
+screen (`GET /api/report.html`, see [companion-api.md](companion-api.md)).
+
 ### Companion app
 
 Turning on the companion starts a small web server on the local network (port 8787) for the phone companion
@@ -172,7 +229,7 @@ API call needs it, and **New pairing code** signs out every paired phone. The AP
 | Settings (`VST.cfg`) | the file shown on the Source page; by default the per-user config (see the README) |
 | App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs, recent sources, pairing token |
 | Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
-| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/`, `HiLites/`, `Clips/`, `Trace/` |
+| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, and street reports in `Reports/` |
 
 ## For developers
 

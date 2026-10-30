@@ -214,6 +214,28 @@ describe('media', () => {
   });
 });
 
+describe('GET /api/report.html', () => {
+  it('is one self-contained HTML page carrying the study label', async () => {
+    const r = await api.get('/api/report.html');
+    assert.equal(r.status, 200);
+    assert.match(r.type, /text\/html/);
+    assert.match(r.data, /^<!doctype html>/i);
+    assert.match(r.data, /Community traffic study\. Estimated speeds, ±\d+(\.\d)? mph/);
+    assert.match(r.data, /@media print/, 'prints cleanly');
+    // Nothing loaded from elsewhere: every src/href is a data: URI or an in-page link, and no URL has a scheme.
+    for (const [, url] of r.data.matchAll(/(?:src|href)\s*=\s*['"]?([^'"\s>]{0,12})/gi)) assert.match(url, /^(data:|#)/, `external reference ${url}`);
+    assert.doesNotMatch(r.data, /https?:\/\//);
+    for (const banned of ['radar-accurate', 'enforcement-grade', 'evidence for a ticket']) assert.ok(!r.data.includes(banned), banned);
+  });
+
+  it('takes from/to dates; anything else is 400 {error}; it needs the token', async () => {
+    assert.equal((await api.get('/api/report.html?from=2016-01-01&to=2030-12-31')).status, 200);
+    assertError(await api.get('/api/report.html?from=yesterday'), 400, 'bad from');
+    assertError(await api.get('/api/report.html?to=2026-13-45x'), 400, 'bad to');
+    assertError(await api.get('/api/report.html', { auth: false }), 401, 'no token');
+  });
+});
+
 describe('GET /api/live', () => {
   it('sends status and config as soon as it opens', async () => {
     const evs = await readEvents(t, `/api/live?token=${encodeURIComponent(t.token)}`,

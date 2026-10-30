@@ -254,6 +254,19 @@ Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, 
 UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The columns are described
 in the [README](../README.md#the-stats-csv).
 
+### `GET /api/report.html?from=YYYY-MM-DD&to=YYYY-MM-DD`
+
+The street report: one self-contained HTML page (inline CSS and SVG charts, no external requests) that prints to
+PDF from any browser. It's the same report as **Make report** on VST Studio's Results page, built from every stats csv
+in the data folder for the local dates `from` to `to` (inclusive; either can be left out for "from the first" or "to
+the last" data), with the site name, speed limit and "way over" speed from VST Studio's settings. Example frames
+are never included through the API. VST Studio also saves the page as
+`<data>/Reports/report_<site>_<from>_<to>.html`.
+
+`Content-Type: text/html; charset=utf-8`. A `from` or `to` that isn't a date is `400` `{"error"}`. The token can go
+in the query string (`&token=`), so the phone can open the page in a new tab and share it from there. The phone's
+**Stats** view links to it as **Street report**, for the period on screen.
+
 ## Checking an implementation
 
 `companion/test/contract.test.mjs` checks this document over HTTP (Node 20+, no dependencies):

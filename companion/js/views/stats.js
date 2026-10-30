@@ -84,7 +84,8 @@ export async function render({ vst, view }) {
       </div>
       <h3>Take it to the meeting</h3>
       <div class="btn-row" id="actions">
-        ${sharingOn() ? html`<button class="btn primary" id="report">${icon('share')}Share report card</button>` : ''}
+        <a class="btn primary" id="street-report" href="${vst.reportUrl(reportRange(period))}" target="_blank" rel="noopener">${icon('report')}Street report</a>
+        ${sharingOn() ? html`<button class="btn" id="report">${icon('share')}Share report card</button>` : ''}
         ${vst.csvUrl() ? html`<a class="btn" href="${vst.csvUrl()}" download="vst-stats.csv">${icon('download')}Download csv</a>` : ''}
       </div>
       ${sharingOn() ? '' : html`<p class="small muted" style="margin-top:8px">Turn on sharing in <a href="#/system">System</a> to make a report card image.</p>`}`.__html;
@@ -99,6 +100,15 @@ export async function render({ vst, view }) {
 
   $('#period').onclick = (e) => { const p = e.target.closest('[data-p]')?.dataset.p; if (p) { period = p; load(); } };
   await load();
+}
+
+/**
+ * Local dates covering the chosen period, for the street report (VST Studio builds a printable study of those days
+ * from its data folder: coverage, speeds per direction, calibration record, error band).
+ */
+export function reportRange(p, now = new Date()) {
+  const day = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return { from: day(new Date(now.getTime() - PERIODS[p][1] * 86400e3)), to: day(now) };
 }
 
 const hourLabel = (h) => (h === 0 ? '12a' : h < 12 ? `${h}a` : h === 12 ? '12p' : `${h - 12}p`);

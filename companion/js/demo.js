@@ -300,6 +300,11 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         emit('status', status());
         return ok({ ok: true, problems: [], direction: dir, drivenMph, measuredMph, error, verified: Math.abs(error) <= 2 });
       }
+      case 'GET /api/report.html': {
+        // A static sample (built by tests/report_test from tests/fixtures/report); VST Studio builds it from the data folder.
+        const bad = ['from', 'to'].find((k) => query.get(k) && !/^\d{4}-\d{2}-\d{2}$/.test(query.get(k)));
+        return bad ? err(400, 'from and to must be dates like 2026-11-02') : { status: 200, file: 'demo/report.html' };
+      }
       case 'GET /api/stats.csv': {
         const rows = vehicles.map((v) => [v.time.slice(0, 10).replace(/-/g, ''), v.time.slice(11, 19).replace(/:/g, ''),
           v.frame, v.compass, v.startFrame, v.endFrame, v.frames, '', '', '', v.area, '', v.speed, '', v.time].join(', '));
