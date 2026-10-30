@@ -94,6 +94,7 @@ json statusJson(App& app) {
 	return json{
 		{ "version", VST_VERSION }, { "siteName", app.prefs.siteName },
 		{ "running", app.tracker.running() }, { "paused", app.tracker.paused() },
+		{ "reconnecting", app.tracker.running() && prog.reconnecting },
 		{ "source", src }, { "frame", app.tracker.running() ? prog.frame : std::max(app.player.position(), 0) },
 		{ "totalFrames", app.tracker.running() ? prog.totalFrames : in.frames }, { "procFps", prog.procFps },
 		{ "batch", { { "index", prog.job }, { "count", prog.jobs } } },

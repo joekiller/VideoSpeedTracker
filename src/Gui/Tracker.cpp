@@ -82,6 +82,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 	hooks.onFrame = [this](const vst::FrameInfo& f) { onFrame(f); };
 	hooks.onVehicle = [this](const vst::VehicleEvent& e) { onVehicle(e); };
 	hooks.pollKey = [this] { return pollKey(); };
+	hooks.onSourceStatus = [this](const vst::SourceStatus& s) { onSourceStatus(s); };
 	hooks.onLog = [this](const std::string& line) {
 		std::lock_guard<std::mutex> l(mu_);
 		log_.push_back(line);
@@ -131,6 +132,8 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 			progress_.totalFrames = total;
 			progress_.videoFps = fps_;
 			progress_.live = liveSource_;
+			progress_.reconnecting = false;
+			progress_.sourceStatus.clear();
 			lastStats_ = job.statsPath;
 		}
 		ring_.clear();
@@ -142,6 +145,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 		int rc = vst::run(args, hooks);
 
 		std::lock_guard<std::mutex> l(mu_);
+		progress_.reconnecting = false;
 		job.vehicles = nextId_ - 1 - before;
 		job.state = stop_ ? Job::Stopped : rc == 0 ? Job::Done : Job::Failed;
 		if (rc != 0 && !log_.empty()) job.message = log_.back();
@@ -156,6 +160,15 @@ int Tracker::pollKey() {
 		paceFrame0_ = -1;   // restart pacing after a pause instead of racing to catch up
 	}
 	return stop_ ? 27 : -1;
+}
+
+// The engine lost a camera or stream and is reopening it (or has).  Frames from before the gap are dropped from the ring so a
+// vehicle tracked afterwards never gets a snapshot or clip from the other side of it.
+void Tracker::onSourceStatus(const vst::SourceStatus& s) {
+	if (s.reconnecting) ring_.clear();
+	std::lock_guard<std::mutex> l(mu_);
+	progress_.reconnecting = s.reconnecting;
+	progress_.sourceStatus = s.message;
 }
 
 void Tracker::onFrame(const vst::FrameInfo& f) {
@@ -202,27 +215,12 @@ void Tracker::onVehicle(const vst::VehicleEvent& e) {
 	v.fps = fps_;
 	v.live = liveSource_;
 	v.ev = e;
-	// Foscam recordings are named manual_yyyymmddhhmmss, so a vehicle's real time is that plus its offset.
-	{
-		std::string stem = fs::path(currentInput_).stem().string();
-		if (!liveSource_ && stem.size() == 21 && stem.compare(0, 7, "manual_") == 0) {
-			std::tm tm{};
-			std::istringstream in(stem.substr(7));
-			in >> std::get_time(&tm, "%Y%m%d%H%M%S");
-			if (!in.fail()) {
-				tm.tm_isdst = -1;
-				std::time_t t = std::mktime(&tm) + std::time_t(e.frame / fps_);
-				std::tm out{};
-#ifdef _WIN32
-				localtime_s(&out, &t);
-#else
-				localtime_r(&t, &out);
-#endif
-				std::ostringstream o;
-				o << std::put_time(&out, "%Y-%m-%dT%H:%M:%S");
-				v.recorded = o.str();
-			}
-		}
+	// The engine stamps each vehicle with the time it writes to the csv: the clock for live sources, and for recordings the
+	// start time from a Foscam name or the file's modified time, plus the vehicle's offset.  Use the same moment here so the
+	// app and the csv agree, without the UTC offset to keep the "yyyy-mm-ddThh:mm:ss" form the rest of the app uses.
+	if (!e.timestamp.empty()) {
+		if (liveSource_) v.time = e.timestamp.substr(0, 19);
+		else v.recorded = e.timestamp.substr(0, 19);
 	}
 	v.large = e.area >= opt_.largeArea;
 	v.speeding = e.speed > opt_.speedLimit;

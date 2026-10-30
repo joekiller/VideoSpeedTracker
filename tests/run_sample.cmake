@@ -6,6 +6,11 @@
 # by a pixel on arm64. So rather than demanding byte-identical output this requires the same
 # vehicles in the same order and direction, each logged within MAX_FRAME_DRIFT frames of the
 # baseline with a speed within MAX_SPEED_DRIFT mph. On x86-64 the output is still identical.
+#
+# The baseline was recorded before the csv gained its Flag and Timestamp columns, so those are
+# checked on their own: the header must be the current one, every row must have all 15 columns,
+# Date/Time must be the Foscam name's 20160130, 172251, and Timestamp must be the name's start
+# time plus the row's Frame at 30 fps, with a UTC offset (whatever this machine's zone is).
 cmake_policy(VERSION 3.16)  # keep empty csv fields as list elements (CMP0007)
 set(MAX_FRAME_DRIFT 4)
 set(MAX_SPEED_DRIFT 1)
@@ -23,7 +28,8 @@ if(NOT rc EQUAL 0)
 endif()
 
 # Rows of "date, time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix,
-# DeltaPix, VehicleArea, , estSpeed" after the header, as lists of "frame;direction;speed".
+# DeltaPix, VehicleArea, , estSpeed[, Flag, Timestamp]" after the header, as lists of
+# "frame|direction|speed". The columns these read are the same in the old and new formats.
 function(read_vehicles path out)
   file(STRINGS ${path} lines)
   list(REMOVE_AT lines 0)
@@ -38,6 +44,51 @@ function(read_vehicles path out)
   endforeach()
   set(${out} "${rows}" PARENT_SCOPE)
 endfunction()
+
+# The time columns of this run (see the note at the top).
+set(HEADER "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp")
+file(STRINGS ${OUT}/sample.csv lines)
+list(GET lines 0 got_header)
+if(NOT got_header STREQUAL HEADER)
+  message(FATAL_ERROR "csv header is\n  ${got_header}\nexpected\n  ${HEADER}")
+endif()
+list(REMOVE_AT lines 0)
+set(time_errors "")
+foreach(line IN LISTS lines)
+  # Split on "," and trim, rather than on ", ", so an empty last column still counts as a column.
+  string(REPLACE "," ";" fields "${line}")
+  list(LENGTH fields n_fields)
+  if(NOT n_fields EQUAL 15)
+    string(APPEND time_errors "  ${n_fields} columns, expected 15: ${line}\n")
+    continue()
+  endif()
+  list(GET fields 0 date)
+  list(GET fields 1 time)
+  list(GET fields 2 frame)
+  list(GET fields 14 stamp)
+  string(STRIP "${date}" date)
+  string(STRIP "${time}" time)
+  string(STRIP "${frame}" frame)
+  string(STRIP "${stamp}" stamp)
+  # manual_20160130172251 started at 17:22:51; the vehicle passed frame/30 whole seconds later.
+  math(EXPR t "17 * 3600 + 22 * 60 + 51 + ${frame} / 30")
+  math(EXPR hh "${t} / 3600")
+  math(EXPR mm "${t} % 3600 / 60")
+  math(EXPR ss "${t} % 60")
+  foreach(v hh mm ss)
+    if(${v} LESS 10)
+      set(${v} "0${${v}}")
+    endif()
+  endforeach()
+  set(want "2016-01-30T${hh}:${mm}:${ss}")
+  if(NOT date STREQUAL "20160130" OR NOT time STREQUAL "172251"
+     OR NOT stamp MATCHES "^${want}[+-][0-9][0-9]:[0-9][0-9]$")
+    string(APPEND time_errors "  frame ${frame}: Date/Time ${date} ${time}, Timestamp ${stamp}; expected 20160130 172251, ${want}+hh:mm\n")
+  endif()
+endforeach()
+if(time_errors)
+  message(FATAL_ERROR "Time columns are wrong in ${OUT}/sample.csv:\n${time_errors}")
+endif()
 
 read_vehicles(${BASELINE} expected)
 read_vehicles(${OUT}/sample.csv actual)

@@ -93,14 +93,20 @@ frame difference the tracker works from. Files play in real time or as fast as t
 lands in the filmstrip with a snapshot, and the side panel keeps counts and the fastest vehicles.
 
 Each run writes the usual outputs under the data folder: `Stats/stats_<name>.csv`, a highlights video in
-`HiLites/` (if enabled), and a short clip per vehicle in `Clips/`.
+`HiLites/` (if enabled), and a short clip per vehicle in `Clips/`. Every csv row has a Timestamp: when the vehicle
+passed, from this computer's clock for a camera or stream (see [the stats csv](../README.md#the-stats-csv)).
+
+A camera or stream runs until you press Stop. If the picture drops out, the badge turns to **RECONNECTING…** and the
+tracker reopens the source after 1, 2, 4, 8 and 16 s, then every 30 s until it's back; Stop works during the wait.
+Vehicles in the speed zone when the picture stopped are dropped rather than measured across the gap.
 
 ### Results
 
 Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
 time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows its snapshot, details and clip.
-**Open csv** loads any stats file from an earlier run or from the command line. For recordings named by
-Foscam cameras (`manual_yyyymmddhhmmss`), the time each vehicle passed is worked out from the file name.
+**Open csv** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
+time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
+recordings (`manual_yyyymmddhhmmss`) is when the recording started.
 
 ![Results](images/studio/06-results.jpg)
 

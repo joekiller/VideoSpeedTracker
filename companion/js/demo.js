@@ -241,8 +241,8 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       }
       case 'GET /api/stats.csv': {
         const rows = vehicles.map((v) => [v.time.slice(0, 10).replace(/-/g, ''), v.time.slice(11, 19).replace(/:/g, ''),
-          v.frame, v.compass, v.startFrame, v.endFrame, v.frames, '', '', '', v.area, '', v.speed].join(', '));
-        return { status: 200, text: `Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed\n${rows.join('\n')}\n`, type: 'text/csv' };
+          v.frame, v.compass, v.startFrame, v.endFrame, v.frames, '', '', '', v.area, '', v.speed, '', v.time].join(', '));
+        return { status: 200, text: `Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp\n${rows.join('\n')}\n`, type: 'text/csv' };
       }
       default: return err(404, `No route for ${method} ${path}`);
     }

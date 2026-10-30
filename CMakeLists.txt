@@ -131,6 +131,25 @@ if(VST_BUILD_GUI)
   add_subdirectory(src/Gui)
 endif()
 
+# Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back
+# (tests/stream_reconnect.sh). Only where ffmpeg and bash are available; about 45 s. With VST Studio
+# built, it also checks that Stop ends an embedded run promptly while it is waiting to reconnect.
+find_program(FFMPEG_EXECUTABLE ffmpeg)
+find_program(BASH_EXECUTABLE bash)
+if(FFMPEG_EXECUTABLE AND BASH_EXECUTABLE AND NOT WIN32)
+  set(engine_test "")
+  if(VST_BUILD_GUI)
+    add_executable(engine_reconnect_test tests/engine_reconnect_test.cpp)
+    target_link_libraries(engine_reconnect_test PRIVATE vst_engine)
+    set(engine_test $<TARGET_FILE:engine_reconnect_test>)
+  endif()
+  add_test(NAME live_stream_reconnect
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stream_reconnect.sh
+      $<TARGET_FILE:VideoSpeedTracker> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-reconnect
+      ${FFMPEG_EXECUTABLE} ${engine_test})
+  set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180)
+endif()
+
 set(CPACK_PACKAGE_NAME videospeedtracker)
 set(CPACK_PACKAGE_VERSION ${VST_VERSION})
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Measures vehicle speeds from fixed-camera street video")

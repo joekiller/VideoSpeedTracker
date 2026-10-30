@@ -41,6 +41,7 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
   "version": "1.1.0",
   "running": true,
   "paused": false,
+  "reconnecting": false,
   "source": { "kind": "camera", "name": "Front window", "fps": 30, "width": 1280, "height": 720 },
   "frame": 81234,
   "totalFrames": 0,
@@ -54,6 +55,8 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
 ```
 
 * `source.kind` is `file`, `camera` or `stream`; `totalFrames` is 0 for live sources.
+* `reconnecting` is true while a camera or stream has stopped sending pictures and the tracker is reopening it
+  (after 1, 2, 4, 8, 16, then every 30 s). Passes resume when it's back.
 * `counts` cover the current session (since VST Studio started).
 * `legalDirection` is `L2R`, `R2L` or `both` (two-way street, nobody is ever wrong-way).
 
@@ -179,4 +182,12 @@ Both return `{"ok": true, "config": { â€¦ }}`, or `{"ok": false, "problems": [ â
 
 ### `GET /api/stats.csv`
 
-The session's stats csv, same columns as the command-line `stats_*.csv`.
+The current run's stats csv, same columns as the command-line `stats_*.csv`:
+
+```
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp
+```
+
+`Flag` is `*****` for an implausible speed, else empty. `Timestamp` is when the vehicle passed, ISO 8601 with the
+UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The columns are described
+in the [README](../README.md#the-stats-csv).

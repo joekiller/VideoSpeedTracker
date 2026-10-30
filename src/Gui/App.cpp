@@ -274,7 +274,9 @@ void App::loadResultsCsv(const std::string& path) {
 		r.large = s.area >= g.largeVehicleArea;
 		r.flagged = s.flagged;
 		r.fps = g.CalibrationFPS;
-		r.time = s.date.empty() ? "" : s.date + " " + s.time;
+		// The Timestamp column says when this vehicle passed; drop its UTC offset to match session rows ("yyyy-mm-ddThh:mm:ss").
+		// Older csvs only have Date/Time, which for Foscam recordings is when the recording started.
+		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
 		rows.push_back(r);
 	}
 	rowsFrom = path;
@@ -1251,8 +1253,8 @@ void App::pageTrack() {
 	// HUD: source badge, frame counter and how fast processing is going relative to real time.
 	{
 		ImVec2 p = v.origin + ImVec2(px(14), v.size.y - px(14) - fsz(fonts.strong) - px(10));
-		const char* badge = !run ? "READY" : prog.live ? "● LIVE" : tracker.paused() ? "PAUSED" : "● PLAYING";
-		ImU32 bc = !run ? c::faint : prog.live ? c::bad : tracker.paused() ? c::warn : c::ok;
+		const char* badge = !run ? "READY" : prog.reconnecting ? "RECONNECTING…" : prog.live ? "● LIVE" : tracker.paused() ? "PAUSED" : "● PLAYING";
+		ImU32 bc = !run ? c::faint : prog.reconnecting ? c::warn : prog.live ? c::bad : tracker.paused() ? c::warn : c::ok;
 		ImVec2 bs = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, badge);
 		dl->AddRectFilled(p, p + bs + ImVec2(px(18), px(10)), alpha(c::bg0, .78f), px(7));
 		dl->AddText(fonts.strong, fsz(fonts.strong), p + ImVec2(px(9), px(5)), bc, badge);
@@ -1262,7 +1264,10 @@ void App::pageTrack() {
 			// Files also show how far through they are (and which video of a batch); live sources have no end.
 			std::string done = prog.totalFrames > 0 ? "   ·   " + std::string(prog.jobs > 1 ? "video " + std::to_string(prog.job + 1) + " of "
 				+ std::to_string(prog.jobs) + ", " : "") + std::to_string(int(std::clamp(prog.frame / float(prog.totalFrames), 0.f, 1.f) * 100)) + "%" : "";
-			snprintf(info, sizeof info, "%s   ·   frame %d   ·   %.0f fps   ·   %.1f× real time%s", prog.label.c_str(), prog.frame, prog.procFps, factor, done.c_str());
+			if (prog.reconnecting)   // the engine's line, e.g. "Reconnecting to rtsp://cam/stream: attempt 4 in 8 s"
+				snprintf(info, sizeof info, "%s", prog.sourceStatus.c_str());
+			else
+				snprintf(info, sizeof info, "%s   ·   frame %d   ·   %.0f fps   ·   %.1f× real time%s", prog.label.c_str(), prog.frame, prog.procFps, factor, done.c_str());
 			ImVec2 ip = p + ImVec2(bs.x + px(26), 0);
 			ImVec2 is = fonts.body->CalcTextSizeA(fsz(fonts.body), FLT_MAX, 0, info);
 			dl->AddRectFilled(ip, ip + is + ImVec2(px(18), px(10)), alpha(c::bg0, .78f), px(7));

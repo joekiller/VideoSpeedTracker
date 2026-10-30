@@ -64,6 +64,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <chrono>
+#include <thread>
+#include <ctime>
+#include <opencv2/videoio/registry.hpp>
 #include "VehicleDynamics.h"
 #include "Projection.h"
 #include "Snapshot.h"
@@ -93,7 +97,7 @@ ofstream traceFile;
 ofstream statsFile;
 VideoCapture capture;  //video capture object.
 vector<string> filesToDo;  // Full paths of the videos main() processes, in order.  One entry unless "*" was chosen in interactive mode.
-string fileName;  // Name (no directory) of the video currently being processed.  Foscam names "manual_yyyymmddhhmmss.avi" supply the csv Date/Time columns.
+string fileName;  // Name (no directory) of the video currently being processed.  Foscam names "manual_yyyymmddhhmmss.avi" supply the csv Date/Time columns (see setTimeBase()).
 int objDelay = 50;  // ms per frame pair while a vehicle is on screen (about real time).  "s" slows it to 250 then 1250 ms for close inspection, "f" speeds it up.  Was 1250; 50 is from piki's 2017 fork.
 bool pleaseTrace = false;  // If you want a trace file (lots of debug info)
 bool highLightsPlease = false;
@@ -135,7 +139,9 @@ struct EngineExit { int code; };  // thrown by quit() so an embedded run unwinds
 //......................................................................................................................................................
 
 
-const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed";
+// One row per logged vehicle.  Flag is "*****" for an implausible speed, else empty; it used to be written only when set, and is
+// now always there so that Timestamp (ISO 8601 local time with UTC offset, empty when unknown) is always the 15th column.
+const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp";
 
 // Reads the next frame and scales it to the 1280x720 canvas every config coordinate refers to, so cameras that record
 // 1080p, 4K or 640x480 work with the same VST.cfg geometry.  Returns false at end of video or on a read error.
@@ -146,11 +152,31 @@ bool readFrame(VideoCapture& cap, Mat& frame){
 	return true;
 }
 
+// An all-digit name like "0" means that local camera.
+bool isCameraIndex(const string& name){
+	return !name.empty() && name.size() < 4 && all_of(name.begin(), name.end(), [](char c){ return isdigit((unsigned char)c) != 0; });
+}
+
+bool isStreamUrl(const string& name){ return name.find("://") != string::npos; }
+
 // Opens a video file, a stream URL (rtsp://, http://, anything FFmpeg reads), or, for an all-digit name like "0",
 // that local camera.
 bool openSource(VideoCapture& cap, const string& name){
-	bool index = !name.empty() && name.size() < 4 && all_of(name.begin(), name.end(), [](char c){ return isdigit((unsigned char)c) != 0; });
-	return index ? cap.open(stoi(name)) : cap.open(name);
+	if (isCameraIndex(name)) return cap.open(stoi(name));
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 6)
+	// FFmpeg waits 30 s by default on a camera that doesn't answer or a stream that stalls.  Shorter limits let a dropout be
+	// noticed and retried sooner (see readFramePair()), and keep Stop in VST Studio from hanging on a dead camera.
+	if (isStreamUrl(name) && videoio_registry::hasBackend(CAP_FFMPEG))
+		return cap.open(name, CAP_FFMPEG, { CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, CAP_PROP_READ_TIMEOUT_MSEC, 10000 });
+#endif
+	return cap.open(name);
+}
+
+// A stream URL for the log, without any user:password@ it carries.
+string sourceLabel(const string& name){
+	size_t scheme = name.find("://"), at = name.find('@');
+	if (isCameraIndex(name)) return "camera " + name;
+	return (scheme != string::npos && at != string::npos && at > scheme) ? name.substr(0, scheme + 3) + name.substr(at + 1) : name;
 }
 
 // Output name for a video: Foscam "manual_20160130172251.avi" -> "20160130_172251" (the 2016 naming), anything else -> its stem.
@@ -161,11 +187,118 @@ string outputStem(const string& videoName){
 	return foscam ? stem.substr(7, 8) + "_" + stem.substr(15, 6) : stem;
 }
 
-// csv Date and Time columns: "20160130, 172251" for a Foscam "manual_20160130172251.avi", blank ", " for any other name.
-string csvDateTime(const string& videoName){
-	string stem = outputStem(videoName);
-	bool foscam = stem.size() == 15 && stem[8] == '_' && stem != fs::path(videoName).stem().string();
-	return foscam ? stem.substr(0, 8) + ", " + stem.substr(9, 6) : string(", ");
+// ............................................ When each vehicle passed: the csv Date, Time and Timestamp columns ............................................
+// A report for a city council has to say when each vehicle went by, not just which frame of which video it was in.  Every
+// logged vehicle gets a time from the best clock available for its source:
+//   - live sources (camera index or stream URL): this computer's clock at the moment the vehicle is logged;
+//   - Foscam recordings (manual_yyyymmddhhmmss.avi): the start time in the name plus the vehicle's frame offset;
+//   - other recordings: the file's modification time (when the camera finished writing it) minus the video's length,
+//     plus the frame offset.  That fails for copies (copying resets the time), so it's only used when it looks sane.
+// When none of these can be trusted the time is left blank rather than guessed; the Timestamp column is still written, empty.
+// Timestamp is ISO 8601 local time with its UTC offset ("2026-10-30T14:03:22-04:00"), so it stays unambiguous across
+// daylight-saving changes and when the csv is read somewhere else.  Date and Time ("20261030", "140322") are the same
+// moment, except for Foscam names, where they keep their 2016 meaning: when the recording started (the same on every row).
+bool liveSource = false;       // the current source is a camera or stream: times come from the clock, and dropouts are reconnected
+double recordingStart = -1;    // files: seconds since 1970 (UTC) at frame 0 of the current file; -1 when unknown
+string foscamDateTime;         // "yyyymmdd, hhmmss" from a Foscam name, else empty
+
+// Local calendar fields of t, and its UTC offset in minutes.  The offset is the difference between the local fields read as
+// if they were UTC (days_from_civil, after H. Hinnant) and t itself; strftime's %z isn't "+hh:mm" and varies on Windows.
+tm localFields(time_t t, int& offsetMinutes){
+	tm lt{};
+#ifdef _WIN32
+	localtime_s(&lt, &t);
+#else
+	localtime_r(&t, &lt);
+#endif
+	long long y = lt.tm_year + 1900, m = lt.tm_mon + 1, d = lt.tm_mday;
+	y -= m <= 2;
+	long long era = (y >= 0 ? y : y - 399) / 400, yoe = y - era * 400;
+	long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	long long days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+	long long localSeconds = days * 86400 + lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec;
+	offsetMinutes = int((localSeconds - (long long)t) / 60);
+	return lt;
+}
+
+// t (seconds since 1970) as "2026-10-30T14:03:22-04:00", or as the csv's "20261030, 140322" when csvColumns.
+string formatTime(double t, bool csvColumns){
+	int off = 0;
+	tm lt = localFields(time_t(floor(t)), off);
+	char s[48];
+	if (csvColumns)
+		snprintf(s, sizeof s, "%04d%02d%02d, %02d%02d%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec);
+	else
+		snprintf(s, sizeof s, "%04d-%02d-%02dT%02d:%02d:%02d%c%02d:%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min, lt.tm_sec,
+			off < 0 ? '-' : '+', abs(off) / 60, abs(off) % 60);
+	return s;
+}
+
+double clockNow(){ return chrono::duration<double>(chrono::system_clock::now().time_since_epoch()).count(); }
+
+// Seconds since 1970 when the vehicle being logged now (at frameNumber) passed, or -1 if unknown.
+double vehicleTime(){
+	if (liveSource) return clockNow();
+	return recordingStart >= 0 ? recordingStart + frameNumber / g.videoFPS : -1;
+}
+
+// csv Date and Time columns, e.g. "20160130, 172251"; blank ", " when the time is unknown.
+string csvDateTime(double when){
+	if (!foscamDateTime.empty()) return foscamDateTime;
+	return when >= 0 ? formatTime(when, true) : string(", ");
+}
+
+// Works out recordingStart for the file just opened in capture (see above), and says in the log which clock the csv times
+// rest on, so whoever builds a report from them later knows how far to trust them.
+void setTimeBase(const string& source, bool fpsReported){
+	recordingStart = -1;
+	foscamDateTime.clear();
+	if (liveSource){
+		cout << "Vehicle times: this computer's clock (live source)." << endl;
+		return;
+	}
+	string stem = outputStem(fileName);  // "yyyymmdd_hhmmss" for a Foscam name, else the plain stem
+	if (stem != fs::path(fileName).stem().string()){
+		foscamDateTime = stem.substr(0, 8) + ", " + stem.substr(9, 6);
+		// The name is the camera's local time; read it as this computer's local time (mktime works out daylight saving).
+		tm st{};
+		st.tm_year = stoi(stem.substr(0, 4)) - 1900;
+		st.tm_mon = stoi(stem.substr(4, 2)) - 1;
+		st.tm_mday = stoi(stem.substr(6, 2));
+		st.tm_hour = stoi(stem.substr(9, 2));
+		st.tm_min = stoi(stem.substr(11, 2));
+		st.tm_sec = stoi(stem.substr(13, 2));
+		st.tm_isdst = -1;
+		tm asNamed = st;
+		time_t t = mktime(&st);
+		// mktime quietly rolls impossible dates over (month 13 -> January); only accept a name it didn't have to change.
+		if (t != (time_t)-1 && st.tm_mon == asNamed.tm_mon && st.tm_mday == asNamed.tm_mday && st.tm_min == asNamed.tm_min && st.tm_sec == asNamed.tm_sec){
+			recordingStart = double(t);
+			cout << "Vehicle times: from the file name, recording started " << formatTime(recordingStart, false) << "." << endl;
+			return;
+		}
+	}
+	else {
+		error_code ec;
+		auto written = fs::last_write_time(source, ec);
+		double frames = capture.get(CAP_PROP_FRAME_COUNT);
+		if (!ec && fpsReported && frames > 0){
+			// C++17 can't convert a file time to the system clock portably; both tick in real time, so shift by "now" on each.
+			auto sys = chrono::system_clock::now() + chrono::duration_cast<chrono::system_clock::duration>(written - fs::file_time_type::clock::now());
+			double end = chrono::duration<double>(sys.time_since_epoch()).count();
+			double length = frames / g.videoFPS;
+			// A modification time in the future, or a start before 2000, means the camera's clock or the copy can't be trusted.
+			if (end <= clockNow() + 60 && end - length >= 946684800.0){
+				recordingStart = end - length;
+				cout << "Vehicle times: recording started about " << formatTime(recordingStart, false) << " (the file's modified time less its "
+					<< int(length) / 60 << " min " << int(length) % 60 << " s length).  Copying a video changes its modified time;"
+					<< " check this against the clock in the picture." << endl;
+				return;
+			}
+		}
+	}
+	cout << "Vehicle times: unknown for this file (no valid manual_yyyymmddhhmmss name or usable modified time); "
+		<< (foscamDateTime.empty() ? "Date, Time and Timestamp are" : "Timestamp is") << " left blank." << endl;
 }
 
 bool isVideoFile(const fs::path& p){
@@ -690,7 +823,7 @@ int loggedVehicles = 0, speeders = 0, wrongWayVehicles = 0;
 
 // Counts a vehicle that was just written to the stats csv, calls out wrong-way travel on a one-way street
 // (LegalDirection in VST.cfg), and hands the vehicle to an embedding host.
-void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed){
+void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed, const string& timestamp){
 	bool wrongWay = g.isWrongWay(leftToRight);
 	const string& compass = leftToRight ? g.L2RDirection : g.R2LDirection;
 	loggedVehicles++;
@@ -702,9 +835,10 @@ void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed){
 #ifdef VST_EMBEDDED
 	if (hooks && hooks->onVehicle)
 		hooks->onVehicle({ leftToRight, wrongWay, compass, estSpeed, frameNumber, v.getTrackStartFrame(), v.getTrackEndFrame(),
-			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea() });
+			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp });
 #else
 	(void)v;
+	(void)timestamp;
 #endif
 }
 
@@ -724,7 +858,9 @@ void logL2Rstats(bool isOK, int index){
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
 	if ((estSpeed >= 18.0) && isOK){
-		statsFile << csvDateTime(fileName) << ", "
+		double when = vehicleTime();
+		string timestamp = when >= 0 ? formatTime(when, false) : "";
+		statsFile << csvDateTime(when) << ", "
 			<< frameNumber << ", " << g.L2RDirection << ", " << vehiclesGoingRight[index].getTrackStartFrame() << ", "
 			<< vehiclesGoingRight[index].getTrackEndFrame() << ", "
 			<< frames << ", "
@@ -732,10 +868,10 @@ void logL2Rstats(bool isOK, int index){
 			<< vehiclesGoingRight[index].getTrackEndPixel() << ", "
 			<< vehiclesGoingRight[index].getTrackEndPixel() - vehiclesGoingRight[index].getTrackStartPixel() << ", "
 			<< vehiclesGoingRight[index].getArea() << ", , "
-			<< estSpeed;
-		if (estSpeed < 0 || estSpeed > crazySpeed) statsFile << ", *****";
-		statsFile << endl;
-		reportVehicle(true, vehiclesGoingRight[index], estSpeed);
+			<< estSpeed << ", "
+			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
+			<< timestamp << endl;
+		reportVehicle(true, vehiclesGoingRight[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingRight[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
 			int speedleft = AnalysisBox.x + g.speedLineLeft; // Left boundary may have moved right for ROI boundary.
@@ -792,7 +928,9 @@ void logR2Lstats(bool isOK, int index){
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
 	if ((estSpeed >= 18.0) && isOK){
-		statsFile << csvDateTime(fileName) << ", "
+		double when = vehicleTime();
+		string timestamp = when >= 0 ? formatTime(when, false) : "";
+		statsFile << csvDateTime(when) << ", "
 			<< frameNumber << ", " << g.R2LDirection << ", " << vehiclesGoingLeft[index].getTrackStartFrame() << ", "
 			<< vehiclesGoingLeft[index].getTrackEndFrame() << ", "
 			<< frames << ", "
@@ -800,10 +938,10 @@ void logR2Lstats(bool isOK, int index){
 			<< vehiclesGoingLeft[index].getTrackEndPixel() << ", "
 			<< vehiclesGoingLeft[index].getTrackStartPixel() - vehiclesGoingLeft[index].getTrackEndPixel() << ", "
 			<< vehiclesGoingLeft[index].getArea() << ", , "
-			<< estSpeed;
-		if (estSpeed < 0 || estSpeed > crazySpeed) statsFile << ", *****";
-		statsFile << endl;
-		reportVehicle(false, vehiclesGoingLeft[index], estSpeed);
+			<< estSpeed << ", "
+			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
+			<< timestamp << endl;
+		reportVehicle(false, vehiclesGoingLeft[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingLeft[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
 			int speedleft = AnalysisBox.x + g.speedLineLeft;
@@ -1351,6 +1489,81 @@ void printSummary(){
 	cout << endl;
 }
 
+// ................................................ Live sources: riding out dropouts ................................................
+// A camera or stream left running for days will drop out now and then: a Wi-Fi blip, a camera reboot, a router restart.
+// For a file the first failed read is its end, and the job ends there as it always has.  A live source is instead reopened
+// after a growing wait (reconnectWaits), for as long as it takes or until the run is stopped.  Vehicles being tracked when the
+// picture stopped are dropped, so no speed is ever measured across a gap, and frames keep counting from where they were so
+// the csv Frame column never goes backwards.
+const int reconnectWaits[] = { 1, 2, 4, 8, 16, 30 };  // seconds before each reopen attempt; the last one repeats forever
+int reconnectAttempts = 0;        // attempts since frames last arrived; 0 while the source is delivering
+double outageStarted = 0;         // clockNow() when the current outage began
+bool stoppedWhileReconnecting = false;
+
+// Tells an embedding host (VST Studio's "Reconnecting..." badge) that a live source went down or came back.
+void notifySource(bool reconnecting, int attempt, int waitSeconds, const string& message){
+#ifdef VST_EMBEDDED
+	if (hooks && hooks->onSourceStatus) hooks->onSourceStatus({ reconnecting, attempt, waitSeconds, message });
+#else
+	(void)reconnecting; (void)attempt; (void)waitSeconds; (void)message;
+#endif
+}
+
+// Sleeps for ms, checking every 100 ms for Esc (or, embedded, the host's Stop button, which pollKey reports as Esc).
+// Returns true if the user asked to stop.
+bool waitOrStop(int ms){
+	for (auto until = chrono::steady_clock::now() + chrono::milliseconds(ms); chrono::steady_clock::now() < until;){
+		if (uiWaitKey(100) == 27) return true;
+		if (headless) this_thread::sleep_for(chrono::milliseconds(100));  // without a window uiWaitKey() returns at once
+	}
+	return false;
+}
+
+// Reads the next frame pair into frame1/frame2.  Returns false at the end of a file, or when the user stops a live
+// source while it is reconnecting; otherwise a live source that stops delivering is reopened here until it delivers again.
+bool readFramePair(const string& source){
+	for (;;){
+		if (readFrame(capture, frame1) && readFrame(capture, frame2)){
+			if (reconnectAttempts > 0){
+				string line = "Reconnected to " + sourceLabel(source) + " at " + formatTime(clockNow(), false) + " after a "
+					+ to_string(int(clockNow() - outageStarted)) + " s gap (" + to_string(reconnectAttempts) + " attempts).  Tracking restarted.";
+				cout << "<" << frameNumber << ">  " << line << endl;
+				if (pleaseTrace) traceFile << "<" << frameNumber << "> " << line << endl;
+				notifySource(false, 0, 0, line);
+				reconnectAttempts = 0;
+			}
+			return true;
+		}
+		if (!liveSource) return false;  // end of the file
+		if (reconnectAttempts == 0){
+			// Start of an outage.  Whatever was in the speed zone can't be finished honestly: drop it, and start
+			// tracking afresh on the first frames after the gap.
+			outageStarted = clockNow();
+			cout << "<" << frameNumber << ">  Lost " << sourceLabel(source) << " at " << formatTime(outageStarted, false)
+				<< "; vehicles being tracked, now dropped: " << vehiclesGoingRight.size() + vehiclesGoingLeft.size() << endl;
+			if (pleaseTrace) traceFile << "<" << frameNumber << "> Source lost; tracks dropped" << endl;
+			vehiclesGoingRight.clear();
+			vehiclesGoingLeft.clear();
+			bailing = false;
+			numObjects = 0;
+		}
+		capture.release();
+		int wait = reconnectWaits[min(reconnectAttempts, int(size(reconnectWaits)) - 1)];
+		reconnectAttempts++;
+		string line = "Reconnecting to " + sourceLabel(source) + ": attempt " + to_string(reconnectAttempts) + " in " + to_string(wait) + " s";
+		cout << "<" << frameNumber << ">  " << line << endl;
+		notifySource(true, reconnectAttempts, wait, line);
+		if (waitOrStop(wait * 1000)){
+			cout << "Stopped while reconnecting." << endl;
+			stoppedWhileReconnecting = true;
+			return false;
+		}
+		// Opened or not, the next pass round the loop decides: a source that opens but sends no frames still counts as down,
+		// so the waits keep growing instead of hammering a camera that is half awake.
+		if (!openSource(capture, source)) cout << "<" << frameNumber << ">  Couldn't open " << sourceLabel(source) << endl;
+	}
+}
+
 int vstMain(int argc, char** argv){
 
 	bool objectDetected = false;
@@ -1402,7 +1615,8 @@ int vstMain(int argc, char** argv){
 			cout << "Scaling " << width << "x" << height << " frames to " << Globals::FrameWidth << "x" << Globals::FrameHeight
 				<< "; VST.cfg pixel values refer to the scaled frame." << endl;
 		double FPS = capture.get(CAP_PROP_FPS);
-		if (!(FPS > 0 && FPS < 1000)){
+		bool fpsReported = FPS > 0 && FPS < 1000;
+		if (!fpsReported){
 			cout << "Video doesn't report a usable frame rate; assuming CalibrationFPS (" << g.CalibrationFPS << ")." << endl;
 			FPS = g.CalibrationFPS;
 		}
@@ -1411,6 +1625,12 @@ int vstMain(int argc, char** argv){
 		if (FPS < 20)
 			cout << "Warning: " << FPS << " fps is low for tracking; 30 fps is recommended." << endl;
 		g.videoFPS = FPS;
+		// Live means a camera, or a URL that doesn't report a length.  A URL that does (an http:// link to a recorded file)
+		// is a file: it ends at its end instead of being reopened and played again.
+		liveSource = isCameraIndex(FName) || (isStreamUrl(FName) && !(capture.get(CAP_PROP_FRAME_COUNT) > 0));
+		reconnectAttempts = 0;
+		stoppedWhileReconnecting = false;
+		setTimeBase(FName, fpsReported);
 
 		capture.set(CAP_PROP_POS_FRAMES, startFrame);  // Set frame number to start at, in first file to be processed;  Remaining files will start at zero.
 		frameNumber = int(startFrame);
@@ -1418,7 +1638,8 @@ int vstMain(int argc, char** argv){
 
 		//work through frame pairs looking for differences, until the video runs out.  Reading (rather than trusting
 		// CAP_PROP_FRAME_COUNT, which is an estimate or 0 for many H.264 and streamed sources) avoids processing empty frames.
-		while (readFrame(capture, frame1) && readFrame(capture, frame2)){
+		// A live source doesn't run out: readFramePair() reconnects it after a dropout.
+		while (readFramePair(FName)){
 			Mat ROIFr1 = frame1(AnalysisBox).clone();  			// Carve out the analysis box for motion detection
 			cv::cvtColor(ROIFr1, grayImage1, COLOR_BGR2GRAY);  //convert ROIFr1 to gray scale for frame differencing
 			Mat ROIFr2 = frame2(AnalysisBox).clone();   		   // Carve out the analysis box for motion detection
@@ -1495,6 +1716,7 @@ int vstMain(int argc, char** argv){
 
 		capture.release();
 		printSummary();
+		if (stoppedWhileReconnecting) break;
 
 	} // looping over input files loop end
 
@@ -1573,6 +1795,12 @@ void resetEngineState(){
 	demo = false;
 	loggedVehicles = speeders = wrongWayVehicles = 0;
 	frameBoxes.clear();
+	liveSource = false;
+	recordingStart = -1;
+	foscamDateTime.clear();
+	reconnectAttempts = 0;
+	outageStarted = 0;
+	stoppedWhileReconnecting = false;
 }
 
 }  // namespace

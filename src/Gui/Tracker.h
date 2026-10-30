@@ -4,7 +4,8 @@
 //
 // Flow per job: build CLI-style arguments -> vst::run() with hooks -> onFrame copies the frame (rate-limited when
 // running faster than real time) and keeps a short ring of analysis-box crops -> onVehicle cuts the snapshot and
-// clip for that vehicle out of the ring -> pollKey implements pause/stop and real-time pacing.
+// clip for that vehicle out of the ring -> pollKey implements pause/stop and real-time pacing -> onSourceStatus tracks a
+// live source that dropped out and is being reconnected by the engine.
 #pragma once
 #include "Engine.h"
 #include <atomic>
@@ -31,7 +32,7 @@ struct Vehicle {
 	std::string videoPath;
 	double fps = 30;
 	bool live = false;          // from a camera or stream (time is when it passed) rather than a recording
-	std::string recorded;       // ISO time it passed in a recording, when the file name says when it started
+	std::string recorded;       // ISO time it passed in a recording, when the engine knows when the recording started
 	vst::VehicleEvent ev;
 	bool large = false;
 	bool speeding = false, egregious = false;
@@ -83,6 +84,8 @@ public:
 		int frame = 0, totalFrames = 0;
 		double videoFps = 0, procFps = 0;
 		bool live = false;          // camera or stream
+		bool reconnecting = false;  // a live source dropped out and the engine is reopening it
+		std::string sourceStatus;   // the engine's latest reconnect line, e.g. "Reconnecting to camera 0: attempt 3 in 4 s"
 	};
 	Progress progress();
 	std::vector<Job> jobs();
@@ -100,6 +103,7 @@ private:
 	void worker(std::vector<Job> jobs, Options opt);
 	void onFrame(const vst::FrameInfo& f);
 	void onVehicle(const vst::VehicleEvent& e);
+	void onSourceStatus(const vst::SourceStatus& s);
 	int pollKey();
 
 	std::thread thread_;
