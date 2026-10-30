@@ -94,6 +94,10 @@ Logged passes, newest first. All parameters are optional: `since` returns only i
 * `clip` is a short (2-4 s) mp4 of the analysis-box strip from entry to exit, or `null` when none is
   kept (for example after a restart). `snapshot` is always present.
 
+### `GET /api/vehicles/<id>`
+
+One pass, same object as the list items. `404` JSON when gone.
+
 ### `GET /api/vehicles/<id>/snapshot.jpg`, `GET /api/vehicles/<id>/clip.mp4`
 
 Binary media for one pass. `404` JSON when gone.

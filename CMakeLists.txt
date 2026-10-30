@@ -86,6 +86,9 @@ endif()
 install(TARGETS VideoSpeedTracker ProcessHiLites RUNTIME DESTINATION ${VST_BIN_DIR})
 # VST.cfg / ProcessHiLites.cfg are read-only templates; on first run each program copies its own into the
 # per-user config folder (src/Wintel64/Common/UserPaths.h), so installs never need a writable program folder.
+# The phone companion (companion/README.md) is static files; VST Studio serves them when Remote companion is on.
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/companion/ DESTINATION ${VST_DATA_DIR}/companion
+  PATTERN dev EXCLUDE PATTERN README.md EXCLUDE)
 install(FILES ${CMAKE_SOURCE_DIR}/bin/VST.cfg ${CMAKE_SOURCE_DIR}/bin/ProcessHiLites.cfg ${CMAKE_SOURCE_DIR}/README.md DESTINATION ${VST_DATA_DIR})
 
 # The BSD license requires binary redistributions to carry the notice. Linux gets a Debian copyright file;
