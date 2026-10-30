@@ -158,6 +158,24 @@ json statusJson(App& app) {
 		{ "calibrationMarks", { { "L2R", { app.calibMarks[0][0], app.calibMarks[0][1] } }, { "R2L", { app.calibMarks[1][0], app.calibMarks[1][1] } } } },
 		{ "calibration", calibrationJson(app) },
 		{ "liveViews", app.server ? app.server->openStreams() : 0 },
+		{ "health", { { "camera", app.health.viewCheckedAt.empty() ? "unchecked" : app.health.view.name() },
+			{ "cameraWarning", app.health.cameraWarning }, { "lowDisk", app.health.lowDisk } } },
+	};
+}
+
+// GET /api/health: today's numbers (a health.csv row in the making), the disk budget and the latest camera check.
+json healthJson(App& app) {
+	const App::HealthState& h = app.health;
+	const health::Day& d = h.today;
+	auto orNull = [](std::uintmax_t v) { return v ? json(v) : json(nullptr); };
+	return json{
+		{ "today", { { "date", d.date }, { "trackedHours", d.trackedHours }, { "outageHours", d.outageHours }, { "outages", d.outages },
+			{ "vehicles", d.vehicles }, { "clipsRemoved", d.clipsRemoved }, { "camera", d.camera } } },
+		{ "disk", { { "videoBytes", h.video.bytes }, { "videoFiles", h.video.files }, { "budgetBytes", orNull(h.budgetBytes) },
+			{ "freeBytes", orNull(h.freeBytes) }, { "lowDisk", h.lowDisk } } },
+		{ "camera", { { "result", h.viewCheckedAt.empty() ? "unchecked" : h.view.name() }, { "warning", h.cameraWarning },
+			{ "dx", h.view.dx }, { "dy", h.view.dy }, { "confidence", h.view.confidence },
+			{ "checked", h.viewCheckedAt.empty() ? json(nullptr) : json(h.viewCheckedAt) } } },
 	};
 }
 
@@ -482,6 +500,10 @@ void Server::routes() {
 			std::this_thread::sleep_for(std::chrono::milliseconds(200));
 			return sink.is_writable();
 		});
+	}));
+
+	http_->Get("/api/health", guard([&app, sendPosted](const Request&, Response& res) {
+		sendPosted(res, app.post([&app] { return healthJson(app).dump(); }));
 	}));
 
 	http_->Get("/api/config", guard([&app, sendPosted](const Request&, Response& res) {

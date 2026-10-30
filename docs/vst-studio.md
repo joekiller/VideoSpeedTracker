@@ -145,6 +145,27 @@ A camera or stream runs until you press Stop. If the picture drops out, the badg
 tracker reopens the source after 1, 2, 4, 8 and 16 s, then every 30 s until it's back; Stop works during the wait.
 Vehicles in the speed zone when the picture stopped are dropped rather than measured across the gap.
 
+#### Leaving it running
+
+The **Unattended health** card on this page looks after a camera left running for days or weeks:
+
+- **Camera position.** Every 2 minutes of a live run, VST compares the picture with a reference view kept with
+  the zones (`view-reference.jpg` in the config folder). It's taken from the first check after the zones or the
+  source change, so redrawing the zones resets it.
+  - The comparison lines up the edges of fixed things (curbs, poles, house fronts), so passing cars and the light
+    changing through the day don't count.
+  - If the view has shifted more than about 10 px in three checks in a row, the card and the header warn
+    **Camera moved?** Re-aim the camera, redraw the zones, or press **It's fine, use this view**.
+  - At night, in fog or with a covered lens there isn't enough to compare. The card says so, and that neither
+    raises nor clears the warning.
+- **Disk.** Clips and highlight videos are pruned to **Keep up to** (20 GB by default; 0 keeps everything), oldest
+  first, every 10 minutes. If the disk falls under 2 GB free, more old video goes so the stats always have room.
+  Stats csvs, run manifests, reports and the calibration history are never removed.
+- **Daily log.** `Stats/health.csv` gets one row per day a live source ran: `Date, TrackedHours, OutageHours,
+  Outages, Vehicles, ClipsRemoved, FreeGB, Camera`. The row is written when the day ends or VST Studio closes, so
+  a restart adds a second row for the same date. It tells a quiet street apart from a camera that was offline.
+  Camera is the worst check that day: `moved`, `unclear`, `same` or `unchecked`.
+
 ### Results
 
 Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over

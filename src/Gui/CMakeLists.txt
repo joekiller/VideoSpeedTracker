@@ -123,9 +123,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(vst_engine PRIVATE -ffp-contract=off)
 endif()
 
-# The street report (Report.cpp) and the stats csv reader it builds on: no ImGui or OpenGL, so tests/report_test.cpp
-# links it on its own.
-add_library(vst_report STATIC Report.cpp Results.cpp)
+# The street report (Report.cpp), the stats csv reader it builds on and the unattended-run health checks
+# (Health.cpp): no ImGui or OpenGL, so tests/report_test.cpp and tests/health_test.cpp link it on their own.
+add_library(vst_report STATIC Report.cpp Results.cpp Health.cpp)
 target_include_directories(vst_report PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${SINGLE_DIR})
 target_link_libraries(vst_report PUBLIC ${OpenCV_LIBS})
 if(MSVC)
@@ -137,6 +137,7 @@ find_package(Threads REQUIRED)
 add_executable(VSTStudio WIN32
   main.cpp
   App.cpp
+  AppHealth.cpp
   Canvas.cpp
   Media.cpp
   Guide.cpp

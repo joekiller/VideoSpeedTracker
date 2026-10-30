@@ -90,6 +90,7 @@ void App::init(bool fresh) {
 
 void App::shutdown() {
 	tracker.stop();
+	if (persist) flushHealthDay();   // today so far; a restart later today adds a second row for the date
 	server.reset();
 	if (persist) prefs.save();
 	persist = false;   // once is enough; the destructor calls this again
@@ -459,6 +460,7 @@ void App::frame(float w, float h) {
 		for (auto& [fn, p] : work) p->set_value(fn());
 	}
 	pumpTracker();
+	healthTick();
 	if (!tracker.running()) player.tick(now());
 	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
 	autosave();
@@ -673,6 +675,15 @@ void App::drawHeader(float w) {
 	ImGui::SetCursorPos(ImVec2(right - bw - pauseW - cs.x - px(14), (hh - cs.y) * .5f));
 	pill(chipText.c_str(), source.empty() ? c::dim : c::text, c::bg2, fonts.body);
 	if (ImGui::IsItemClicked()) page = Page::Source;
+	// While tracking, the same slot warns when the camera seems to have been knocked (AppHealth.cpp).
+	if (!calNag && run && health.cameraWarning) {
+		const char* moved = ICON_WARN "  Camera moved?";
+		ImVec2 ms = pillSize(moved, fonts.body);
+		ImGui::SetCursorPos(ImVec2(right - bw - pauseW - cs.x - ms.x - px(24), (hh - ms.y) * .5f));
+		pill(moved, c::bad, alpha(c::bad, .14f), fonts.body);
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("The view no longer lines up with the one the zones were drawn on.\nClick for details.");
+		if (ImGui::IsItemClicked()) page = Page::Track;
+	}
 	if (calNag) {
 		ImGui::SetCursorPos(ImVec2(right - bw - pauseW - cs.x - calSize.x - px(24), (hh - calSize.y) * .5f));
 		pill(calText, c::warn, alpha(c::warn, .14f), fonts.body);
@@ -1599,6 +1610,8 @@ void App::pageTrack() {
 
 	ImGui::Dummy(ImVec2(0, px(4)));
 	runOptions();
+	ImGui::Dummy(ImVec2(0, px(4)));
+	healthCard();
 
 	ImGui::Dummy(ImVec2(0, px(4)));
 	// The fastest this session, the list people ask about first.

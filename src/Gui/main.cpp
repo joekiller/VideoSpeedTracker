@@ -137,7 +137,22 @@ struct DemoScript {
 				frames = 2;
 				break;
 			}
-			if (frames == 10) app.toasts_.clear();
+			if (frames == 10) {
+				app.toasts_.clear();
+				// The health card counts live cameras only, and the tour plays a recording: show it as it reads after
+				// a day on a live camera (screenshot mode never writes health.csv).
+				auto& h = app.health;
+				h.today.date = "2026-11-02";
+				h.today.trackedHours = 9.4;
+				h.today.outages = 1;
+				h.today.outageHours = 3 / 60.0;
+				h.view.result = health::ViewCheck::Same;
+				h.view.confidence = .91;
+				h.viewCheckedAt = "2026-11-02T17:20:00";
+				h.video = { 3435973837ull, 412 };
+				h.budgetBytes = 20ull << 30;
+				h.freeBytes = 195421011968ull;
+			}
 			if (frames == 15) { shot("05-live-tracking.png"); }
 			if (frames == 20) { app.prefs.showMotion = false; app.tracker.setPaused(false); next(); }
 			break;

@@ -89,6 +89,27 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
   editing `VST.cfg`) puts the direction back to `unchecked`. VST Studio works this out from
   `calibration-history.csv` in its config folder, so it survives restarts.
 
+### `GET /api/health`
+
+How an unattended run is holding up (see "Leaving it running" in [vst-studio.md](vst-studio.md)):
+
+```json
+{
+  "today":  { "date": "2026-11-02", "trackedHours": 9.4, "outageHours": 0.05, "outages": 1,
+              "vehicles": 412, "clipsRemoved": 0, "camera": "same" },
+  "disk":   { "videoBytes": 3435973837, "videoFiles": 412, "budgetBytes": 21474836480,
+              "freeBytes": 195421011968, "lowDisk": false },
+  "camera": { "result": "same", "warning": false, "dx": 0.4, "dy": -0.2, "confidence": 0.91,
+              "checked": "2026-11-02T17:20:00" }
+}
+```
+
+* `today` counts live cameras and streams only. It's the row `Stats/health.csv` gets when the day ends.
+* `budgetBytes` is `null` with no limit, and `freeBytes` is `null` until the first check (seconds after start).
+* `camera.result` is `unchecked`, `same`, `moved` or `unclear` (too dark or featureless to tell). `warning` is
+  true after three `moved` checks in a row, about 6 minutes. `dx`/`dy` are in 1280x720 frame pixels.
+* `/api/status` carries a summary of this as `health: {"camera", "cameraWarning", "lowDisk"}`.
+
 ### `GET /api/vehicles?since=<id>&from=<iso>&to=<iso>&limit=<n>`
 
 Logged passes, newest first. All parameters are optional: `since` returns only ids greater than it,

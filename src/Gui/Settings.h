@@ -55,7 +55,8 @@ struct AppPrefs {
 	bool remoteEnabled = false;
 	int remotePort = 8787;
 	std::string remoteToken;
-	std::string remoteAddress;   // the address put in the pairing QR code; "" = automatic (lanAddress())
+	std::string remoteAddress;
+	int keepVideoGB = 20;        // disk budget for Clips/ + HiLites/, oldest removed first; 0 = keep everything   // the address put in the pairing QR code; "" = automatic (lanAddress())
 	// Site planner inputs (metres, degrees), so the guide remembers what was entered.
 	double planHfov = 66, planWidth = 1920, planFps = 30, planShutter = 120;
 	double planDist = 12, planClear = 18, planCalib = 30, planCarLen = 4.8;

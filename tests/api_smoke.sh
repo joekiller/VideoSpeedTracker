@@ -164,6 +164,16 @@ has AnalysisBoxLeft AnalysisBoxTop AnalysisBoxWidth AnalysisBoxHeight speedLineL
     CalibrationFPS legalDirection speedLimit egregious siteName minLoggedSpeed
 CONFIG_BEFORE=$BODY
 
+echo "Health"
+req GET /api/health
+expect 200 "GET /api/health"
+has today date trackedHours outageHours outages vehicles clipsRemoved disk videoBytes videoFiles budgetBytes freeBytes lowDisk \
+    camera result warning confidence checked
+grep -q '"result":"unchecked"' <<< "$BODY" && pass "no camera check on a recorded video" || fail "a file run shouldn't check the camera: ${BODY:0:300}"
+req GET /api/status
+grep -q '"health":{"camera":"unchecked","cameraWarning":false,"lowDisk":false}' <<< "$BODY" && pass "status carries the health summary" \
+  || fail "status should carry the health summary: $(grep -o '"health":{[^}]*}' <<< "$BODY")"
+
 echo "Rejected config changes leave VST.cfg alone"
 SUM_BEFORE=$(cksum < "$OUT/VST.cfg")
 req PUT /api/config -H 'Content-Type: application/json' --data '{"speedLineLeft": 900, "speedLineRight": 100}'

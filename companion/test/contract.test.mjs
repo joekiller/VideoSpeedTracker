@@ -39,6 +39,7 @@ const STATUS = {
   speedLimit: isInt, egregious: isInt,
   legalDirection: (d) => ['L2R', 'R2L', 'both'].includes(d),
   siteName: isStr,
+  health: (h) => h && ['unchecked', 'same', 'moved', 'unclear'].includes(h.camera) && isBool(h.cameraWarning) && isBool(h.lowDisk),
 };
 
 const CONFIG = {

@@ -85,6 +85,7 @@ img, video, svg { display: block; max-width: 100%; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.1; min-width: 0; }
 .brand-text b { font-size: 16px; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand-text small { color: var(--muted); font-size: 12px; }
+.brand-text small.warn { color: var(--warn); font-weight: 600; }
 .conn {
   display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; flex: none;
   border: 1px solid var(--line); background: var(--surface); font-size: 13px; color: var(--text-2); cursor: pointer;

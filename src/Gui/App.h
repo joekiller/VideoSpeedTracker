@@ -14,6 +14,7 @@
 //   Companion                pairing a phone with the local API (QR code)
 #pragma once
 #include "Calibration.h"
+#include "Health.h"
 #include "Media.h"
 #include "Report.h"
 #include "Results.h"
@@ -105,6 +106,24 @@ public:
 	void setPage(Page p) { page = p; }
 	void setRemote(bool on);
 
+	// Unattended-run health (AppHealth.cpp): today's numbers for health.csv, the video folders against the disk
+	// budget, and the camera check against the reference view.  GUI thread only (the API reads it via post()).
+	struct HealthState {
+		health::Day today;
+		health::Usage video;            // Clips + HiLites, as of the last prune
+		std::uintmax_t budgetBytes = 0; // prefs.keepVideoGB in bytes (0 = keep everything)
+		std::uintmax_t freeBytes = 0;   // free space in the data folder, as of the last prune (0 = unknown)
+		bool lowDisk = false;           // under kMinFreeBytes even after pruning
+		health::ViewCheck view;         // the latest camera check
+		std::string viewCheckedAt;      // ISO time of it ("" = none yet)
+		int movedStreak = 0;            // consecutive "moved" checks
+		bool cameraWarning = false;     // kMovedChecks in a row: the zones probably miss the street now
+	} health;
+	static constexpr std::uintmax_t kMinFreeBytes = 2ull << 30;   // pruning goes past the budget to keep 2 GB free
+	static constexpr int kMovedChecks = 3;                        // ~6 minutes of "moved" before warning
+	void useCurrentViewAsReference();
+	std::string referenceViewPath();     // <configDir>/view-reference.jpg
+
 	// Runs fn on the GUI thread at the start of the next frame and waits (up to 5 s) for its result.
 	std::string post(std::function<std::string()> fn);
 
@@ -146,6 +165,10 @@ private:
 	void recordCalibration(CalEvent e);
 	const std::vector<CalEvent>& calibrationHistory();
 	void calibrationCheckCard(float width);
+	void healthTick();
+	void healthCard();
+	void flushHealthDay();
+	std::string zonesSignature();
 
 	struct Toast { std::string text; unsigned color; const char* icon; double until; };
 	std::deque<Toast> toasts_;
@@ -173,6 +196,13 @@ private:
 	std::vector<std::string> lanChoices_;
 	std::string lanGuess_;
 	double lanReadAt_ = -1e9;
+	// Health bookkeeping (AppHealth.cpp).
+	double healthAt_ = 0;               // last healthTick, for the time accounting
+	double nextPrune_ = 0, nextViewCheck_ = 0;
+	bool wasOutage_ = false;
+	int healthVehicles_ = 0;            // tracker.counts().vehicles at the last tick
+	struct PruneJob { health::Pruned pruned; std::uintmax_t freeBytes = 0; };
+	std::future<PruneJob> pruning_;
 	double autosaveAt_ = 0;             // when the pending autosave fires (0 = nothing pending)
 	double savedAt_ = 0;                // last successful autosave, for the rail's "saved" note
 	std::string sampleCache_;

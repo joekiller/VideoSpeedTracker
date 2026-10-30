@@ -260,7 +260,7 @@ void AppPrefs::load() {
 	str("remoteAddress", remoteAddress);
 	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor);
 	i("speedLimit", speedLimit); i("egregious", egregious); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
-	i("remotePort", remotePort); i("planPreset", planPreset);
+	i("remotePort", remotePort); i("keepVideoGB", keepVideoGB); i("planPreset", planPreset);
 	b("realtime", realtime); b("highlights", highlights); b("trace", trace); b("showMotion", showMotion);
 	b("guideDone", guideDone); b("remote", remoteEnabled);
 	d("planHfov", planHfov); d("planWidth", planWidth); d("planFps", planFps); d("planShutter", planShutter);
@@ -283,7 +283,7 @@ void AppPrefs::save() const {
 		<< "speedLimit = " << speedLimit << "\negregious = " << egregious << "\n"
 		<< "realtime = " << realtime << "\nhighlights = " << highlights << "\nhlMin = " << hlMin << "\nhlMax = " << hlMax
 		<< "\nhlArea = " << hlArea << "\ntrace = " << trace << "\nshowMotion = " << showMotion << "\nguideDone = " << guideDone
-		<< "\nremote = " << remoteEnabled << "\nremotePort = " << remotePort << "\nremoteToken = " << remoteToken << "\nremoteAddress = " << remoteAddress
+		<< "\nremote = " << remoteEnabled << "\nremotePort = " << remotePort << "\nremoteToken = " << remoteToken << "\nremoteAddress = " << remoteAddress << "\nkeepVideoGB = " << keepVideoGB
 		<< "\nplanPreset = " << planPreset << "\nplanHfov = " << planHfov << "\nplanWidth = " << planWidth << "\nplanFps = " << planFps
 		<< "\nplanShutter = " << planShutter << "\nplanDist = " << planDist << "\nplanClear = " << planClear
 		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nzonesFor = " << zonesFor

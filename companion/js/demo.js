@@ -180,6 +180,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     calibrationMarks: { L2R: marks('L2R'), R2L: marks('R2L') },
     calibration: { L2R: calState('L2R'), R2L: calState('R2L') },
     liveViews: listeners.size,
+    health: { camera: 'same', cameraWarning: false, lowDisk: false },
   });
 
   const emit = (event, data) => { for (const fn of listeners) fn(event, data); };
