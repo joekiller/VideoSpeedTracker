@@ -5,9 +5,11 @@
 # The release is created with generated notes if it doesn't exist yet, otherwise the
 # assets are uploaded to it, replacing any with the same name.
 #
-# Pull requests and master pushes that touch the build run everything except the publish step, so a
-# broken platform shows up before the tag does (master's run also keeps the OpenCV caches warm).
-# Manual runs (workflow_dispatch) do the same on a branch, and publish when started on a tag.
+# Master pushes that touch the build run everything except the publish step, so a broken platform shows up
+# before the tag does (master's run also keeps the OpenCV caches warm). Pull requests don't run this matrix:
+# they get build.yml's single Linux job, and contributors run .githooks/pre-commit locally. To try the full
+# matrix on a branch before merging, start this workflow by hand (Actions > release > Run workflow, or
+# `gh workflow run release.yml --ref <branch>`); a manual run on a tag also publishes.
 #
 # Every package holds VideoSpeedTracker, ProcessHiLites and the VST Studio desktop app (VSTStudio) plus
 # their sample configs. VST Studio's own dependencies (GLFW, Dear ImGui, fonts, ...) are fetched by CMake at
@@ -31,17 +33,10 @@ on:
   push:
     tags: ['v[0-9]*']
     # Master runs too, for the same paths: Actions caches are scoped to the ref that saved them, and a
-    # PR or tag can only restore its own or the default branch's. Without a master run nothing ever
-    # saved the OpenCV builds where PRs could see them, so every new PR rebuilt OpenCV (4-6 min a job).
+    # branch or tag can only restore its own or the default branch's. Without a master run nothing ever
+    # saved the OpenCV builds where tags and manual branch runs could see them (4-6 min a job to rebuild).
     # Path filters don't apply to tag pushes, so releases still always build.
     branches: [master]
-    paths:
-      - .github/workflows/release.yml
-      - CMakeLists.txt
-      - packaging/**
-      - src/**
-      - tests/**
-  pull_request:
     paths:
       - .github/workflows/release.yml
       - CMakeLists.txt
@@ -53,7 +48,7 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same PR or branch supersedes its running build; tag builds always finish.
+# A newer push to the same branch supersedes its running build; tag builds always finish.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
@@ -161,7 +156,7 @@ jobs:
       id-token: write      # OIDC login to Azure for Artifact Signing
     env:
       # Authenticode signing runs on tag builds once the Azure Artifact Signing secrets/variables are set
-      # (see docs/code-signing.md); without them the zip ships unsigned as before. PR and master
+      # (see docs/code-signing.md); without them the zip ships unsigned as before. Master and manual
       # builds are never published, and their OIDC subjects don't match the tag-scoped federated credential.
       SIGN_WINDOWS: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
     defaults:
@@ -326,7 +321,7 @@ jobs:
       # Not HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: Homebrew answers it with a ##[warning] annotation on every run.
       # Developer ID signing + notarization runs on tag builds once the Apple secrets are set (see
       # docs/code-signing.md); without them the binaries keep the linker's ad-hoc signature.
-      # Unpublished PR/master builds skip it rather than wait on Apple's notary service.
+      # Unpublished master and manual builds skip it rather than wait on Apple's notary service.
       SIGN_MACOS: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
       - uses: actions/checkout@v7
