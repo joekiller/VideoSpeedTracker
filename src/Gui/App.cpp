@@ -2153,6 +2153,7 @@ void App::pageCompanion() {
 	if (ghostButton(ICON_ROTATE "  New pairing code")) {
 		prefs.remoteToken = AppPrefs::newToken();
 		prefs.save();
+		if (server) server->setToken(prefs.remoteToken);   // also ends the live views opened with the old code
 		toast("New pairing code. Paired phones need to scan it again.", c::accent2, ICON_ROTATE);
 	}
 	endCard();
@@ -2176,6 +2177,36 @@ void App::pageCompanion() {
 		ImGui::TextWrapped("%s", server->baseUrl().c_str());
 		ImGui::PopStyleColor();
 		if (ghostButton(ICON_LINK "  Copy pairing link")) { ImGui::SetClipboardText(url.c_str()); toast("Copied", c::ok, ICON_CHECK); }
+		// Only shown when there's a choice: a computer on Wi-Fi and Ethernet, or with a VPN or virtual adapters, has
+		// several addresses and the automatic pick can be one the phone can't reach.  The interfaces are re-read
+		// every 5 s rather than every frame (each read opens a socket), so a cable plugged in shows up on its own.
+		if (ImGui::GetTime() - lanReadAt_ > 5) {
+			lanChoices_ = lanAddresses();
+			lanGuess_ = lanAddress();
+			lanReadAt_ = ImGui::GetTime();
+		}
+		if (lanChoices_.size() > 1) {
+			ImGui::Dummy(ImVec2(0, px(4)));
+			dimText("Phone can't connect? Try the address of the network the phone is on:");
+			std::string automatic = "Automatic (" + lanGuess_ + ")";
+			ImGui::SetNextItemWidth(px(240));
+			if (ImGui::BeginCombo("##lanaddr", prefs.remoteAddress.empty() ? automatic.c_str() : prefs.remoteAddress.c_str())) {
+				auto pick = [&](const std::string& label, const std::string& value) {
+					if (ImGui::Selectable(label.c_str(), prefs.remoteAddress == value)) {
+						prefs.remoteAddress = value;
+						prefs.save();
+						server->setAddress(value);
+					}
+				};
+				pick(automatic, "");
+				for (const std::string& ip : lanChoices_) pick(ip, ip);
+				ImGui::EndCombo();
+			}
+		}
+		if (int n = server->openStreams()) {
+			ImGui::Dummy(ImVec2(0, px(4)));
+			dimText("%d live view%s open (up to %d at once)", n, n == 1 ? "" : "s", Server::kMaxStreams);
+		}
 		ImGui::Dummy(ImVec2(0, px(8)));
 		dimText("The phone can:");
 		for (const char* t : { ICON_EYE "  see the camera live, with the zones drawn on", ICON_RULER "  mark calibration passes from the curb",

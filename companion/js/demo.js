@@ -61,7 +61,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     legalDirection: 'R2L',
     speedLimit: 25, egregious: 40, siteName: 'Demo Street',
     // Reported by VST Studio too (docs: "VST Studio also reports"); the companion doesn't edit them.
-    obstruction_extent: 30, SENSITIVITY_VALUE: 30, BLUR_SIZE: 20, largeVehicleArea: 100,
+    obstruction_extent: 30, SENSITIVITY_VALUE: 30, BLUR_SIZE: 20, largeVehicleArea: 100, minLoggedSpeed: 18,
     frameWidth: 1280, frameHeight: 720,
   };
   const state = { running: true, paused: false, frame: 0, marks: {} };
@@ -179,6 +179,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     batch: { index: 0, count: 1 },
     calibrationMarks: { L2R: marks('L2R'), R2L: marks('R2L') },
     calibration: { L2R: calState('L2R'), R2L: calState('R2L') },
+    liveViews: listeners.size,
   });
 
   const emit = (event, data) => { for (const fn of listeners) fn(event, data); };

@@ -99,6 +99,8 @@ ctx.start = start;
 vst.addEventListener('status', paintHeader);
 vst.addEventListener('online', () => { ctx.online = true; paintHeader(); });
 vst.addEventListener('offline', () => { ctx.online = false; paintHeader(); });
+// The desktop made a new pairing code: start() probes again and lands on Connect, which asks for a fresh scan.
+vst.addEventListener('signed-out', () => start());
 vst.addEventListener('vehicle', (e) => {
   const v = e.detail;
   if (!location.hash.startsWith('#/passes')) setUnseen(unseen + 1);

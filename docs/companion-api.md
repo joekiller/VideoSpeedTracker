@@ -65,6 +65,8 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
 * `reconnecting` is true while a camera or stream has stopped sending pictures and the tracker is reopening it
   (after 1, 2, 4, 8, 16, then every 30 s). Passes resume when it's back.
 * `counts` cover the current session (since VST Studio started).
+* `liveViews` is how many streams (`/api/stream.mjpg`, `/api/live`) are open, out of 4 (see
+  [Stream limits](#stream-limits-and-signing-out)).
 * `legalDirection` is `L2R`, `R2L` or `both` (two-way street, nobody is ever wrong-way).
 * VST Studio also reports `counts.avgSpeed` (mph, not rounded), `batch` (`{"index", "count"}`: which
   of the queued videos is being processed) and `calibrationMarks` (`{"L2R": [start, end], "R2L": […]}`,
@@ -142,6 +144,15 @@ does. The companion asks for `overlay=0` and draws its own editable overlay.
 The live view as `multipart/x-mixed-replace` JPEG frames (about 10 fps is plenty), with the same
 `overlay` parameter.
 
+### Stream limits and signing out
+
+* At most 4 streams (`/api/stream.mjpg` and `/api/live` together) are open at once. Each holds one of
+  VST's request threads while it's open, so the limit keeps every other call answering however many
+  tabs are left open. The next stream gets `503` with `{"error": "…"}`; the companion then falls back
+  to polling.
+* **New pairing code** on the desktop ends every open stream within about a second, and the
+  reconnect gets `401`. The companion treats that as signed out and goes back to Connect.
+
 ### `GET /api/live` (Server-Sent Events)
 
 `text/event-stream` that pushes changes so the phone needs no polling. Events:
@@ -170,9 +181,14 @@ companion-facing settings:
   "L2RDirection": "SW", "R2LDirection": "NE",
   "CalibrationFramesL2R": 35, "CalibrationFramesR2L": 40, "CalibrationSpeed": 25, "CalibrationFPS": 30,
   "legalDirection": "R2L",
-  "speedLimit": 25, "egregious": 40, "siteName": "7½ St SW"
+  "speedLimit": 25, "egregious": 40, "siteName": "7½ St SW",
+  "minLoggedSpeed": 18
 }
 ```
+
+`minLoggedSpeed` (mph, `VST.cfg`'s key of the same name) is the slowest timed vehicle written to the
+stats csv; slower ones are only counted in the run manifest. 0 logs every timed vehicle; negative values
+are refused.
 
 As in `VST.cfg`, `speedLineLeft`, `speedLineRight` and `obstruction` are x offsets from
 `AnalysisBoxLeft`; `R2LStreetY` and `L2RStreetY` are y offsets from `AnalysisBoxTop`. `obstruction`

@@ -217,8 +217,10 @@ screen (`GET /api/report.html`, see [companion-api.md](companion-api.md)).
 Turning on the companion starts a small web server on the local network (port 8787) for the phone companion
 app: live view with the zones drawn on, calibration from the curb, run control, and recent vehicles with
 snapshots and clips. Pairing uses a random token carried in the QR code (`http://<ip>:8787/#token=...`); every
-API call needs it, and **New pairing code** signs out every paired phone. The API is described in
-[companion-api.md](companion-api.md).
+API call needs it, and **New pairing code** signs out every paired phone, closing any live view it has open.
+On a computer with more than one network (Wi-Fi and Ethernet, a VPN, virtual adapters) the page offers a choice
+of address for the QR code, for when the automatic one isn't on the phone's network. Up to four live views can
+be open at once. The API is described in [companion-api.md](companion-api.md).
 
 ![Companion](images/studio/08-companion.jpg)
 

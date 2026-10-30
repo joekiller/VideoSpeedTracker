@@ -169,6 +169,10 @@ private:
 	std::vector<CalEvent> calHistory_;  // calibration-history.csv rows for calHistoryFor_
 	std::string calHistoryFor_;
 	bool calHistoryLoaded_ = false;
+	// Companion page: this machine's network addresses for the pairing-address picker, re-read every few seconds.
+	std::vector<std::string> lanChoices_;
+	std::string lanGuess_;
+	double lanReadAt_ = -1e9;
 	double autosaveAt_ = 0;             // when the pending autosave fires (0 = nothing pending)
 	double savedAt_ = 0;                // last successful autosave, for the rail's "saved" note
 	std::string sampleCache_;
