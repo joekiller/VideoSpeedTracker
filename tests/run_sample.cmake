@@ -13,7 +13,7 @@
 # Then the run manifest beside the csv (run_manual_20160130172251.json; see writeManifest() in videoSpeedTracker.cpp):
 # complete, as many vehicles logged as the baseline has rows (61), the calibration and zone from bin/VST.cfg, and
 # started / ended at the Foscam name's start time and that plus the frames analyzed at 30 fps.
-# min_logged_speed.cmake reuses this run's manifest (the sample_run fixture).
+# min_logged_speed.cmake (tests min_logged_speed_0 and _30) reuses this run's manifest (the sample_run fixture).
 cmake_policy(VERSION 3.16)  # keep empty csv fields as list elements (CMP0007)
 include(${CMAKE_CURRENT_LIST_DIR}/compare_vehicles.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/manifest.cmake)

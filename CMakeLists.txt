@@ -63,16 +63,20 @@ add_test(NAME sample_video_baseline
     -DSRC=${CMAKE_SOURCE_DIR}
     -DOUT=${CMAKE_BINARY_DIR}/test-out
     -P ${CMAKE_SOURCE_DIR}/tests/run_sample.cmake)
-# minLoggedSpeed off and raised, checked against the default run's manifest from sample_video_baseline.
-add_test(NAME min_logged_speed
-  COMMAND ${CMAKE_COMMAND}
-    -DVST=$<TARGET_FILE:VideoSpeedTracker>
-    -DSRC=${CMAKE_SOURCE_DIR}
-    -DOUT=${CMAKE_BINARY_DIR}/test-min-speed
-    -DBASE=${CMAKE_BINARY_DIR}/test-out
-    -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
+# minLoggedSpeed off (0) and raised (30), checked against the default run's manifest from sample_video_baseline.
+# One test per value: each is a full pass over the sample, so under ctest -j the two run side by side.
 set_tests_properties(sample_video_baseline PROPERTIES FIXTURES_SETUP sample_run)
-set_tests_properties(min_logged_speed PROPERTIES FIXTURES_REQUIRED sample_run)
+foreach(min 0 30)
+  add_test(NAME min_logged_speed_${min}
+    COMMAND ${CMAKE_COMMAND}
+      -DVST=$<TARGET_FILE:VideoSpeedTracker>
+      -DSRC=${CMAKE_SOURCE_DIR}
+      -DOUT=${CMAKE_BINARY_DIR}/test-min-speed
+      -DBASE=${CMAKE_BINARY_DIR}/test-out
+      -DMIN=${min}
+      -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
+  set_tests_properties(min_logged_speed_${min} PROPERTIES FIXTURES_REQUIRED sample_run)
+endforeach()
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}
     -DVST=$<TARGET_FILE:VideoSpeedTracker>

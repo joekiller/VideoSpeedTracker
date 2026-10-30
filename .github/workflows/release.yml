@@ -130,7 +130,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/opencv \
                 -DVST_VERSION=${{ needs.meta.outputs.version }}
           cmake --build build -j"$(nproc)"
-      # Independent tests run side by side; min_logged_speed still waits for sample_video_baseline (fixture).
+      # Independent tests run side by side; min_logged_speed_0/_30 still wait for sample_video_baseline (fixture).
       - name: Sample video regression test
         run: ctest --test-dir build --output-on-failure -j"$(nproc)"
       - name: Package

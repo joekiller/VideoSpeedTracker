@@ -44,7 +44,7 @@ jobs:
       # Sample video regression, config parsing, first run, and the companion API smoke test, which drives VST
       # Studio under Xvfb (xvfb installed above; curl and Node come with the runner). VST_REQUIRE_API_SMOKE makes
       # that test fail rather than skip if anything it needs goes missing. Independent tests run side by side
-      # (min_logged_speed still waits for sample_video_baseline, whose output it reads).
+      # (the min_logged_speed_* pair still waits for sample_video_baseline, whose output it reads).
       - name: Tests
         env:
           VST_REQUIRE_API_SMOKE: 1
