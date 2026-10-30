@@ -68,6 +68,7 @@
 #include "Projection.h"
 #include "Snapshot.h"
 #include "UserPaths.h"
+#include "Engine.h"
 
 
 
@@ -115,6 +116,22 @@ bool headless = false;    // --headless: never open a window or call waitKey (se
 string inputPath;         // --input: full path of the single video to analyze; empty means interactive mode
 string configPath;        // --config; empty = userpaths::resolveConfig("VST.cfg")
 bool demo = false;        // --demo: analyze the bundled sample video with the settings it was recorded with
+
+#ifdef VST_EMBEDDED
+// Set by vst::run() for the length of one run.  frameBoxes collects what displayAnalysisGoing*() drew this frame pair.
+const vst::Hooks* hooks = nullptr;
+vector<vst::TrackBox> frameBoxes;
+struct EngineExit { int code; };  // thrown by quit() so an embedded run unwinds back to vst::run() instead of ending the process
+#endif
+
+// exit() for the command-line build; an embedded run returns the status from vst::run() instead.
+[[noreturn]] void quit(int code){
+#ifdef VST_EMBEDDED
+	throw EngineExit{ code };
+#else
+	exit(code);
+#endif
+}
 //......................................................................................................................................................
 
 
@@ -127,6 +144,13 @@ bool readFrame(VideoCapture& cap, Mat& frame){
 	if (frame.cols != Globals::FrameWidth || frame.rows != Globals::FrameHeight)
 		cv::resize(frame, frame, Size(Globals::FrameWidth, Globals::FrameHeight), 0, 0, INTER_AREA);
 	return true;
+}
+
+// Opens a video file, a stream URL (rtsp://, http://, anything FFmpeg reads), or, for an all-digit name like "0",
+// that local camera.
+bool openSource(VideoCapture& cap, const string& name){
+	bool index = !name.empty() && name.size() < 4 && all_of(name.begin(), name.end(), [](char c){ return isdigit((unsigned char)c) != 0; });
+	return index ? cap.open(stoi(name)) : cap.open(name);
 }
 
 // Output name for a video: Foscam "manual_20160130172251.avi" -> "20160130_172251" (the 2016 naming), anything else -> its stem.
@@ -208,7 +232,11 @@ int askChoice(const string& what, const vector<string>& names, bool allowAll){
 
 // waitKey() that is a no-op when running headless, so no display is required.
 int uiWaitKey(int ms){
+#ifdef VST_EMBEDDED
+	return hooks && hooks->pollKey ? hooks->pollKey() : -1;
+#else
 	return headless ? -1 : waitKey(ms);
+#endif
 }
 //......................................................................................................................................................
 
@@ -389,7 +417,7 @@ bool setupFromArgs(int argc, char** argv){
 		if (a.compare(0, 2, "--") == 0 && eq != string::npos){ inlineValue = a.substr(eq + 1); a = a.substr(0, eq); hasInline = true; }
 		auto next = [&](){
 			if (hasInline) return inlineValue;
-			if (i + 1 >= argc){ cerr << "Missing value for " << a << endl; exit(EXIT_FAILURE); }
+			if (i + 1 >= argc){ cerr << "Missing value for " << a << endl; quit(EXIT_FAILURE); }
 			return string(argv[++i]);
 		};
 		auto nextInt = [&](){
@@ -397,7 +425,7 @@ bool setupFromArgs(int argc, char** argv){
 			try { size_t used; int n = stoi(v, &used); if (used == v.size()) return n; }
 			catch (const exception&) {}
 			cerr << a << " needs a whole number, got \"" << v << "\"" << endl;
-			exit(EXIT_FAILURE);
+			quit(EXIT_FAILURE);
 		};
 		if (a == "--input") inputPath = next();
 		else if (a == "--config") configPath = next();
@@ -412,7 +440,7 @@ bool setupFromArgs(int argc, char** argv){
 		else if (a == "--hl-area") minimumProfileArea = nextInt();
 		else if (a == "--headless") headless = true;
 		else if (a == "--demo") demo = true;
-		else if (a == "--help" || a == "-h"){ printUsage(); exit(EXIT_SUCCESS); }
+		else if (a == "--help" || a == "-h"){ printUsage(); quit(EXIT_SUCCESS); }
 		else { cerr << "Unknown option: " << a << endl; printUsage(); return false; }
 	}
 	if (demo){
@@ -467,7 +495,8 @@ bool setupFromArgs(int argc, char** argv){
 
 	highLightsPlease = !hiLitePath.empty();
 	if (highLightsPlease){
-		VideoCapture probe(inputPath);
+		VideoCapture probe;
+		openSource(probe, inputPath);
 		double fps = probe.isOpened() ? probe.get(CAP_PROP_FPS) : 30.0;
 		hiLiteVideo.open(hiLitePath, VideoWriter::fourcc('m', 'p', '4', 'v'), fps > 0 ? fps : 30.0, Size(Globals::FrameWidth, Globals::FrameHeight), true);
 		if (!hiLiteVideo.isOpened()){ cerr << "Can't write highlights video " << hiLitePath << endl; return false; }
@@ -598,6 +627,9 @@ void displayAnalysisGoingRight(int inFrameNum, int index, Rect rectangle, Overla
 					vehiclesGoingRight[index].saveFrame(AnalysisFrame);
 		}
 	}
+#ifdef VST_EMBEDDED
+	frameBoxes.push_back({ true, rectangle, max(estSpeed, 0) });
+#endif
 	if (pleaseTrace) traceFile << "<" << frameNumber << "> DisplayGoingRight... Rect:  " << x << ", " << y << ", " << wd << ",  " << ht
 		<<endl << endl;
 }
@@ -640,6 +672,9 @@ void displayAnalysisGoingLeft(int inFrameNum, int index, Rect rectangle, Overlap
 					vehiclesGoingLeft[index].saveFrame(AnalysisFrame);
 		}
 	}
+#ifdef VST_EMBEDDED
+	frameBoxes.push_back({ false, rectangle, max(estSpeed, 0) });
+#endif
 	if (pleaseTrace) traceFile << "<" << frameNumber << "> DisplayGoingLeft... Rect:  " << x << ", " << y << ", " << wd << ",  " << ht
 		<< endl << endl;
 }
@@ -649,6 +684,29 @@ void displayAnalysisGoingLeft(int inFrameNum, int index, Rect rectangle, Overlap
 
 
 
+
+// Per-run totals for the summary printed at the end of each video.
+int loggedVehicles = 0, speeders = 0, wrongWayVehicles = 0;
+
+// Counts a vehicle that was just written to the stats csv, calls out wrong-way travel on a one-way street
+// (LegalDirection in VST.cfg), and hands the vehicle to an embedding host.
+void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed){
+	bool wrongWay = g.isWrongWay(leftToRight);
+	const string& compass = leftToRight ? g.L2RDirection : g.R2LDirection;
+	loggedVehicles++;
+	if (estSpeed > speedLimit) speeders++;
+	if (wrongWay){
+		wrongWayVehicles++;
+		cout << "<" << frameNumber << ">  WRONG WAY: " << (leftToRight ? "L2R" : "R2L") << " (" << compass << ") at " << estSpeed << " MPH" << endl;
+	}
+#ifdef VST_EMBEDDED
+	if (hooks && hooks->onVehicle)
+		hooks->onVehicle({ leftToRight, wrongWay, compass, estSpeed, frameNumber, v.getTrackStartFrame(), v.getTrackEndFrame(),
+			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea() });
+#else
+	(void)v;
+#endif
+}
 
 void logL2Rstats(bool isOK, int index){
 // Final entries for L2R vehicle just completing speed analysis are placed in trace file and in stats files.  Video output to highlights
@@ -677,6 +735,7 @@ void logL2Rstats(bool isOK, int index){
 			<< estSpeed;
 		if (estSpeed < 0 || estSpeed > crazySpeed) statsFile << ", *****";
 		statsFile << endl;
+		reportVehicle(true, vehiclesGoingRight[index], estSpeed);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingRight[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
 			int speedleft = AnalysisBox.x + g.speedLineLeft; // Left boundary may have moved right for ROI boundary.
@@ -744,6 +803,7 @@ void logR2Lstats(bool isOK, int index){
 			<< estSpeed;
 		if (estSpeed < 0 || estSpeed > crazySpeed) statsFile << ", *****";
 		statsFile << endl;
+		reportVehicle(false, vehiclesGoingLeft[index], estSpeed);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingLeft[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
 			int speedleft = AnalysisBox.x + g.speedLineLeft;
@@ -1285,7 +1345,13 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 // which causes processing of all known and newly entered vehicls to occur at time "frameNumber."  This one call exercises most of the code above
 // and most all of the code in vehicleDynamics.
 
-int main(int argc, char** argv){
+void printSummary(){
+	cout << loggedVehicles << " vehicles logged, " << speeders << " over " << speedLimit << " MPH";
+	if (g.LegalDirection != "Both") cout << ", " << wrongWayVehicles << " going the wrong way";
+	cout << endl;
+}
+
+int vstMain(int argc, char** argv){
 
 	bool objectDetected = false;
 	bool pause = false;  	 // toggle using "p"
@@ -1293,7 +1359,9 @@ int main(int argc, char** argv){
 	Mat differenceImage;
 	Mat thresholdImage;  	//thresholded difference image (for use in findContours() function)
 
+#ifndef VST_EMBEDDED
 	userpaths::holdConsoleOnExit();  // Windows: a double-clicked exe keeps its window open to show why it stopped
+#endif
 	if (argc > 1){
 		if (!setupFromArgs(argc, argv)) return EXIT_FAILURE;  // Non-interactive: everything comes from the command line
 	}
@@ -1316,9 +1384,10 @@ int main(int argc, char** argv){
 			bailing = false;
 			startFrame = 0.0;
 		}
+		loggedVehicles = speeders = wrongWayVehicles = 0;
 		cout << endl << "Now processing " << FName << endl;
 		if (pleaseTrace) traceFile << endl << "Now processing cam input file: " << fileName << endl;
-		capture.open(FName);
+		openSource(capture, FName);
 
 		if (!capture.isOpened()){
 			cerr << "Can't open video " << FName << endl
@@ -1363,7 +1432,13 @@ int main(int argc, char** argv){
 			else if (!headless) cv::destroyWindow("Final Threshold Image");
 
 		// ************************************************* Vehicle motion analysis *****************************************************
+#ifdef VST_EMBEDDED
+			frameBoxes.clear();
+#endif
 			objectDetected = manageMovers(thresholdImage, ROIFr2);
+#ifdef VST_EMBEDDED
+			if (hooks && hooks->onFrame) hooks->onFrame({ frame2, thresholdImage, AnalysisBox, frameNumber + 1, frameBoxes });
+#endif
 
 			frameNumber += 2;  // Note: frames are used in frame differencing operations only once each, so frame count jumps by two, not one.
 			                  // One could argue that using each frame as the second frame in a differencing operation, and then using it a second time
@@ -1386,6 +1461,7 @@ int main(int argc, char** argv){
 
 			switch (uiWaitKey(delay)){
 			case 27: //'esc'     exit program.
+				printSummary();
 				return 0;
 			case 102: // 'f'    make display go faster;
 				if (objDelay > 10) objDelay = objDelay / 5;
@@ -1418,6 +1494,7 @@ int main(int argc, char** argv){
 		} // main loop for processing one input file
 
 		capture.release();
+		printSummary();
 
 	} // looping over input files loop end
 
@@ -1429,3 +1506,103 @@ int main(int argc, char** argv){
 
 }
 
+
+
+#ifndef VST_EMBEDDED
+int main(int argc, char** argv){
+	return vstMain(argc, argv);
+}
+#else
+namespace {
+
+// Line-buffered stream that forwards each complete line to Hooks::onLog, so the host can show the engine's console.
+class LogBuf : public std::streambuf {
+public:
+	explicit LogBuf(const vst::Hooks& h) : h_(h) {}
+	~LogBuf() override { flushLine(); }
+protected:
+	int overflow(int c) override {
+		if (c == traits_type::eof()) return 0;
+		if (c == '\n') flushLine(); else line_ += char(c);
+		return c;
+	}
+	std::streamsize xsputn(const char* s, std::streamsize n) override {
+		for (std::streamsize i = 0; i < n; i++) overflow((unsigned char)s[i]);
+		return n;
+	}
+private:
+	void flushLine(){ if (!line_.empty() && h_.onLog) h_.onLog(line_); line_.clear(); }
+	const vst::Hooks& h_;
+	std::string line_;
+};
+
+// Puts every file-scope global back to the value it has when the CLI process starts.
+void resetEngineState(){
+	numObjects = 0;
+	coalescedRectangle = Rect();
+	vehiclesGoingRight.clear();
+	vehiclesGoingLeft.clear();
+	bailing = false;
+	if (traceFile.is_open()) traceFile.close();
+	if (statsFile.is_open()) statsFile.close();
+	traceFile.clear();
+	statsFile.clear();
+	capture.release();
+	filesToDo.clear();
+	fileName.clear();
+	objDelay = 50;
+	pleaseTrace = false;
+	highLightsPlease = false;
+	speedLimit = 25;
+	egregiousSpeedLowerBound = 35;
+	crazySpeed = 55;
+	highLightsSpeedLower = 35;
+	highLightsSpeedUpper = 100;
+	minimumProfileArea = 100;
+	frameNumber = 0;
+	startFrame = 0.0;
+	AnalysisBox = Rect();
+	hiLiteVideo.release();
+	g.~Globals();           // Globals has a const member, so it can't be assigned; rebuild it in place.
+	new (&g) Globals();
+	g.obstruction[0] = g.obstruction[1] = 0;  // zero, as for the static global in the CLI
+	frame1.release();
+	frame2.release();
+	headless = false;
+	inputPath.clear();
+	configPath.clear();
+	demo = false;
+	loggedVehicles = speeders = wrongWayVehicles = 0;
+	frameBoxes.clear();
+}
+
+}  // namespace
+
+int vst::run(const std::vector<std::string>& args, const vst::Hooks& h){
+	resetEngineState();
+	hooks = &h;
+	LogBuf buf(h);
+	std::streambuf* oldOut = cout.rdbuf(&buf);
+	std::streambuf* oldErr = cerr.rdbuf(&buf);
+
+	std::vector<std::string> storage = { "VideoSpeedTracker", "--headless" };
+	storage.insert(storage.end(), args.begin(), args.end());
+	std::vector<char*> argv;
+	for (auto& a : storage) argv.push_back(a.data());
+
+	int rc;
+	try { rc = vstMain(int(argv.size()), argv.data()); }
+	catch (const EngineExit& e) { rc = e.code; }
+	catch (const std::exception& e) { cerr << "Tracker error: " << e.what() << endl; rc = EXIT_FAILURE; }
+
+	if (traceFile.is_open()) traceFile.close();
+	if (statsFile.is_open()) statsFile.close();
+	hiLiteVideo.release();
+	capture.release();
+	cout.flush();
+	cout.rdbuf(oldOut);
+	cerr.rdbuf(oldErr);
+	hooks = nullptr;
+	return rc;
+}
+#endif

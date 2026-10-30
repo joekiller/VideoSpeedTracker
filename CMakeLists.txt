@@ -125,6 +125,12 @@ if(WIN32)
   include(InstallRequiredSystemLibraries)
 endif()
 
+# VST Studio, the desktop app (src/Gui); fetches its dependencies at configure time.
+option(VST_BUILD_GUI "Build VST Studio, the desktop app (fetches Dear ImGui, GLFW and fonts at configure time)" ON)
+if(VST_BUILD_GUI)
+  add_subdirectory(src/Gui)
+endif()
+
 set(CPACK_PACKAGE_NAME videospeedtracker)
 set(CPACK_PACKAGE_VERSION ${VST_VERSION})
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Measures vehicle speeds from fixed-camera street video")
@@ -133,5 +139,7 @@ set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/joekiller/VideoSpeedTracker")
 set(CPACK_PACKAGING_INSTALL_PREFIX /usr)
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_SECTION video)
+# VST Studio's open/save dialogs use zenity (or kdialog) on Linux; without either it falls back to typed paths.
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "zenity | kdialog")
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
 include(CPack)
