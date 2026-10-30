@@ -91,7 +91,12 @@ speed = CalibrationSpeed × CalibrationFrames × (video fps / CalibrationFPS) / 
    white line and crossing the second.
 3. Put that count in `CalibrationFramesL2R` or `CalibrationFramesR2L`, the speed you drove in `CalibrationSpeed`,
    and the clip's frame rate in `CalibrationFPS`.
-4. Do a second pass at a different speed and check that VST reports it within a mile or two per hour.
+4. Do a second pass at a different speed and check that VST reports it within a mile or two per hour. Keep a note
+   of both passes (speed driven, frames, what VST reported): it's how you show someone the calibration is right.
+
+[VST Studio](vst-studio.md#calibrate) does all of this on its Calibrate page: pick your pass and the speed you drove,
+then **Check it with a second drive**, which shows the error and calls it **Verified** within ±2 mph. Every
+calibration and check it makes is appended to `calibration-history.csv` in the config folder, as that record.
 
 If a direction can't be calibrated, a rough value is the other direction's frame count scaled by how much shorter
 or longer the zone looks in that lane.

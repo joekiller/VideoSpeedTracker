@@ -2,7 +2,7 @@
 
 VST Studio is the desktop app for VideoSpeedTracker. It runs the same tracker as the `VideoSpeedTracker` command
 line, and replaces hand-editing `VST.cfg` with a guided setup: plan the camera position, draw the zones on the
-picture, calibrate with one drive past, then watch vehicles get measured and review the speeders and wrong-way
+picture, calibrate with one drive past and check it with a second, then watch vehicles get measured and review the speeders and wrong-way
 drivers. It ships in every release package next to the command-line tools (`VSTStudio`, or **VST Studio** in
 the Linux applications menu).
 
@@ -84,6 +84,51 @@ Both keep the other direction's calibration valid by expressing it against the s
 
 ![Calibrate](images/studio/07-calibrate.jpg)
 
+#### Check it with a second drive
+
+A single pass at a speedometer reading is easy to get wrong, and it's the first thing a traffic engineer will ask
+about. Once a direction is calibrated, **Check it with a second drive** tests it with an independent pass:
+
+1. Drive past again, ideally at a different speed from the first pass (say 30 mph after calibrating at 25).
+2. Pick that pass (or mark its frames in **Count frames**) and enter the speed you drove.
+3. VST shows what the current calibration says the pass was beside the speed you drove, and the error.
+
+Within ±2 mph is **Verified**. Off by more, the page lists the usual causes: a speedometer that reads high (most
+do, more so at speed; a GPS speed app is a better reference), a camera or speed lines that moved since the first
+pass, or the two passes being in different lanes (the far lane crosses more road between the lines). It then
+offers to **Redo calibration** from a new pass, or to **Average** the two: each pass implies a `CalibrationFrames`
+value, and the new calibration is their mean, rounded. An averaged calibration counts as new, so check it once more.
+
+The **Current calibration** card shows each direction's standing under its tile: **Not calibrated**,
+**Not checked**, **Verified (±0.3 mph)** or **Check failed (+4.2 mph)**. The Calibrate check mark in the side rail
+still only means a calibration was applied. A check counts only while the calibration it tested is the one in
+`VST.cfg`; changing the value any other way (by hand, or from the companion's settings) makes it "Not checked"
+again.
+
+![Calibration check](images/studio/07b-calibrate-check.jpg)
+
+#### Calibration history
+
+Every calibration and every check is appended to `calibration-history.csv` in the config folder (next to
+`vst-studio.ini`), from the drive-through, **Count frames**, **This was me** on the Results page, and the phone
+companion. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
+was made, from what pass, and how a second pass agreed with it. The per-direction state on the page is worked out
+from it, so it survives restarts.
+
+```
+Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, MeasuredMph, Error
+2026-11-02T10:14:03-05:00, /home/joe/.config/videospeedtracker/VST.cfg, apply, L2R, 25, 34, 30, 34, ,
+2026-11-02T10:21:40-05:00, /home/joe/.config/videospeedtracker/VST.cfg, check, L2R, 30, 28, 30, 34, 30.4, 0.4
+```
+
+- **Config** is the `VST.cfg` the row belongs to; one file serves every config on the computer.
+- **Kind** is `apply` (set the calibration) or `check` (a verification pass). **Direction** is `L2R` or `R2L`.
+- **DrivenMph**, **Frames** and **Fps** describe the pass: the speed you drove and the frames it took between the
+  lines at that frame rate. **CalibrationFrames** is the value in force after the event. An average is recorded as
+  an `apply` of the second pass with the averaged value.
+- **MeasuredMph** (what the calibration says the check pass was) and **Error** (MeasuredMph − DrivenMph) are set
+  for checks only.
+
 ### Live tracking
 
 Vehicles are drawn as they're tracked: a box per vehicle, a white bar on the front bumper the tracker times,
@@ -126,6 +171,7 @@ API call needs it, and **New pairing code** signs out every paired phone. The AP
 |---|---|
 | Settings (`VST.cfg`) | the file shown on the Source page; by default the per-user config (see the README) |
 | App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs, recent sources, pairing token |
+| Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
 | Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/`, `HiLites/`, `Clips/`, `Trace/` |
 
 ## For developers
