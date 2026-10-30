@@ -250,11 +250,12 @@ jobs:
   # its runners can sit queued far longer, so publish goes ahead without it and macos-release adds the
   # tarball and checksum to the existing release afterwards. Uploading runs on Linux, so the macOS
   # runner (billed at 10x) is held only for the build itself.
-  # Runner images are pinned rather than *-latest, whose labels move to new OS releases (and warn
-  # about it in every run). macos-15 is Apple silicon; macos-14 is retired on 2026-11-02.
+  # macos-latest follows GitHub's current Apple-silicon image, so macOS retirements need no edits here (the
+  # package is built against Homebrew's OpenCV of the day either way). Linux and Windows stay pinned: their
+  # .deb dependencies and MSVC toolset are tied to the image.
   macos:
     needs: meta
-    runs-on: macos-15
+    runs-on: macos-latest
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
