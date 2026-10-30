@@ -9,9 +9,14 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <qrcodegen.hpp>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#ifndef _WIN32
+#include <ifaddrs.h>
+#include <net/if.h>
+#endif
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -48,6 +53,41 @@ std::string lanAddress() {
 	return ip;
 }
 
+std::vector<std::string> lanAddresses() {
+	std::vector<std::string> out;
+	auto add = [&out](const in_addr& a) {
+		char buf[INET_ADDRSTRLEN] = {};
+		if (!inet_ntop(AF_INET, &a, buf, sizeof buf)) return;
+		std::string ip = buf;
+		// 127/8 is this machine only and 169.254/16 is what an interface gets when DHCP failed: no phone reaches either.
+		if (ip.rfind("127.", 0) == 0 || ip.rfind("169.254.", 0) == 0) return;
+		if (std::find(out.begin(), out.end(), ip) == out.end()) out.push_back(ip);
+	};
+#ifdef _WIN32
+	// Windows: the host name resolves to every address of every adapter that's up, without linking iphlpapi.
+	char host[256] = {};
+	addrinfo hints{}, *res = nullptr;
+	hints.ai_family = AF_INET;
+	if (gethostname(host, sizeof host) == 0 && getaddrinfo(host, nullptr, &hints, &res) == 0) {
+		for (addrinfo* p = res; p; p = p->ai_next) add(((sockaddr_in*)p->ai_addr)->sin_addr);
+		freeaddrinfo(res);
+	}
+#else
+	// POSIX: the host name often resolves to 127.0.1.1 only, so walk the interfaces instead.
+	ifaddrs* ifs = nullptr;
+	if (getifaddrs(&ifs) == 0) {
+		for (ifaddrs* p = ifs; p; p = p->ifa_next)
+			if (p->ifa_addr && p->ifa_addr->sa_family == AF_INET && (p->ifa_flags & IFF_UP)) add(((sockaddr_in*)p->ifa_addr)->sin_addr);
+		freeifaddrs(ifs);
+	}
+#endif
+	// The outbound interface first: it's the automatic choice, and the one most likely to share the phone's Wi-Fi.
+	std::string guess = lanAddress();
+	auto it = std::find(out.begin(), out.end(), guess);
+	if (it != out.end()) std::rotate(out.begin(), it, it + 1);
+	return out;
+}
+
 namespace {
 
 std::string lowerDir(const std::string& s) { return s == "L2R" ? "L2R" : s == "R2L" ? "R2L" : "both"; }
@@ -78,6 +118,7 @@ json configJson(App& app) {
 		{ "CalibrationFramesL2R", g.CalibrationFramesL2R }, { "CalibrationFramesR2L", g.CalibrationFramesR2L },
 		{ "CalibrationSpeed", g.CalibrationSpeed }, { "CalibrationFPS", g.CalibrationFPS },
 		{ "SENSITIVITY_VALUE", g.SENSITIVITY_VALUE }, { "BLUR_SIZE", g.BLUR_SIZE }, { "largeVehicleArea", g.largeVehicleArea },
+		{ "minLoggedSpeed", g.minLoggedSpeed },
 		{ "speedLimit", app.prefs.speedLimit }, { "egregious", app.prefs.egregious }, { "siteName", app.prefs.siteName },
 		{ "frameWidth", 1280 }, { "frameHeight", 720 },
 	};
@@ -116,6 +157,25 @@ json statusJson(App& app) {
 		{ "legalDirection", lowerDir(app.cfg.g.LegalDirection) },
 		{ "calibrationMarks", { { "L2R", { app.calibMarks[0][0], app.calibMarks[0][1] } }, { "R2L", { app.calibMarks[1][0], app.calibMarks[1][1] } } } },
 		{ "calibration", calibrationJson(app) },
+		{ "liveViews", app.server ? app.server->openStreams() : 0 },
+		{ "health", { { "camera", app.health.viewCheckedAt.empty() ? "unchecked" : app.health.view.name() },
+			{ "cameraWarning", app.health.cameraWarning }, { "lowDisk", app.health.lowDisk } } },
+	};
+}
+
+// GET /api/health: today's numbers (a health.csv row in the making), the disk budget and the latest camera check.
+json healthJson(App& app) {
+	const App::HealthState& h = app.health;
+	const health::Day& d = h.today;
+	auto orNull = [](std::uintmax_t v) { return v ? json(v) : json(nullptr); };
+	return json{
+		{ "today", { { "date", d.date }, { "trackedHours", d.trackedHours }, { "outageHours", d.outageHours }, { "outages", d.outages },
+			{ "vehicles", d.vehicles }, { "clipsRemoved", d.clipsRemoved }, { "camera", d.camera } } },
+		{ "disk", { { "videoBytes", h.video.bytes }, { "videoFiles", h.video.files }, { "budgetBytes", orNull(h.budgetBytes) },
+			{ "freeBytes", orNull(h.freeBytes) }, { "lowDisk", h.lowDisk } } },
+		{ "camera", { { "result", h.viewCheckedAt.empty() ? "unchecked" : h.view.name() }, { "warning", h.cameraWarning },
+			{ "dx", h.view.dx }, { "dy", h.view.dy }, { "confidence", h.view.confidence },
+			{ "checked", h.viewCheckedAt.empty() ? json(nullptr) : json(h.viewCheckedAt) } } },
 	};
 }
 
@@ -133,6 +193,7 @@ std::vector<std::string> applyConfig(App& app, const json& in) {
 	setInt("CalibrationFramesL2R", g.CalibrationFramesL2R); setInt("CalibrationFramesR2L", g.CalibrationFramesR2L);
 	setDbl("CalibrationSpeed", g.CalibrationSpeed); setDbl("CalibrationFPS", g.CalibrationFPS);
 	setInt("SENSITIVITY_VALUE", g.SENSITIVITY_VALUE); setInt("BLUR_SIZE", g.BLUR_SIZE); setInt("largeVehicleArea", g.largeVehicleArea);
+	setInt("minLoggedSpeed", g.minLoggedSpeed);
 	setStr("L2RDirection", g.L2RDirection); setStr("R2LDirection", g.R2LDirection);
 	if (in.contains("obstruction")) {
 		if (in["obstruction"].is_array() && in["obstruction"].size() == 2 && in["obstruction"][0].is_number() && in["obstruction"][1].is_number()) {
@@ -195,9 +256,31 @@ Server::~Server() {
 std::string Server::baseUrl() const { return "http://" + ip_ + ":" + std::to_string(port_) + "/"; }
 std::string Server::pairingUrl() const { return baseUrl() + "#token=" + app_.prefs.remoteToken; }
 
+void Server::setToken(const std::string& token) {
+	std::lock_guard<std::mutex> lock(tokenMu_);
+	token_ = token;
+}
+
+// Compared without early exit, so the response time doesn't say how much of a guess was right.
+bool Server::tokenMatches(const std::string& t) const {
+	std::lock_guard<std::mutex> lock(tokenMu_);
+	if (t.size() != token_.size() || token_.empty()) return false;
+	unsigned diff = 0;
+	for (size_t i = 0; i < t.size(); i++) diff |= unsigned(t[i] ^ token_[i]);
+	return diff == 0;
+}
+
+// A picked address that's gone (the laptop left that network) falls back to the automatic guess rather than
+// putting a dead address in the QR code.
+void Server::setAddress(const std::string& ip) {
+	auto all = lanAddresses();
+	ip_ = !ip.empty() && std::find(all.begin(), all.end(), ip) != all.end() ? ip : lanAddress();
+}
+
 bool Server::start(int port) {
 	port_ = port;
-	ip_ = lanAddress();
+	setAddress(app_.prefs.remoteAddress);
+	setToken(app_.prefs.remoteToken);
 	http_ = std::make_unique<httplib::Server>();
 	routes();
 	if (!http_->bind_to_port("0.0.0.0", port)) {
@@ -225,23 +308,37 @@ void Server::routes() {
 		if (j.is_discarded()) sendJson(res, { { "error", "VST Studio is busy; try again" } }, 503);
 		else sendJson(res, j);
 	};
-	// Token from the header or the query string; compared without early exit.
-	auto authed = [&app](const Request& req) {
-		std::string t;
+	// The token as presented, from the header or the query string ("" if neither).
+	auto presented = [](const Request& req) {
 		std::string h = req.get_header_value("Authorization");
-		if (h.rfind("Bearer ", 0) == 0) t = h.substr(7);
-		else if (req.has_param("token")) t = req.get_param_value("token");
-		const std::string& want = app.prefs.remoteToken;
-		if (t.size() != want.size() || want.empty()) return false;
-		unsigned diff = 0;
-		for (size_t i = 0; i < t.size(); i++) diff |= unsigned(t[i] ^ want[i]);
-		return diff == 0;
+		if (h.rfind("Bearer ", 0) == 0) return h.substr(7);
+		return req.has_param("token") ? req.get_param_value("token") : std::string();
 	};
+	auto authed = [this, presented](const Request& req) { return tokenMatches(presented(req)); };
 	auto guard = [authed, sendJson](auto handler) {
 		return [=](const Request& req, Response& res) {
 			if (!authed(req)) { sendJson(res, { { "error", "pairing token missing or wrong; scan the QR code in VST Studio again" } }, 401); return; }
 			handler(req, res);
 		};
+	};
+	// Takes one of the kMaxStreams stream slots, or answers 503 and returns null.  The slot is held by the stream's
+	// content provider, which keeps the returned pointer: it's given back when the last copy of the provider is
+	// destroyed, however the stream ends (client gone, provider returned false, server stopping).  Not tied to
+	// cpp-httplib's resource releaser: Response is copyable and every copy runs the releaser when destroyed, so it
+	// can run more than once for one stream (counting that way went negative in the smoke test).
+	struct StreamSlot {
+		std::atomic<int>& n;
+		explicit StreamSlot(std::atomic<int>& n) : n(n) {}
+		StreamSlot(const StreamSlot&) = delete;
+		~StreamSlot() { --n; }
+	};
+	auto takeStream = [this, sendJson](Response& res) -> std::shared_ptr<StreamSlot> {
+		if (++streams_ > kMaxStreams) {
+			--streams_;
+			sendJson(res, { { "error", "too many live views are open; close one on another phone or tab and try again" } }, 503);
+			return nullptr;
+		}
+		return std::make_shared<StreamSlot>(streams_);
 	};
 	auto parseBody = [](const Request& req, json& out) {
 		out = json::parse(req.body, nullptr, false);
@@ -333,9 +430,13 @@ void Server::routes() {
 		res.set_content(std::string(jpg.begin(), jpg.end()), "image/jpeg");
 	}));
 
-	http_->Get("/api/stream.mjpg", guard([grab](const Request& req, Response& res) {
+	http_->Get("/api/stream.mjpg", guard([this, grab, presented, takeStream](const Request& req, Response& res) {
+		auto slot = takeStream(res);
+		if (!slot) return;
 		bool overlay = req.has_param("overlay") && req.get_param_value("overlay") != "0";
-		res.set_chunked_content_provider("multipart/x-mixed-replace; boundary=vstframe", [grab, overlay](size_t, httplib::DataSink& sink) {
+		std::string token = presented(req);
+		res.set_chunked_content_provider("multipart/x-mixed-replace; boundary=vstframe", [this, grab, overlay, token, slot](size_t, httplib::DataSink& sink) {
+			if (!tokenMatches(token)) return false;   // the pairing code was reset: this phone is signed out
 			cv::Mat f = grab(overlay);
 			std::vector<uchar> jpg;
 			if (!f.empty()) {
@@ -351,7 +452,9 @@ void Server::routes() {
 
 	// Server-sent events: status about once a second, each vehicle as it's logged, live boxes ~5 times a second,
 	// and the config when the stream opens and again whenever it changes.
-	http_->Get("/api/live", guard([&app](const Request& req, Response& res) {
+	http_->Get("/api/live", guard([this, &app, presented, takeStream](const Request& req, Response& res) {
+		auto slot = takeStream(res);
+		if (!slot) return;
 		struct LiveState {
 			int lastVehicle = 0;    // newest vehicle id already sent
 			int tick = 0;           // provider calls so far; every 5th (~1 s) sends status and checks the config
@@ -359,7 +462,9 @@ void Server::routes() {
 		};
 		auto state = std::make_shared<LiveState>();
 		state->lastVehicle = req.has_param("since") ? std::atoi(req.get_param_value("since").c_str()) : app.tracker.lastVehicleId();
-		res.set_chunked_content_provider("text/event-stream", [&app, state](size_t, httplib::DataSink& sink) {
+		std::string token = presented(req);
+		res.set_chunked_content_provider("text/event-stream", [this, &app, state, token, slot](size_t, httplib::DataSink& sink) {
+			if (!tokenMatches(token)) return false;   // the pairing code was reset: this phone is signed out
 			auto send = [&](const char* ev, const json& data) {
 				std::string msg = std::string("event: ") + ev + "\ndata: " + data.dump() + "\n\n";
 				return sink.write(msg.data(), msg.size());
@@ -395,6 +500,10 @@ void Server::routes() {
 			std::this_thread::sleep_for(std::chrono::milliseconds(200));
 			return sink.is_writable();
 		});
+	}));
+
+	http_->Get("/api/health", guard([&app, sendPosted](const Request&, Response& res) {
+		sendPosted(res, app.post([&app] { return healthJson(app).dump(); }));
 	}));
 
 	http_->Get("/api/config", guard([&app, sendPosted](const Request&, Response& res) {

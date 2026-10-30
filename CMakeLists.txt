@@ -165,6 +165,13 @@ if(TARGET vst_report)
   target_link_libraries(report_test PRIVATE vst_report)
   add_test(NAME street_report
     COMMAND report_test ${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/report-test)
+
+  # Unattended-run health (src/Gui/Health.cpp): pruning video to the disk budget, the "camera moved" check on
+  # frames of the sample video, and the daily health.csv row.
+  add_executable(health_test tests/health_test.cpp)
+  target_link_libraries(health_test PRIVATE vst_report)
+  add_test(NAME unattended_health
+    COMMAND health_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/health-test)
 endif()
 
 # Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back

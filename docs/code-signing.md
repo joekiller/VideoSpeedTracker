@@ -77,6 +77,9 @@ at that tag, so workflow fixes need a new tag; Azure-side fixes only need the fa
 | Signing: `403 (Forbidden)` | The app isn't allowed to sign with this account/profile | Check in order: the Signer role on the **account** for the **app registration** (wait a few minutes after adding it); `AZURE_SIGNING_ENDPOINT` matches the account's region (a mismatch is the most common 403); account and profile names are exact; the profile is **Active** and the identity validation **Completed** |
 | Signing: `No files matched` | Path or filter | The step signs `*.exe` under `pkg\<package>` |
 
+The exes are signed first. The installer (`packaging/windows/vst-setup.iss`) is then built around them and
+signed with the same profile. Its uninstaller is generated at install time and is not signed.
+
 SmartScreen can still warn on early downloads until the signing identity builds reputation.
 
 ## macOS: Developer ID and notarization

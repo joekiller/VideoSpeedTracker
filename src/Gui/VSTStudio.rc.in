@@ -1,0 +1,4 @@
+// Windows resources for VSTStudio.exe, configured by src/Gui/CMakeLists.txt with the icon's absolute path.
+// GLFW_ICON is the name GLFW looks for when it creates the window, so the same icon shows in Explorer, the
+// taskbar, Alt-Tab and the installer's Start-menu shortcut.
+GLFW_ICON ICON "@VST_STUDIO_ICO@"

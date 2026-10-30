@@ -39,6 +39,7 @@ const STATUS = {
   speedLimit: isInt, egregious: isInt,
   legalDirection: (d) => ['L2R', 'R2L', 'both'].includes(d),
   siteName: isStr,
+  health: (h) => h && ['unchecked', 'same', 'moved', 'unclear'].includes(h.camera) && isBool(h.cameraWarning) && isBool(h.lowDisk),
 };
 
 const CONFIG = {
@@ -50,6 +51,7 @@ const CONFIG = {
   CalibrationFramesL2R: isInt, CalibrationFramesR2L: isInt, CalibrationSpeed: isNum, CalibrationFPS: isNum,
   legalDirection: (d) => ['L2R', 'R2L', 'both'].includes(d),
   speedLimit: isInt, egregious: isInt, siteName: isStr,
+  minLoggedSpeed: isInt,
 };
 
 const VEHICLE = {

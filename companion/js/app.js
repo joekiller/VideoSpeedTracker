@@ -73,7 +73,10 @@ function paintHeader() {
   c.dataset.state = state;
   c.lastElementChild.textContent = label;
   $('#site-name').textContent = s?.siteName || 'VST';
-  $('#site-sub').textContent = s ? `Limit ${s.speedLimit} mph${s.legalDirection !== 'both' ? ' · one-way' : ''}` : 'Companion';
+  // The desktop's unattended-health warnings take the subtitle's place: they need someone at the window.
+  const warning = s?.health?.cameraWarning ? '⚠ Camera moved? Check the aim' : s?.health?.lowDisk ? '⚠ Disk nearly full' : '';
+  $('#site-sub').textContent = warning || (s ? `Limit ${s.speedLimit} mph${s.legalDirection !== 'both' ? ' · one-way' : ''}` : 'Companion');
+  $('#site-sub').classList.toggle('warn', !!warning);
   document.title = s?.siteName ? `${s.siteName} · VST` : 'VST Companion';
 }
 
@@ -99,6 +102,8 @@ ctx.start = start;
 vst.addEventListener('status', paintHeader);
 vst.addEventListener('online', () => { ctx.online = true; paintHeader(); });
 vst.addEventListener('offline', () => { ctx.online = false; paintHeader(); });
+// The desktop made a new pairing code: start() probes again and lands on Connect, which asks for a fresh scan.
+vst.addEventListener('signed-out', () => start());
 vst.addEventListener('vehicle', (e) => {
   const v = e.detail;
   if (!location.hash.startsWith('#/passes')) setUnseen(unseen + 1);

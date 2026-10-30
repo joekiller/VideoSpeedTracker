@@ -161,8 +161,18 @@ req GET /api/config
 expect 200 "GET /api/config"
 has AnalysisBoxLeft AnalysisBoxTop AnalysisBoxWidth AnalysisBoxHeight speedLineLeft speedLineRight obstruction \
     R2LStreetY L2RStreetY L2RDirection R2LDirection CalibrationFramesL2R CalibrationFramesR2L CalibrationSpeed \
-    CalibrationFPS legalDirection speedLimit egregious siteName
+    CalibrationFPS legalDirection speedLimit egregious siteName minLoggedSpeed
 CONFIG_BEFORE=$BODY
+
+echo "Health"
+req GET /api/health
+expect 200 "GET /api/health"
+has today date trackedHours outageHours outages vehicles clipsRemoved disk videoBytes videoFiles budgetBytes freeBytes lowDisk \
+    camera result warning confidence checked
+grep -q '"result":"unchecked"' <<< "$BODY" && pass "no camera check on a recorded video" || fail "a file run shouldn't check the camera: ${BODY:0:300}"
+req GET /api/status
+grep -q '"health":{"camera":"unchecked","cameraWarning":false,"lowDisk":false}' <<< "$BODY" && pass "status carries the health summary" \
+  || fail "status should carry the health summary: $(grep -o '"health":{[^}]*}' <<< "$BODY")"
 
 echo "Rejected config changes leave VST.cfg alone"
 SUM_BEFORE=$(cksum < "$OUT/VST.cfg")
@@ -175,6 +185,8 @@ req PUT /api/config -H 'Content-Type: application/json' --data '{"AnalysisBoxLef
 grep -q '"ok":false' <<< "$BODY" && pass "a string for a number is rejected" || fail "a string for a number should be rejected: ${BODY:0:300}"
 req PUT /api/config -H 'Content-Type: application/json' --data '{"speedLimit": 2}'
 grep -q '"ok":false' <<< "$BODY" && pass "speedLimit 2 is rejected" || fail "speedLimit 2 should be rejected: ${BODY:0:300}"
+req PUT /api/config -H 'Content-Type: application/json' --data '{"minLoggedSpeed": -1}'
+grep -q '"ok":false' <<< "$BODY" && pass "minLoggedSpeed -1 is rejected" || fail "minLoggedSpeed -1 should be rejected: ${BODY:0:300}"
 req PUT /api/config -H 'Content-Type: application/json' --data 'not json'
 expect 400 "PUT /api/config with a body that isn't JSON"
 json_error "400"
@@ -187,6 +199,40 @@ echo "Live events"
 curl -sSN --max-time 3 "$BASE/api/live?token=$TOKEN" > "$OUT/live.txt" 2>/dev/null
 grep -q '^event: status' "$OUT/live.txt" && pass "/api/live sends status" || fail "/api/live sent no status: $(head -c 300 "$OUT/live.txt")"
 grep -q '^event: config' "$OUT/live.txt" && pass "/api/live sends config" || fail "/api/live sent no config: $(head -c 300 "$OUT/live.txt")"
+
+echo "Stream limit"
+# Four streams fill the slots (Server::kMaxStreams); the fifth is refused with a JSON 503 while the rest of the
+# API keeps answering, and closing them gives the slots back.
+STREAM_PIDS=()
+for n in 1 2 3; do
+  curl -sSN --max-time 20 "$BASE/api/live?token=$TOKEN" > /dev/null 2>&1 & STREAM_PIDS+=($!)
+done
+curl -sSN --max-time 20 "$BASE/api/stream.mjpg?token=$TOKEN" > /dev/null 2>&1 & STREAM_PIDS+=($!)
+# Wait until VST has all four open (status.liveViews) rather than guessing how long that takes on a busy runner.
+for _ in $(seq 1 50); do
+  req GET /api/status
+  grep -q '"liveViews":4' <<< "$BODY" && break
+  sleep 0.2
+done
+grep -q '"liveViews":4' <<< "$BODY" && pass "status counts 4 live views" || fail "status should count 4 live views: $(grep -o "\"liveViews\":-\?[0-9]*" <<< "$BODY")"
+req GET /api/live --max-time 2
+expect 503 "a fifth stream"
+json_error "503"
+req GET /api/stream.mjpg --max-time 2
+expect 503 "a fifth stream (MJPEG)"
+req GET /api/status
+expect 200 "GET /api/status with every stream slot taken"
+kill "${STREAM_PIDS[@]}" 2>/dev/null
+wait "${STREAM_PIDS[@]}" 2>/dev/null
+# The slots come back once VST notices the clients are gone (its next write, within a fraction of a second).
+for _ in $(seq 1 50); do
+  req GET /api/status
+  grep -q '"liveViews":0' <<< "$BODY" && break
+  sleep 0.2
+done
+grep -q '"liveViews":0' <<< "$BODY" && pass "closed streams give their slots back" || fail "liveViews should be 0 again: $(grep -o "\"liveViews\":-\?[0-9]*" <<< "$BODY")"
+curl -sSN --max-time 2 "$BASE/api/live?token=$TOKEN" > "$OUT/live2.txt" 2>/dev/null
+grep -q '^event: status' "$OUT/live2.txt" && pass "streams work again once the others close" || fail "no stream after the others closed: $(head -c 300 "$OUT/live2.txt")"
 
 echo "Run"
 req POST /api/run -H 'Content-Type: application/json' --data '{"action": "dance"}'

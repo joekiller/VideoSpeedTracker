@@ -158,7 +158,11 @@ export class Vst extends EventTarget {
           if (lastId != null) [...fresh].reverse().forEach((v) => fire('vehicle', v));
           lastId = Math.max(lastId ?? 0, ...fresh.map((v) => v.id));
           this.dispatchEvent(new CustomEvent('online'));
-        } catch (e) { this.dispatchEvent(new CustomEvent('offline', { detail: e })); }
+        } catch (e) {
+          // 401: the pairing code was reset on the desktop, so retrying with this token can never work.
+          if (e.status === 401) { this.disconnectLive(); this.dispatchEvent(new CustomEvent('signed-out')); }
+          else this.dispatchEvent(new CustomEvent('offline', { detail: e }));
+        }
       };
       tick();
       poll = setInterval(tick, 2500);
@@ -167,13 +171,22 @@ export class Vst extends EventTarget {
       es = new EventSource(this.url('/api/live', true));
       let opened = false;
       es.onopen = () => { opened = true; this.dispatchEvent(new CustomEvent('online')); };
-      es.onerror = () => {
-        if (!opened) startPolling();
-        else this.dispatchEvent(new CustomEvent('offline'));   // EventSource retries by itself
+      es.onerror = async () => {
+        if (!opened) { startPolling(); return; }
+        this.dispatchEvent(new CustomEvent('offline'));
+        // CONNECTING: a dropped connection that EventSource retries by itself.  CLOSED: VST answered the retry
+        // with an error, which EventSource never retries.  That's a 401 after a new pairing code (which also ends
+        // open streams), or a 503 when every stream slot is taken: find out which.
+        if (es?.readyState !== EventSource.CLOSED) return;
+        const result = await this.probe();
+        if (result === 'needs-token') { this.disconnectLive(); this.dispatchEvent(new CustomEvent('signed-out')); }
+        else if (result === 'ok') startPolling();
+        else if (this.stopLive === stop) setTimeout(() => { if (this.stopLive === stop) this.connectLive(); }, 5000);   // VST is gone: try again
       };
       for (const t of ['status', 'vehicle', 'tracks', 'config']) es.addEventListener(t, (e) => fire(t, JSON.parse(e.data)));
     } catch { startPolling(); }
-    this.stopLive = () => { es?.close(); clearInterval(poll); };
+    const stop = () => { es?.close(); clearInterval(poll); };
+    this.stopLive = stop;
   }
 
   disconnectLive() { this.stopLive?.(); this.stopLive = null; }
