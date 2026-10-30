@@ -20,6 +20,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install OpenCV and the X11/OpenGL headers VST Studio needs
         run: |
+          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
           sudo apt-get update
           sudo apt-get install -y libopencv-dev libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev xvfb
       - name: Build
