@@ -267,7 +267,7 @@ VideoSpeedTracker prints every error to stderr and exits with status 1 on any er
 
 [`companion/`](companion/README.md) is a phone app (PWA) for watching the camera live, browsing recent speeders and
 wrong-way drivers with clips, calibrating from the street, and sharing a pass or a traffic report card if you choose to.
-The desktop app serves it on your local network when **Remote companion** is turned on; scan its QR code to pair.
+The desktop app serves it on your local network when the companion is turned on (**Companion app** in the sidebar); scan its QR code to pair.
 Its local API is specified in [docs/companion-api.md](docs/companion-api.md), and `node companion/dev/mock-vst.mjs`
 runs it against simulated traffic with no camera.
 

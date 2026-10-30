@@ -13,6 +13,10 @@ public:
 	bool load(const std::string& path);      // false (and error set) if the tracker would refuse the file
 	bool save();                              // writes to path(); creates the file if needed
 	bool saveAs(const std::string& path);
+	// Undo: the first save in a session keeps the file as it was in <file>.bak; restoreBackup() puts it back.
+	bool hasBackup() const;
+	bool restoreBackup();
+	std::string backupPath() const;
 	// Writes the current values to a scratch file for one tracking run, leaving the user's file untouched.
 	std::string writeRunCopy(const std::string& dir) const;
 	const std::string& path() const { return path_; }
@@ -27,6 +31,7 @@ private:
 	std::string path_;
 	std::vector<std::string> lines_;
 	std::string cleanSnapshot_;
+	std::string backedUp_;                    // path whose original is in backupPath() this session
 };
 
 // A known key's current value in VST.cfg syntax, e.g. "obstruction" -> "[251,311]".
@@ -54,6 +59,9 @@ struct AppPrefs {
 	double planHfov = 66, planWidth = 1920, planFps = 30, planShutter = 120;
 	double planDist = 12, planClear = 18, planCalib = 30, planCarLen = 4.8;
 	int planPreset = 0;
+	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config
+	// a calibration was applied to.  A step counts as done only for the camera/config it was done for.
+	std::string zonesFor, calibratedFor;
 
 	void load();
 	void save() const;

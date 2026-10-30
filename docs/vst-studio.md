@@ -13,6 +13,11 @@ the Linux applications menu).
 The side rail follows the order a first-time user works in. Every page reads and writes the same `VST.cfg` the
 command line uses, so a setup made here works for headless and cron runs too.
 
+Setup steps get a check mark once they're done for the source and settings in use: Zones once you've checked
+them on the current source with nothing for the tracker to reject, and Calibrate once a calibration was applied
+to this `VST.cfg` (the bundled sample comes calibrated). Until a run can work, the header's main button leads to
+the next step instead of **Start tracking**, and a **Not calibrated** chip opens the Calibrate page.
+
 ### Get started
 
 Six steps for someone who has never set up a speed camera: what equipment to get, picking a spot, setting up
@@ -47,8 +52,12 @@ The command line takes the same sources: `--input 0` opens the first camera and 
 
 Drag everything on the picture: the analysis box (edges, corners, or the tab to move it), the two white speed
 lines, the lane lines at hubcap height, and the obstruction band for a tree or pole. The inspector shows the
-same values as numbers, explains each one, and lists anything the tracker would reject. Unsaved edits are used
-by the next run (from a scratch copy, `last-run.cfg` in the config folder), so you can try before you save.
+same values as numbers, explains each one, and lists anything the tracker would reject.
+
+Settings save themselves: a change is written to `VST.cfg` a moment after you let go of a handle or field, and
+never while the tracker would reject it. The first save of a session keeps the file as it was in `VST.cfg.bak`,
+and **Undo changes since opening** (or **Undo** on the Source page) puts it back. Saves go to a temporary file
+that replaces `VST.cfg` in one step, so a crash or power cut can't leave it half written.
 
 **Your street** sets the compass direction of each lane and whether the street is one-way. On a one-way street
 VST flags every vehicle going the other way: the lane on the picture turns red, the run shows an alert, and the

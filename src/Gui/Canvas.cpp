@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <vector>
 
 using namespace theme;
 
@@ -285,6 +286,7 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 
 void trackOverlay(const View& v, const Globals& g, const cv::Rect& ab, const std::vector<vst::TrackBox>& boxes, int limit, int egregious) {
 	ImDrawList* dl = ImGui::GetWindowDrawList();
+	std::vector<ImRect> tags;   // speed tags placed so far; overlapping vehicles stack their tags upwards
 	for (const vst::TrackBox& t : boxes) {
 		bool wrong = g.isWrongWay(t.leftToRight);
 		ImU32 col = wrong ? c::wrong : t.speed > 0 ? speedColor(t.speed, limit, egregious) : (t.leftToRight ? c::l2r : c::r2l);
@@ -299,8 +301,16 @@ void trackOverlay(const View& v, const Globals& g, const cv::Rect& ab, const std
 		if (wrong) label = ICON_WARN " WRONG WAY  " + label;
 		ImFont* f = t.speed > 0 ? fonts.strong : fonts.caption;
 		ImVec2 ts = f->CalcTextSizeA(fsz(f), FLT_MAX, 0, label.c_str());
-		ImVec2 ta(a.x, a.y - ts.y - px(10));
-		dl->AddRectFilled(ta, ta + ts + ImVec2(px(14), px(8)), col, px(6));
+		ImVec2 size = ts + ImVec2(px(14), px(8));
+		ImVec2 ta(std::clamp(a.x, v.origin.x, std::max(v.origin.x, v.origin.x + v.size.x - size.x)), a.y - ts.y - px(10));
+		// Two cars passing each other put their tags on top of each other; lift this one above any it would cover.
+		for (bool moved = true; moved;) {
+			moved = false;
+			for (const ImRect& r : tags)
+				if (r.Overlaps(ImRect(ta, ta + size))) { ta.y = r.Min.y - size.y - px(4); moved = true; }
+		}
+		tags.emplace_back(ta, ta + size);
+		dl->AddRectFilled(ta, ta + size, col, px(6));
 		dl->AddText(f, fsz(f), ta + ImVec2(px(7), px(4)), c::rgb(0x0B0E14), label.c_str());
 	}
 }

@@ -1,17 +1,19 @@
 /**
  * Connect: shown when the phone isn't paired with a reachable VST. Explains the three-step pairing
- * (turn on Remote companion, scan the QR code), accepts an address and code by hand, and offers the
+ * (turn on the companion in VST Studio, scan the QR code), accepts an address and code by hand, and offers the
  * demo so anyone can see what the companion does before setting anything up.
  */
 import { html, $, icon } from '../ui.js';
 
 const WHY = {
-  unreachable: 'No VST answered. Check that the computer is on, VST Studio is open with Remote companion turned on, and this phone is on the same Wi-Fi.',
+  unreachable: 'No VST answered. Check that the computer is on, VST Studio is open with the companion turned on, and this phone is on the same Wi-Fi.',
   'needs-token': 'Found VST, but this phone isn\'t paired yet (or was unpaired). Scan the QR code again, or type the pairing code.',
 };
 
 export function render({ vst, view, start, probeResult }) {
-  const tried = probeResult && vst.mode === 'live' && (vst.base || vst.token || location.port === '8787');
+  // Warn only after a real attempt: an address or code was entered or came from a QR link. Opening the page
+  // VST serves (port 8787) with no code yet is the normal first visit, not a failure.
+  const tried = probeResult && vst.mode === 'live' && (vst.base || vst.token);
   view.innerHTML = html`
     <div class="connect-hero">
       <svg class="big" viewBox="0 0 96 96" aria-hidden="true">
@@ -26,7 +28,7 @@ export function render({ vst, view, start, probeResult }) {
     ${tried ? html`<div class="callout warn" style="margin-bottom:16px">${icon('warn')}<p>${WHY[probeResult] || WHY.unreachable}</p></div>` : ''}
     <h3>Pair with VST</h3>
     <div class="card">
-      <div class="check"><b class="num" style="color:var(--accent)">1</b><p>On the computer running VST Studio, open <b>Settings → Remote companion</b> and turn it on.</p></div>
+      <div class="check"><b class="num" style="color:var(--accent)">1</b><p>On the computer running VST Studio, open <b>Companion app</b> (left sidebar, under Share) and turn it on.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">2</b><p><b>Scan the QR code</b> it shows with this phone's camera. That opens the companion already paired.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">3</b><p><b>Add it to your home screen</b> so it opens like an app next time.</p></div>
     </div>

@@ -7,7 +7,7 @@ implements it with simulated data so either side can be tested alone.
 
 ## Transport and pairing
 
-* Off by default. The user turns on **Remote companion** in VST Studio, which then listens on
+* Off by default. The user turns on the companion on VST Studio's **Companion app** page, which then listens on
   `http://<lan-ip>:8787/` and shows that URL as a QR code with a pairing token in the fragment:
   `http://192.168.1.20:8787/#token=Zx8…`. The fragment never reaches the server or any log; the
   companion stores the token on the phone and strips it from the address bar.

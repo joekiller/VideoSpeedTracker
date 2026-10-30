@@ -62,6 +62,9 @@ public:
 	void stopTracking();
 	bool loadConfig(const std::string& path);
 	bool saveConfig();
+	// Setup progress, shared by the side rail and the header's "next step" button.
+	bool zonesDone();
+	bool calibrationDone();
 	std::string dataDir();
 	std::string findSample();
 	// Sets the calibration for one direction from a pass at a known speed; keeps the other direction's
@@ -109,6 +112,7 @@ private:
 	Texture* snapshotTexture(int vehicleId);
 	void pumpTracker();
 	void sitePlanner();
+	void autosave();
 
 	struct Toast { std::string text; unsigned color; const char* icon; double until; };
 	std::deque<Toast> toasts_;
@@ -125,7 +129,10 @@ private:
 	int calibMode_ = 0;
 	int calibDir_ = 0;
 	int calibPickId_ = 0;
-	float calibSpeed_ = 25;
+	int calibSpeed_ = 25;
+	double autosaveAt_ = 0;             // when the pending autosave fires (0 = nothing pending)
+	double savedAt_ = 0;                // last successful autosave, for the rail's "saved" note
+	std::string sampleCache_;
 	char urlBuf_[512] = "rtsp://";
 	int cameraIndex_ = 0;
 	char searchBuf_[64] = "";

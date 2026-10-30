@@ -125,6 +125,31 @@ bool App::saveConfig() {
 	return true;
 }
 
+bool App::zonesDone() {
+	return !source.empty() && prefs.zonesFor == source && cfg.problems().empty();
+}
+
+bool App::calibrationDone() {
+	// The bundled sample's VST.cfg comes calibrated for that video, so the sample never nags.
+	if (sampleCache_.empty()) sampleCache_ = findSample();
+	if (!source.empty() && source == sampleCache_) return true;
+	return !cfg.path().empty() && prefs.calibratedFor == cfg.path() && cfg.problems().empty();
+}
+
+// Settings save themselves.  Edits are debounced: a pending save waits until no control has been active for
+// 0.8 s, so dragging a speed line writes once when the mouse is released, not every frame.  Invalid settings
+// are never written (the inspector lists what to fix), and the first save of the session keeps the original in
+// VST.cfg.bak for "Undo changes".  The documentation tour never writes, so it can't touch a real config.
+void App::autosave() {
+	if (screenshotMode || cfg.path().empty() || !cfg.dirty() || !cfg.problems().empty()) { autosaveAt_ = 0; return; }
+	double t = now();
+	if (ImGui::IsAnyItemActive() || autosaveAt_ == 0) { autosaveAt_ = t + 0.8; return; }
+	if (t < autosaveAt_) return;
+	autosaveAt_ = 0;
+	if (cfg.save()) savedAt_ = t;
+	else toast(cfg.error, c::bad, ICON_WARN);
+}
+
 std::string App::dataDir() {
 	// Same rule as the tracker: blank means the per-user data folder.
 	return userpaths::dataPath(cfg.g.dataPathPrefix).string();
@@ -204,6 +229,7 @@ void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
 	// `frames` at `fps` corresponds to CalibrationFrames = frames × mph / CalibrationSpeed × CalibrationFPS / fps.
 	int calFrames = std::max(1, int(std::lround(frames * mph / g.CalibrationSpeed * g.CalibrationFPS / fps)));
 	(l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
+	prefs.calibratedFor = cfg.path();   // autosave writes it to VST.cfg on the next frame
 	toast(std::string("Calibrated ") + (l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
 		+ std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
 }
@@ -335,6 +361,8 @@ void App::frame(float w, float h) {
 	}
 	pumpTracker();
 	if (!tracker.running()) player.tick(now());
+	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
+	autosave();
 
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
 	ImGui::SetNextWindowSize(ImVec2(w, h));
@@ -452,12 +480,11 @@ void App::drawRail(float h) {
 			}
 		}
 	};
-	bool calibrated = cfg.g.CalibrationFramesL2R > 0 && !cfg.problems().size();
 	group("SET UP");
 	item(Page::Guide, false, false);
 	item(Page::Source, true, !source.empty());
-	item(Page::Zones, true, !source.empty() && cfg.problems().empty() && !cfg.dirty());
-	item(Page::Calibrate, true, calibrated && prefs.guideDone);
+	item(Page::Zones, true, zonesDone());
+	item(Page::Calibrate, true, calibrationDone());
 	group("RUN");
 	item(Page::Track, false, false);
 	item(Page::Results, false, false);
@@ -478,8 +505,12 @@ void App::drawRail(float h) {
 	const char* st = run ? (tracker.paused() ? "Paused" : "Tracking") : "Idle";
 	dl->AddText(fonts.strong, fsz(fonts.strong), p + ImVec2(px(30), px(11)), c::text, st);
 	std::string cfgName = cfg.path().empty() ? "no config" : fs::path(cfg.path()).filename().string();
-	std::string l1 = std::string(ICON_GEAR "  ") + cfgName + (cfg.dirty() ? "  (edited)" : "");
-	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(38)), cfg.dirty() ? c::warn : c::dim, l1.c_str());
+	// Settings save themselves, so the only states worth showing are "saving", "can't save yet" and "saved".
+	bool broken = !cfg.path().empty() && !cfg.problems().empty();
+	const char* cfgState = cfg.path().empty() ? "" : broken ? "  needs fixing" : cfg.dirty() && autosaveAt_ > 0 ? "  saving…"
+		: (savedAt_ > 0 && now() - savedAt_ < 3) ? "  saved " ICON_CHECK : "  saved";
+	std::string l1 = std::string(ICON_GEAR "  ") + cfgName + cfgState;
+	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(38)), broken ? c::bad : c::dim, l1.c_str());
 	std::string l2 = std::string(ICON_BROADCAST "  companion ") + (server && server->running() ? "on" : "off");
 	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(60)), server && server->running() ? c::accent2 : c::faint, l2.c_str());
 	ImGui::EndChild();
@@ -509,7 +540,16 @@ void App::drawHeader(float w) {
 
 	// Right-aligned controls, laid out from the right edge.
 	bool run = tracker.running();
+	// Until setup can produce a measurement, the main button leads to the next setup step instead of a run that
+	// would only fail.  A missing calibration doesn't block (results are still useful relative to each other);
+	// it shows as an amber chip that opens the Calibrate page.
+	Page nextStep = Page::Count;
 	const char* runLabel = run ? ICON_STOP "  Stop" : ICON_PLAY "  Start tracking";
+	if (!run && source.empty() && batch.empty()) { nextStep = Page::Source; runLabel = "Next: choose a video  " ICON_ARROW_RIGHT; }
+	else if (!run && !cfg.problems().empty()) { nextStep = Page::Zones; runLabel = "Next: fix the zones  " ICON_ARROW_RIGHT; }
+	bool calNag = !run && nextStep == Page::Count && !calibrationDone();
+	const char* calText = ICON_GAUGE "  Not calibrated";
+	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
 	float pauseW = run ? ImGui::GetFrameHeight() + px(10) : 0;
 	std::string chip = source.empty() ? std::string("No source") : displayName(source);
@@ -521,7 +561,11 @@ void App::drawHeader(float w) {
 	float right = w - px(24);
 	float y = (hh - px(40)) * .5f;
 	ImGui::SetCursorPos(ImVec2(right - bw, y));
-	if (primaryButton(runLabel, ImVec2(bw, px(40)), run ? c::bad : c::accent)) run ? stopTracking() : startTracking();
+	if (primaryButton(runLabel, ImVec2(bw, px(40)), run ? c::bad : c::accent)) {
+		if (run) stopTracking();
+		else if (nextStep != Page::Count) page = nextStep;
+		else startTracking();
+	}
 	if (run) {
 		ImGui::SetCursorPos(ImVec2(right - bw - pauseW, y + (px(40) - ImGui::GetFrameHeight()) * .5f));
 		if (iconButton(tracker.paused() ? ICON_PLAY : ICON_PAUSE, tracker.paused() ? "Resume" : "Pause", tracker.paused()))
@@ -530,6 +574,13 @@ void App::drawHeader(float w) {
 	ImGui::SetCursorPos(ImVec2(right - bw - pauseW - cs.x - px(14), (hh - cs.y) * .5f));
 	pill(chipText.c_str(), source.empty() ? c::dim : c::text, c::bg2, fonts.body);
 	if (ImGui::IsItemClicked()) page = Page::Source;
+	if (calNag) {
+		ImGui::SetCursorPos(ImVec2(right - bw - pauseW - cs.x - calSize.x - px(24), (hh - calSize.y) * .5f));
+		pill(calText, c::warn, alpha(c::warn, .14f), fonts.body);
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Speeds use the calibration in %s, which wasn't made for this camera.\nClick to calibrate with one drive past.",
+			cfg.path().empty() ? "VST.cfg" : fs::path(cfg.path()).filename().string().c_str());
+		if (ImGui::IsItemClicked()) page = Page::Calibrate;
+	}
 	ImGui::EndChild();
 }
 
@@ -741,7 +792,10 @@ void App::pageSource() {
 		if (!r.empty() && !loadConfig(r[0])) toast(cfg.error, c::bad, ICON_WARN);
 	}
 	ImGui::SameLine(0, px(8));
-	if (ghostButton(ICON_SAVE " Save", ImVec2(bw, 0))) saveConfig();
+	ImGui::BeginDisabled(!cfg.hasBackup());
+	if (ghostButton(ICON_UNDO " Undo", ImVec2(bw, 0))) { if (cfg.restoreBackup()) toast("Settings restored to how they were when Studio opened", c::ok, ICON_UNDO); else toast(cfg.error, c::bad, ICON_WARN); }
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Changes save automatically. Undo puts back the settings from when Studio opened this file.");
 	ImGui::SameLine(0, px(8));
 	if (ghostButton(ICON_EXPORT " Save as", ImVec2(bw, 0))) {
 		std::string r = pfd::save_file("Save config as", cfg.path(), { "VST config", "*.cfg" }).result();
@@ -792,9 +846,17 @@ void App::pageZones() {
 		ImGui::SameLine();
 	}
 	ImGui::AlignTextToFramePadding();
-	ImGui::PushStyleColor(ImGuiCol_Text, v4(hovered ? c::text : c::dim));
-	ImGui::TextUnformatted(hovered ? hovered : ICON_INFO "  Drag the edges, lines and labels. Pick a frame with a car in it to size things.");
-	ImGui::PopStyleColor();
+	{
+		// One line in a fixed-height bar: shorten with an ellipsis rather than run past the card's edge.
+		const char* hint = hovered ? hovered : ICON_INFO "  Drag the box, lines and labels. Size them on a frame with a car.";
+		ImVec2 at = ImGui::GetCursorScreenPos();
+		float maxX = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
+		float lineH = ImGui::GetFrameHeight();
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(hovered ? c::text : c::dim));
+		ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), at, ImVec2(maxX, at.y + lineH), maxX, maxX, hint, nullptr, nullptr);
+		ImGui::PopStyleColor();
+		ImGui::Dummy(ImVec2(std::max(0.f, maxX - at.x), lineH));
+	}
 	endCard();
 
 	// Legend: what each colour on the picture is for.
@@ -929,18 +991,28 @@ void App::zoneInspector() {
 		ImGui::TextWrapped(ICON_X_CIRCLE "  %s", p.c_str());
 		ImGui::PopStyleColor();
 	}
-	float bw = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
-	ImGui::BeginDisabled(!cfg.dirty());
-	if (primaryButton(ICON_SAVE "  Save", ImVec2(bw, 0))) saveConfig();
-	ImGui::SameLine(0, px(10));
-	if (ghostButton(ICON_UNDO "  Revert", ImVec2(bw, 0))) loadConfig(cfg.path());
+	ImGui::PushTextWrapPos(0);
+	if (problems.empty()) dimText(ICON_CHECK "  Changes save automatically.");
+	else dimText("Changes save automatically once the problems above are fixed.");
+	ImGui::PopTextWrapPos();
+	ImGui::BeginDisabled(!cfg.hasBackup());
+	if (ghostButton(ICON_UNDO "  Undo changes since opening", ImVec2(-FLT_MIN, 0))) {
+		if (cfg.restoreBackup()) toast("Settings restored to how they were when Studio opened", c::ok, ICON_UNDO);
+		else toast(cfg.error, c::bad, ICON_WARN);
+	}
 	ImGui::EndDisabled();
-	if (cfg.dirty()) dimText("Unsaved changes are used by the next run, so you can try before saving.");
 }
 
 // ======================================================================================================
 // Calibrate
 // ======================================================================================================
+
+// Speed you drove, as an exact whole number with -/+ steps (a slider can't land on 27 reliably).
+static void speedStepper(const char* id, int* mph) {
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	ImGui::InputInt(id, mph, 1, 5);
+	*mph = std::clamp(*mph, 5, 80);
+}
 
 void App::pageCalibrate() {
 	Globals& g = cfg.g;
@@ -1056,8 +1128,8 @@ void App::pageCalibrate() {
 			}
 			ImGui::EndChild();
 		}
-		formLabel("I drove at", px(110));
-		ImGui::SliderFloat("##spd", &calibSpeed_, 5, 60, "%.0f mph");
+		formLabel("I drove at (mph)", px(130));
+		speedStepper("##spd", &calibSpeed_);
 		Vehicle picked;
 		bool have = calibPickId_ > 0 && tracker.vehicle(calibPickId_, picked);
 		ImGui::BeginDisabled(!have);
@@ -1074,19 +1146,22 @@ void App::pageCalibrate() {
 		int* m = calibMarks[calibDir_];
 		float bw = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
 		ImGui::BeginDisabled(!player.seekable());
-		if (ghostButton(m[0] < 0 ? ICON_FLAG "  Mark start" : ICON_CHECK "  Start set", ImVec2(bw, 0))) m[0] = player.position();
+		// The buttons always say what they do; the marks so far show underneath, so a set mark never looks like
+		// a finished step.
+		if (ghostButton(ICON_FLAG "  Bumper at line 1", ImVec2(bw, 0))) m[0] = player.position();
 		ImGui::SameLine(0, px(10));
-		if (ghostButton(m[1] < 0 ? ICON_FLAG "  Mark end" : ICON_CHECK "  End set", ImVec2(bw, 0))) m[1] = player.position();
+		if (ghostButton(ICON_FLAG "  Bumper at line 2", ImVec2(bw, 0))) m[1] = player.position();
 		ImGui::EndDisabled();
-		if (m[0] >= 0) dimText("Start: frame %d    End: %s", m[0], m[1] >= 0 ? std::to_string(m[1]).c_str() : "not yet");
+		dimText("Line 1: %s    Line 2: %s", m[0] >= 0 ? ("frame " + std::to_string(m[0])).c_str() : "not marked",
+			m[1] >= 0 ? ("frame " + std::to_string(m[1])).c_str() : "not marked");
 		int frames = (m[0] >= 0 && m[1] > m[0]) ? m[1] - m[0] : 0;
 		if (frames) {
 			ImGui::PushFont(fonts.stat);
 			ImGui::Text("%d frames", frames);
 			ImGui::PopFont();
 		}
-		formLabel("I drove at", px(110));
-		ImGui::SliderFloat("##spd2", &calibSpeed_, 5, 60, "%.0f mph");
+		formLabel("I drove at (mph)", px(130));
+		speedStepper("##spd2", &calibSpeed_);
 		ImGui::BeginDisabled(!frames);
 		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
 		ImGui::EndDisabled();
@@ -1108,21 +1183,34 @@ void App::pageCalibrate() {
 	ImGui::SameLine(0, px(10));
 	calTile("Right to left", g.CalibrationFramesR2L, c::r2l);
 	// What a given crossing time reads as, so the numbers mean something.
-	dimText("A car crossing the zone in this many frames reads as:");
-	if (ImGui::BeginTable("speedtable", 4, ImGuiTableFlags_SizingStretchSame)) {
-		for (int mph : { prefs.speedLimit, prefs.speedLimit + 10, prefs.speedLimit + 20, prefs.speedLimit + 30 }) {
+	// Each direction has its own calibration, so each gets its own row of crossing times.
+	dimText("Frames a car takes to cross the zone at each speed:");
+	if (ImGui::BeginTable("speedtable", 5, ImGuiTableFlags_SizingStretchSame)) {
+		const int speeds[] = { prefs.speedLimit, prefs.speedLimit + 10, prefs.speedLimit + 20, prefs.speedLimit + 30 };
+		ImGui::TableNextColumn();
+		for (int mph : speeds) {
 			ImGui::TableNextColumn();
-			int f = int(std::lround(g.CalibrationSpeed * g.CalibrationFramesL2R / mph));
 			ImGui::PushStyleColor(ImGuiCol_Text, v4(speedColor(mph, prefs.speedLimit, prefs.egregious)));
 			ImGui::Text("%d mph", mph);
 			ImGui::PopStyleColor();
-			dimText("%d fr", f);
+		}
+		for (int dir = 0; dir < 2; dir++) {
+			int cal = dir == 0 ? g.CalibrationFramesL2R : g.CalibrationFramesR2L;
+			ImGui::TableNextColumn();
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(dir == 0 ? c::l2r : c::r2l));
+			ImGui::TextUnformatted(dir == 0 ? "→" : "←");
+			ImGui::PopStyleColor();
+			for (int mph : speeds) {
+				ImGui::TableNextColumn();
+				dimText("%d", int(std::lround(g.CalibrationSpeed * cal / mph)));
+			}
 		}
 		ImGui::EndTable();
 	}
-	if (cfg.dirty()) {
-		if (primaryButton(ICON_SAVE "  Save calibration", ImVec2(-FLT_MIN, 0))) saveConfig();
-	}
+	ImGui::PushTextWrapPos(0);
+	dimText(calibrationDone() ? ICON_CHECK "  Calibration is saved with your settings."
+		: "Not calibrated for this camera yet. Apply one pass above; it saves automatically.");
+	ImGui::PopTextWrapPos();
 	endCard();
 	ImGui::EndChild();
 }
@@ -1155,7 +1243,7 @@ void App::pageTrack() {
 		dl->AddImage((ImTextureID)(intptr_t)motionTex_.imguiId(), v.at(float(ab.x), float(ab.y)), v.at(float(ab.x + ab.width), float(ab.y + ab.height)));
 	}
 	OverlayStyle st;
-	st.opacity = .5f;
+	st.opacity = run ? .3f : .5f;   // while tracking, the zones step back so the vehicles and their speeds read first
 	st.dimOutside = true;
 	zoneOverlay(v, cfg.g, st);
 	if (haveLive) trackOverlay(v, cfg.g, live_.analysisBox, live_.boxes, prefs.speedLimit, prefs.egregious);
@@ -1169,9 +1257,12 @@ void App::pageTrack() {
 		dl->AddRectFilled(p, p + bs + ImVec2(px(18), px(10)), alpha(c::bg0, .78f), px(7));
 		dl->AddText(fonts.strong, fsz(fonts.strong), p + ImVec2(px(9), px(5)), bc, badge);
 		if (run) {
-			char info[160];
+			char info[256];
 			double factor = prog.videoFps > 0 ? prog.procFps / prog.videoFps : 0;
-			snprintf(info, sizeof info, "%s   ·   frame %d   ·   %.0f fps   ·   %.1f× real time", prog.label.c_str(), prog.frame, prog.procFps, factor);
+			// Files also show how far through they are (and which video of a batch); live sources have no end.
+			std::string done = prog.totalFrames > 0 ? "   ·   " + std::string(prog.jobs > 1 ? "video " + std::to_string(prog.job + 1) + " of "
+				+ std::to_string(prog.jobs) + ", " : "") + std::to_string(int(std::clamp(prog.frame / float(prog.totalFrames), 0.f, 1.f) * 100)) + "%" : "";
+			snprintf(info, sizeof info, "%s   ·   frame %d   ·   %.0f fps   ·   %.1f× real time%s", prog.label.c_str(), prog.frame, prog.procFps, factor, done.c_str());
 			ImVec2 ip = p + ImVec2(bs.x + px(26), 0);
 			ImVec2 is = fonts.body->CalcTextSizeA(fsz(fonts.body), FLT_MAX, 0, info);
 			dl->AddRectFilled(ip, ip + is + ImVec2(px(18), px(10)), alpha(c::bg0, .78f), px(7));
@@ -1185,17 +1276,13 @@ void App::pageTrack() {
 		ImGui::SetCursorScreenPos(mid - bsz * .5f + ImVec2(0, px(40)));
 		if (primaryButton(ICON_PLAY "  Start tracking", bsz)) startTracking();
 	}
-	// Progress bar for files.
-	ImGui::SetCursorScreenPos(ImVec2(v.origin.x, v.origin.y + v.size.y + px(10)));
+	// Progress for files: a bar along the bottom edge of the picture, with the percentage in the HUD above
+	// (the canvas child has no room below the picture, which used to clip the percentage).
 	if (run && prog.totalFrames > 0) {
 		float frac = std::clamp(prog.frame / float(prog.totalFrames), 0.f, 1.f);
-		ImVec2 p = ImGui::GetCursorScreenPos();
-		float bw = v.size.x;
-		dl->AddRectFilled(p, p + ImVec2(bw, px(6)), c::bg3, px(3));
-		dl->AddRectFilled(p, p + ImVec2(bw * frac, px(6)), c::accent, px(3));
-		char t[96];
-		snprintf(t, sizeof t, "%s%d%%", prog.jobs > 1 ? ("video " + std::to_string(prog.job + 1) + " of " + std::to_string(prog.jobs) + "   ").c_str() : "", int(frac * 100));
-		dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(0, px(10)), c::dim, t);
+		ImVec2 p(v.origin.x, v.origin.y + v.size.y - px(5));
+		dl->AddRectFilled(p, p + ImVec2(v.size.x, px(5)), alpha(c::bg0, .7f));
+		dl->AddRectFilled(p, p + ImVec2(v.size.x * frac, px(5)), c::accent);
 	}
 	ImGui::EndChild();
 
