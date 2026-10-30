@@ -125,7 +125,7 @@ target_compile_definitions(VSTStudio PRIVATE VST_VERSION="${VST_VERSION}")
 target_link_libraries(VSTStudio PRIVATE vst_engine imgui_lib OpenGL::GL Threads::Threads)
 if(WIN32)
   # Keep windows.h from defining min/max macros and from dragging in winsock 1 ahead of cpp-httplib's winsock2.
-  target_compile_definitions(VSTStudio PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_definitions(VSTStudio PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _HAS_STD_BYTE=0)
 endif()
 if(MSVC)
   # Sources hold UTF-8 text (arrows, ×, ±); WIN32 above gives a GUI-subsystem exe with a standard main() entry.

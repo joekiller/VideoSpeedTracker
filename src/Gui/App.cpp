@@ -1,3 +1,6 @@
+// portable-file-dialogs pulls in the Windows headers; they must be parsed before Globals.h's
+// "using namespace std", or rpcndr.h's byte collides with std::byte.
+#include <portable-file-dialogs.h>
 #include "App.h"
 #include "Canvas.h"
 #include "Icons.h"
@@ -6,7 +9,6 @@
 #include "UserPaths.h"
 #include <GLFW/glfw3.h>
 #include <imgui_internal.h>
-#include <portable-file-dialogs.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
