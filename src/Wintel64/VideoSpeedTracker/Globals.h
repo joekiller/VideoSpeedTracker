@@ -83,7 +83,7 @@ public:
 	string L2RDirection = "SE";					// Compass Direction L2R vehicles are heading
 	string R2LDirection = "NW";					// Compass Direction R2L vehicles are heading
 	string LegalDirection = "Both";				// One-way streets: L2R or R2L (or the compass name of one, e.g. NE); the other way is logged as wrong-way.  Both = two-way.
-	int obstruction[2];				// left / right x coords bounding vertical obstructions in foreground.Max 2. Relative to AnalysisBoxLeft. ...pixels
+	int obstruction[2] = { 0, 0 };	// left / right x coords bounding vertical obstructions in foreground.Max 2. Relative to AnalysisBoxLeft. ...pixels
 	int AnalysisBoxLeft = 10;		// How much to crop off left side of full frame for analysis box. Want to keep this small(zero!) if possible
 	int AnalysisBoxTop = 220;		// How much to crop off top of full frame to get rid of tree tops, across - the - street houses, etc.
 	int AnalysisBoxWidth = 1269;	// Width of Analysis Box relative to AnalysisBoxLeft.Their sum must be <= 1279. ...pixels

@@ -1565,7 +1565,6 @@ void resetEngineState(){
 	hiLiteVideo.release();
 	g.~Globals();           // Globals has a const member, so it can't be assigned; rebuild it in place.
 	new (&g) Globals();
-	g.obstruction[0] = g.obstruction[1] = 0;  // zero, as for the static global in the CLI
 	frame1.release();
 	frame2.release();
 	headless = false;
