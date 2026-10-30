@@ -53,6 +53,16 @@ add_test(NAME sample_video_baseline
     -DSRC=${CMAKE_SOURCE_DIR}
     -DOUT=${CMAKE_BINARY_DIR}/test-out
     -P ${CMAKE_SOURCE_DIR}/tests/run_sample.cmake)
+# minLoggedSpeed off and raised, checked against the default run's manifest from sample_video_baseline.
+add_test(NAME min_logged_speed
+  COMMAND ${CMAKE_COMMAND}
+    -DVST=$<TARGET_FILE:VideoSpeedTracker>
+    -DSRC=${CMAKE_SOURCE_DIR}
+    -DOUT=${CMAKE_BINARY_DIR}/test-min-speed
+    -DBASE=${CMAKE_BINARY_DIR}/test-out
+    -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
+set_tests_properties(sample_video_baseline PROPERTIES FIXTURES_SETUP sample_run)
+set_tests_properties(min_logged_speed PROPERTIES FIXTURES_REQUIRED sample_run)
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}
     -DVST=$<TARGET_FILE:VideoSpeedTracker>
@@ -75,6 +85,8 @@ endif()
 # runtime dependencies are filled in by dpkg-shlibdeps for the distro it was built on.
 # Windows and macOS install flat (exe next to VST.cfg) into a folder that gets zipped as-is.
 set(VST_VERSION "0.0.0" CACHE STRING "Version stamped into release packages")
+# The engine writes it into each run manifest (run_<name>.json, "vst").
+target_compile_definitions(VideoSpeedTracker PRIVATE VST_VERSION="${VST_VERSION}")
 include(GNUInstallDirs)
 if(WIN32 OR APPLE)
   set(VST_BIN_DIR .)

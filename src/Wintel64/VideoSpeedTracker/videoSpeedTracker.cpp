@@ -67,12 +67,19 @@
 #include <chrono>
 #include <thread>
 #include <ctime>
+#include <cmath>
+#include <sstream>
+#include <locale>
 #include <opencv2/videoio/registry.hpp>
 #include "VehicleDynamics.h"
 #include "Projection.h"
 #include "Snapshot.h"
 #include "UserPaths.h"
 #include "Engine.h"
+
+#ifndef VST_VERSION
+#define VST_VERSION "dev"  // CMake stamps the release version in; it goes into the run manifest's "vst"
+#endif
 
 
 
@@ -172,11 +179,39 @@ bool openSource(VideoCapture& cap, const string& name){
 	return cap.open(name);
 }
 
-// A stream URL for the log, without any user:password@ it carries.
+// A source name that is safe to write down (the log, the run manifest).  A URL loses any user:password@ in front of the host,
+// and any query parameter that looks like a password: Foscam and many other IP cameras take ?user=admin&pwd=secret.
+// File paths and camera indexes come back as they are.
+string withoutPassword(const string& name){
+	size_t scheme = name.find("://");
+	if (scheme == string::npos) return name;
+	string url = name;
+	// user:password@host.  The host part ends at the query (or fragment); the last '@' before that ends the user info, so an
+	// unescaped '@' or '/' in the password doesn't leave the rest of it behind.
+	size_t queryAt = url.find_first_of("?#", scheme + 3);
+	size_t at = url.rfind('@', queryAt == string::npos ? string::npos : queryAt - 1);
+	if (at != string::npos && at > scheme) url.erase(scheme + 3, at - (scheme + 3) + 1);
+	// ?a=1&pwd=x&b=2 -> ?a=1&b=2: drop the parameters named pwd or pw, or with "pass" anywhere in the name.
+	size_t q = url.find('?');
+	if (q == string::npos) return url;
+	size_t hash = url.find('#', q);
+	string query = url.substr(q + 1, hash == string::npos ? string::npos : hash - q - 1), kept;
+	for (size_t start = 0; start <= query.size();){
+		size_t amp = query.find('&', start);
+		string param = query.substr(start, amp == string::npos ? string::npos : amp - start);
+		string key = param.substr(0, param.find('='));
+		for (char& c : key) c = (char)tolower((unsigned char)c);
+		if (!param.empty() && key != "pwd" && key != "pw" && key.find("pass") == string::npos) kept += (kept.empty() ? "" : "&") + param;
+		if (amp == string::npos) break;
+		start = amp + 1;
+	}
+	return url.substr(0, q) + (kept.empty() ? "" : "?" + kept) + (hash == string::npos ? "" : url.substr(hash));
+}
+
+// A source for the log: "camera 0", or the file or URL without any password it carries.
 string sourceLabel(const string& name){
-	size_t scheme = name.find("://"), at = name.find('@');
 	if (isCameraIndex(name)) return "camera " + name;
-	return (scheme != string::npos && at != string::npos && at > scheme) ? name.substr(0, scheme + 3) + name.substr(at + 1) : name;
+	return withoutPassword(name);
 }
 
 // Output name for a video: Foscam "manual_20160130172251.avi" -> "20160130_172251" (the 2016 naming), anything else -> its stem.
@@ -236,11 +271,15 @@ string formatTime(double t, bool csvColumns){
 
 double clockNow(){ return chrono::duration<double>(chrono::system_clock::now().time_since_epoch()).count(); }
 
-// Seconds since 1970 when the vehicle being logged now (at frameNumber) passed, or -1 if unknown.
-double vehicleTime(){
+// Seconds since 1970 when frame `frame` of the current source was taken, or -1 if unknown: this computer's clock for a live
+// source (so call it as the frame arrives), else the recording's start plus the frame's offset into it.
+double frameTime(int frame){
 	if (liveSource) return clockNow();
-	return recordingStart >= 0 ? recordingStart + frameNumber / g.videoFPS : -1;
+	return recordingStart >= 0 ? recordingStart + frame / g.videoFPS : -1;
 }
+
+// Seconds since 1970 when the vehicle being logged now (at frameNumber) passed, or -1 if unknown.
+double vehicleTime(){ return frameTime(frameNumber); }
 
 // csv Date and Time columns, e.g. "20160130, 172251"; blank ", " when the time is unknown.
 string csvDateTime(double when){
@@ -299,6 +338,135 @@ void setTimeBase(const string& source, bool fpsReported){
 	}
 	cout << "Vehicle times: unknown for this file (no valid manual_yyyymmddhhmmss name or usable modified time); "
 		<< (foscamDateTime.empty() ? "Date, Time and Timestamp are" : "Timestamp is") << " left blank." << endl;
+}
+
+// ............................................ The run manifest: run_<name>.json beside the stats csv ............................................
+// A csv of speeds is only as good as the record of how it was made.  Beside each stats csv VST keeps a small JSON file saying
+// what was analyzed, when the footage starts and ends, the calibration and speed zone every speed rests on, the gaps in a live
+// source, and how many vehicles were timed or seen but left out of the csv, so a report built on the csv can say all of that.
+// The format is shared with VST Studio's report (format 1):
+//   { "format": 1, "vst": "1.2.0", "stats": "<csv file name>", "source": { "input": ..., "kind": "file" | "camera" | "stream" },
+//     "started": <first frame>, "ended": <end of the last frame>,   (ISO 8601 like the csv's Timestamp, or null when unknown)
+//     "complete": <false while a live run is still going>, "frames": <frames analyzed>, "fps": <video fps>,
+//     "outages": [ { "from": <last frame before a dropout>, "to": <frames again> } ],
+//     "config": { CalibrationSpeed, CalibrationFPS, CalibrationFramesL2R/R2L, LegalDirection, L2RDirection, R2LDirection,
+//                 speedLineLeft, speedLineRight, minLoggedSpeed },
+//     "counts": { "logged", "belowMinSpeed", "untimed" } }                        (see countVehicle())
+// It's rewritten whole each time, to a temp file that is then renamed over it, so a reader never sees half a file: at the end
+// of each video and of the run, and for a live source also when its first frames arrive, after each reconnect, and every
+// 10 minutes, with "complete": false until the run ends, so a crash or power cut loses at most the last 10 minutes of it.
+string manifestPath;                 // where it goes (vst::manifestPathFor() of the stats csv); empty = don't write one
+string manifestStats;                // the stats csv's file name
+string manifestInput, manifestKind;  // what is being analyzed (passwords removed) and file | camera | stream; see vstMain()
+double runStarted = -1, runEnded = -1;  // seconds since 1970 of the run's first frame and of the end of its last; -1 = unknown
+bool runHasFrames = false;           // the run's first frame pair has been read, so runStarted is settled
+long long runFrames = 0;             // frames analyzed in the whole run, all videos
+struct Outage { double from, to; };  // to = -1 while the source is still down
+vector<Outage> outages;
+chrono::steady_clock::time_point lastManifestWrite;
+const int manifestEverySeconds = 600;
+int runLogged = 0, runBelowMinSpeed = 0, runUntimed = 0;  // vehicle counts for the whole run; see countVehicle()
+
+// Same folder and stem as the stats csv, with "stats_" swapped for "run_" (or "run_" put in front), and .json.
+std::string vst::manifestPathFor(const std::string& statsPath){
+	fs::path p(statsPath);
+	string stem = p.stem().string();
+	stem = stem.compare(0, 6, "stats_") == 0 ? "run_" + stem.substr(6) : "run_" + stem;
+	return (p.parent_path() / (stem + ".json")).string();
+}
+
+// Called once the stats csv is open: the manifest goes beside it.
+void useManifestFor(const string& statsPath){
+	manifestPath = vst::manifestPathFor(statsPath);
+	manifestStats = fs::path(statsPath).filename().string();
+}
+
+// s as a JSON string: quotes, backslashes and control characters escaped (RFC 8259).  Other bytes pass through, so UTF-8 stays UTF-8.
+string jsonString(const string& s){
+	string out = "\"";
+	for (unsigned char c : s){
+		switch (c){
+		case '"': out += "\\\""; break;
+		case '\\': out += "\\\\"; break;
+		case '\n': out += "\\n"; break;
+		case '\r': out += "\\r"; break;
+		case '\t': out += "\\t"; break;
+		default:
+			if (c < 0x20){
+				char u[8];
+				snprintf(u, sizeof u, "\\u%04x", c);
+				out += u;
+			}
+			else out += char(c);
+		}
+	}
+	return out + "\"";
+}
+
+// A number as JSON: shortest form ("30", "29.97"), always with a '.' decimal point whatever the locale; null if not finite.
+string jsonNumber(double v){
+	if (!isfinite(v)) return "null";
+	ostringstream o;
+	o.imbue(locale::classic());
+	o.precision(10);
+	o << v;
+	return o.str();
+}
+
+string jsonTime(double t){ return t >= 0 ? jsonString(formatTime(t, false)) : string("null"); }
+
+// (Re)writes the manifest; complete = the run is over.  Failing to write it is reported but doesn't stop the run.
+void writeManifest(bool complete){
+	if (manifestPath.empty()) return;
+	statsFile.flush();  // so the csv on disk has every row "logged" counts
+	ostringstream j;
+	j.imbue(locale::classic());
+	j << "{\n"
+		<< "  \"format\": 1,\n"
+		<< "  \"vst\": " << jsonString(VST_VERSION) << ",\n"
+		<< "  \"stats\": " << jsonString(manifestStats) << ",\n"
+		<< "  \"source\": { \"input\": " << jsonString(manifestInput) << ", \"kind\": " << jsonString(manifestKind) << " },\n"
+		<< "  \"started\": " << jsonTime(runStarted) << ",\n"
+		<< "  \"ended\": " << jsonTime(runEnded) << ",\n"
+		<< "  \"complete\": " << (complete ? "true" : "false") << ",\n"
+		<< "  \"frames\": " << runFrames << ",\n"
+		<< "  \"fps\": " << jsonNumber(g.videoFPS) << ",\n"
+		<< "  \"outages\": [";
+	for (size_t i = 0; i < outages.size(); i++)
+		j << (i ? "," : "") << "\n    { \"from\": " << jsonTime(outages[i].from) << ", \"to\": " << jsonTime(outages[i].to) << " }";
+	j << (outages.empty() ? "" : "\n  ") << "],\n"
+		<< "  \"config\": {\n"
+		<< "    \"CalibrationSpeed\": " << jsonNumber(g.CalibrationSpeed) << ", \"CalibrationFPS\": " << jsonNumber(g.CalibrationFPS) << ",\n"
+		<< "    \"CalibrationFramesL2R\": " << g.CalibrationFramesL2R << ", \"CalibrationFramesR2L\": " << g.CalibrationFramesR2L << ",\n"
+		<< "    \"LegalDirection\": " << jsonString(g.LegalDirection) << ", \"L2RDirection\": " << jsonString(g.L2RDirection)
+		<< ", \"R2LDirection\": " << jsonString(g.R2LDirection) << ",\n"
+		<< "    \"speedLineLeft\": " << g.speedLineLeft << ", \"speedLineRight\": " << g.speedLineRight << ",\n"
+		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << "\n"
+		<< "  },\n"
+		<< "  \"counts\": { \"logged\": " << runLogged << ", \"belowMinSpeed\": " << runBelowMinSpeed << ", \"untimed\": " << runUntimed << " }\n"
+		<< "}\n";
+	lastManifestWrite = chrono::steady_clock::now();  // also on failure, so a full disk is retried every 10 minutes, not every frame
+	fs::path tmp = manifestPath + ".tmp";
+	{
+		ofstream out(tmp, ios::binary | ios::trunc);
+		out << j.str();
+		out.close();
+		if (!out){
+			cerr << "Can't write the run manifest " << tmp.string() << endl;
+			return;
+		}
+	}
+	error_code ec;
+	fs::rename(tmp, manifestPath, ec);  // replaces the old manifest in one step (POSIX rename; MoveFileEx on Windows)
+	if (ec){
+		cerr << "Can't write the run manifest " << manifestPath << ": " << ec.message() << endl;
+		fs::remove(tmp, ec);
+	}
+}
+
+// The periodic rewrite of a live run's manifest, at most every manifestEverySeconds.
+void manifestCheckpoint(){
+	if (liveSource && chrono::steady_clock::now() - lastManifestWrite >= chrono::seconds(manifestEverySeconds)) writeManifest(false);
 }
 
 bool isVideoFile(const fs::path& p){
@@ -490,6 +658,7 @@ void setup(){
 		exit(EXIT_FAILURE);
 	}
 	statsFile << statsHeader << endl;
+	useManifestFor(statsPath.string());
 
 	cout << endl;
 	speedLimit = askInt("Speed Limit: (int)", speedLimit);
@@ -619,6 +788,7 @@ bool setupFromArgs(int argc, char** argv){
 	statsFile.open(statsPath);
 	if (!statsFile.is_open()){ cerr << "Can't write stats file " << statsPath << endl; return false; }
 	statsFile << statsHeader << endl;
+	useManifestFor(statsPath);
 
 	pleaseTrace = !tracePath.empty();
 	if (pleaseTrace){
@@ -634,7 +804,7 @@ bool setupFromArgs(int argc, char** argv){
 		hiLiteVideo.open(hiLitePath, VideoWriter::fourcc('m', 'p', '4', 'v'), fps > 0 ? fps : 30.0, Size(Globals::FrameWidth, Globals::FrameHeight), true);
 		if (!hiLiteVideo.isOpened()){ cerr << "Can't write highlights video " << hiLitePath << endl; return false; }
 	}
-	cout << "Analyzing " << inputPath << " -> " << statsPath << (headless ? "  (headless)" : "") << endl;
+	cout << "Analyzing " << withoutPassword(inputPath) << " -> " << statsPath << (headless ? "  (headless)" : "") << endl;
 	return true;
 }
 
@@ -821,6 +991,42 @@ void displayAnalysisGoingLeft(int inFrameNum, int index, Rect rectangle, Overlap
 // Per-run totals for the summary printed at the end of each video.
 int loggedVehicles = 0, speeders = 0, wrongWayVehicles = 0;
 
+// Decides whether a vehicle the tracker is letting go of gets a csv row, and counts it for the run manifest either way.
+// Every vehicle comes through here once: from logL2Rstats()/logR2Lstats() when it exits the analysis box (isOK true) or
+// when manageMovers() deletes it (isOK true only if it had already been timed), or from dropTracks() when the tracker
+// gives up on everything it is following.
+//   timed          VehicleDynamics measured a speed: the front bumper crossed the second speed line with entry and exit gaps
+//                  that agree (validGap()).  That is the only place trackEndPixel becomes > 0, and finalSpeed is set with it.
+//   logged         timed, isOK, and estSpeed >= minLoggedSpeed: a csv row.
+//   belowMinSpeed  timed and isOK, but slower than minLoggedSpeed (walkers, cyclists, a car turning in): counted, no row.
+//   untimed        tracked from outside the speed zone across its first line (trackStartPixel set), but never got a speed
+//                  that could be logged: deleted in the zone (lost track, hidden by an oncoming vehicle, negative velocity),
+//                  an invalid measurement (validGap() failed), or dropped when the tracker bailed, the source dropped out or
+//                  the video ended before it left the box.
+// Not counted at all: tracks that never reached the first speed line (mostly noise at the ends of the box, and none of them
+// could have been timed), and tracks first seen already inside the zone (markInvalidSpeed()).  Those are nearly always a
+// lost vehicle being picked up again, often several times over a few frames (26 of them on the 2016 sample, against 5
+// untimed vehicles), so counting them would count one car many times.
+// So logged + belowMinSpeed is the number of timed vehicles, the same whatever minLoggedSpeed is, and minLoggedSpeed = 0
+// logs every one of them.  With the default 18 this is exactly the pre-v1.2 rule (estSpeed >= 18 and isOK), since a
+// vehicle's estSpeed is -1 until it is timed.
+bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed){
+	if (isOK && v.getTrackEndPixel() > 0){
+		if (estSpeed >= g.minLoggedSpeed){ runLogged++; return true; }
+		runBelowMinSpeed++;
+	}
+	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()) runUntimed++;
+	return false;
+}
+
+// Forgets every vehicle being tracked, counting each one that was in the speed zone as untimed (see countVehicle()).
+void dropTracks(){
+	for (auto& v : vehiclesGoingRight) countVehicle(false, v, -1);
+	for (auto& v : vehiclesGoingLeft) countVehicle(false, v, -1);
+	vehiclesGoingRight.clear();
+	vehiclesGoingLeft.clear();
+}
+
 // Counts a vehicle that was just written to the stats csv, calls out wrong-way travel on a one-way street
 // (LegalDirection in VST.cfg), and hands the vehicle to an embedding host.
 void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed, const string& timestamp){
@@ -857,7 +1063,7 @@ void logL2Rstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
-	if ((estSpeed >= g.minLoggedSpeed) && isOK){  // minLoggedSpeed: VST.cfg, default 18 (hard-coded before v1.2)
+	if (countVehicle(isOK, vehiclesGoingRight[index], estSpeed)){  // timed, clean track, and at least minLoggedSpeed
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "
@@ -927,7 +1133,7 @@ void logR2Lstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
-	if ((estSpeed >= g.minLoggedSpeed) && isOK){  // minLoggedSpeed: VST.cfg, default 18 (hard-coded before v1.2)
+	if (countVehicle(isOK, vehiclesGoingLeft[index], estSpeed)){  // timed, clean track, and at least minLoggedSpeed
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "
@@ -1127,8 +1333,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 			if (pleaseTrace) traceFile << endl << "<" << frameNumber << ">   # # # # # # # L2R vehicle[" << index << "] is being deleted for overrunning: " << endl;
 			cout << "<" << frameNumber << ">   # # # # # # # L2R vehicle[" << index << "] is overrunning: "  << endl;
 			// For now, erase all ongoing vehicle records and wait for scene to go quiescent.  Then start analyzing again.
-			vehiclesGoingRight.erase(vehiclesGoingRight.begin(), vehiclesGoingRight.end());
-			vehiclesGoingLeft.erase(vehiclesGoingLeft.begin(), vehiclesGoingLeft.end());
+			dropTracks();  // erases both directions, counting those already in the speed zone as untimed
 			projectedL2R.erase(projectedL2R.begin(), projectedL2R.end());
 			projectedR2L.erase(projectedR2L.begin(), projectedR2L.end());
 			bailing = true;
@@ -1145,8 +1350,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 			if (pleaseTrace) traceFile << endl << "<" << frameNumber << ">   # # # # # # # R2L vehicle[" << index << "] is being deleted for overrunning: " << endl;
 			cout << "<" << frameNumber << ">   # # # # # # # R2L vehicle[" << index << "] is overrunning: " << endl;
 			// For now, erase all ongoing vehicle records and wait for scene to go quiescent.  Then start analyzing again.
-			vehiclesGoingRight.erase(vehiclesGoingRight.begin(), vehiclesGoingRight.end());
-			vehiclesGoingLeft.erase(vehiclesGoingLeft.begin(), vehiclesGoingLeft.end());
+			dropTracks();  // erases both directions, counting those already in the speed zone as untimed
 			projectedL2R.erase(projectedL2R.begin(), projectedL2R.end());
 			projectedR2L.erase(projectedR2L.begin(), projectedR2L.end());
 			bailing = true;
@@ -1300,8 +1504,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 // ---------------More than three in analysis zone with opposing traffic......
 		if ((vehiclesGoingRight.size() * vehiclesGoingLeft.size()) > 2){ // Bail on mixed direction, four or more vehicles total (includes just entered vehs)
 			// For now, erase all ongoing vehicle records and wait for scene to go quiescent.  Then start analyzing again.
-			vehiclesGoingRight.erase(vehiclesGoingRight.begin(), vehiclesGoingRight.end());
-			vehiclesGoingLeft.erase(vehiclesGoingLeft.begin(), vehiclesGoingLeft.end());
+			dropTracks();  // erases both directions, counting those already in the speed zone as untimed
 			projectedL2R.erase(projectedL2R.begin(), projectedL2R.end());
 			projectedR2L.erase(projectedR2L.begin(), projectedR2L.end());
 			bailing = true;
@@ -1531,6 +1734,9 @@ bool readFramePair(const string& source){
 				if (pleaseTrace) traceFile << "<" << frameNumber << "> " << line << endl;
 				notifySource(false, 0, 0, line);
 				reconnectAttempts = 0;
+				// The gap is over: put its end in the manifest now, so it is on disk even if the run never ends cleanly.
+				if (!outages.empty()) outages.back().to = clockNow();
+				writeManifest(false);
 			}
 			return true;
 		}
@@ -1542,9 +1748,11 @@ bool readFramePair(const string& source){
 			cout << "<" << frameNumber << ">  Lost " << sourceLabel(source) << " at " << formatTime(outageStarted, false)
 				<< "; vehicles being tracked, now dropped: " << vehiclesGoingRight.size() + vehiclesGoingLeft.size() << endl;
 			if (pleaseTrace) traceFile << "<" << frameNumber << "> Source lost; tracks dropped" << endl;
-			vehiclesGoingRight.clear();
-			vehiclesGoingLeft.clear();
+			dropTracks();
 			bailing = false;
+			// For the manifest the gap starts at the last frame that arrived (runEnded, this computer's clock for a live
+			// source), which can be several seconds before the failed read noticed it.
+			outages.push_back({ runEnded >= 0 ? runEnded : outageStarted, -1 });
 			numObjects = 0;
 		}
 		capture.release();
@@ -1558,6 +1766,7 @@ bool readFramePair(const string& source){
 			stoppedWhileReconnecting = true;
 			return false;
 		}
+		manifestCheckpoint();  // a long outage still gets its 10-minute rewrites
 		// Opened or not, the next pass round the loop decides: a source that opens but sends no frames still counts as down,
 		// so the waits keep growing instead of hammering a camera that is half awake.
 		if (!openSource(capture, source)) cout << "<" << frameNumber << ">  Couldn't open " << sourceLabel(source) << endl;
@@ -1584,6 +1793,13 @@ int vstMain(int argc, char** argv){
 	}
 	bool showVideo = !headless;  // turning this off should make processing run faster.  toggled with a "v"
 
+	// What the run manifest says was analyzed: the file's name, the URL without passwords, or the camera index.  A "*" run
+	// in interactive mode (all the videos of one folder into one csv) is named by its folder.
+	const string& first = filesToDo[0];
+	manifestKind = isCameraIndex(first) ? "camera" : isStreamUrl(first) ? "stream" : "file";
+	if (filesToDo.size() > 1) manifestInput = fs::path(first).parent_path().filename().string();
+	else manifestInput = manifestKind == "file" ? fs::path(first).filename().string() : withoutPassword(first);
+
 //  * * * * * * * * * * * * * * * * * * * * * *  M a i n   L o o p   o v e r   o n e   o r   m o r e   i n p u t   f i l e s  * * * * * * * * * * * * * * * *
 
 
@@ -1598,12 +1814,12 @@ int vstMain(int argc, char** argv){
 			startFrame = 0.0;
 		}
 		loggedVehicles = speeders = wrongWayVehicles = 0;
-		cout << endl << "Now processing " << FName << endl;
+		cout << endl << "Now processing " << withoutPassword(FName) << endl;
 		if (pleaseTrace) traceFile << endl << "Now processing cam input file: " << fileName << endl;
 		openSource(capture, FName);
 
 		if (!capture.isOpened()){
-			cerr << "Can't open video " << FName << endl
+			cerr << "Can't open video " << withoutPassword(FName) << endl
 				<< "Check the path, and that this OpenCV build can decode it (try converting with: ffmpeg -i in.ext -c:v libx264 out.mp4)." << endl;
 			return EXIT_FAILURE;
 		}
@@ -1640,6 +1856,11 @@ int vstMain(int argc, char** argv){
 		// CAP_PROP_FRAME_COUNT, which is an estimate or 0 for many H.264 and streamed sources) avoids processing empty frames.
 		// A live source doesn't run out: readFramePair() reconnects it after a dropout.
 		while (readFramePair(FName)){
+			if (!runHasFrames){  // the run's first frames: the manifest's "started", and a live run's first manifest
+				runHasFrames = true;
+				runStarted = frameTime(frameNumber);
+				if (liveSource) writeManifest(false);
+			}
 			Mat ROIFr1 = frame1(AnalysisBox).clone();  			// Carve out the analysis box for motion detection
 			cv::cvtColor(ROIFr1, grayImage1, COLOR_BGR2GRAY);  //convert ROIFr1 to gray scale for frame differencing
 			Mat ROIFr2 = frame2(AnalysisBox).clone();   		   // Carve out the analysis box for motion detection
@@ -1669,6 +1890,9 @@ int vstMain(int argc, char** argv){
 			                  // lines to decide whether or not to add or subtract one frame from the total number of frames a vehicle took to pass
 			                  // through the speed measuring zone.   I contend performing the +/-1 analysis brings back the accuracy that doubling frame
 			                  // differencing operations would provide, but at half the computational cost.
+			runFrames += 2;
+			runEnded = frameTime(frameNumber);  // the end of the pair just analyzed (frameNumber is now the next frame's number)
+			manifestCheckpoint();
 
 			//show captured frame
 			 if (showVideo)imshow("Whole Scene", ROIFr2);
@@ -1683,6 +1907,8 @@ int vstMain(int argc, char** argv){
 			switch (uiWaitKey(delay)){
 			case 27: //'esc'     exit program.
 				printSummary();
+				dropTracks();
+				writeManifest(true);
 				return 0;
 			case 102: // 'f'    make display go faster;
 				if (objDelay > 10) objDelay = objDelay / 5;
@@ -1716,6 +1942,12 @@ int vstMain(int argc, char** argv){
 
 		capture.release();
 		printSummary();
+		// Vehicles still in the zone when the video ended (or the source was stopped) go in the manifest as untimed.  Each
+		// video settles the manifest; only the run's last video, or a stop while reconnecting, marks it complete.
+		dropTracks();
+		bool runOver = fileIndex + 1 == filesToDo.size() || stoppedWhileReconnecting;
+		if (runOver) for (Outage& o : outages) if (o.to < 0) o.to = clockNow();  // stopped while down: the gap ran to the stop
+		writeManifest(runOver);
 		if (stoppedWhileReconnecting) break;
 
 	} // looping over input files loop end
@@ -1801,6 +2033,16 @@ void resetEngineState(){
 	reconnectAttempts = 0;
 	outageStarted = 0;
 	stoppedWhileReconnecting = false;
+	manifestPath.clear();
+	manifestStats.clear();
+	manifestInput.clear();
+	manifestKind.clear();
+	runStarted = runEnded = -1;
+	runHasFrames = false;
+	runFrames = 0;
+	outages.clear();
+	lastManifestWrite = chrono::steady_clock::time_point();
+	runLogged = runBelowMinSpeed = runUntimed = 0;
 }
 
 }  // namespace

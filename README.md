@@ -282,13 +282,66 @@ Where the time comes from depends on the source, and VST says which in its log w
 Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open csv**
 reads both versions. Spreadsheets that read columns by position are unaffected: the first 13 are unchanged.
 
+Only vehicles timed at `minLoggedSpeed` or faster get a row. This optional `VST.cfg` key is in MPH; the default is 18,
+the value that was hard-coded before v1.2. Slower ones, such as walkers, cyclists and cars turning into a driveway, are
+counted in the run manifest instead. Set it to 0 to log every timed vehicle:
+
+```
+minLoggedSpeed = 0
+```
+
+### The run manifest
+
+Beside each `stats_<name>.csv` VST writes `run_<name>.json`, a record of how the csv was made. With `--stats PATH` the
+manifest goes in the same folder, with `stats_` swapped for `run_`, or `run_` put in front of a name that doesn't start
+with `stats_`. A report built on the csv can use it to say what was measured, over which period, and with which
+calibration:
+
+```json
+{
+  "format": 1,
+  "vst": "1.2.0",
+  "stats": "stats_manual_20160130172251.csv",
+  "source": { "input": "manual_20160130172251.avi", "kind": "file" },
+  "started": "2016-01-30T17:22:51-05:00",
+  "ended": "2016-01-30T17:31:26-05:00",
+  "complete": true,
+  "frames": 15458,
+  "fps": 30,
+  "outages": [],
+  "config": {
+    "CalibrationSpeed": 25, "CalibrationFPS": 30,
+    "CalibrationFramesL2R": 35, "CalibrationFramesR2L": 40,
+    "LegalDirection": "Both", "L2RDirection": "SE", "R2LDirection": "NW",
+    "speedLineLeft": 350, "speedLineRight": 909,
+    "minLoggedSpeed": 18
+  },
+  "counts": { "logged": 61, "belowMinSpeed": 0, "untimed": 5 }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| source | `input` is the file name (a whole folder for an interactive `*` run), the camera index, or the stream URL with any password removed (both `user:password@` and parameters such as `pwd=`). `kind` is `file`, `camera` or `stream`. |
+| started, ended | when the first frame and the end of the last frame analyzed were taken. They follow the same rules as Timestamp, and are `null` when unknown. |
+| complete | `false` while a camera or stream run is still going |
+| frames, fps | frames analyzed, and the video's frame rate |
+| outages | for a camera or stream, each gap in the picture: `from` the last frame before it, `to` when frames came back (or when the run was stopped during it) |
+| config | the calibration, directions, speed lines and `minLoggedSpeed` that every speed in the csv rests on |
+| counts | `logged`: rows in the csv. `belowMinSpeed`: timed, but slower than `minLoggedSpeed`. `untimed`: tracked from outside the speed zone into it, but never given a usable speed. The usual reasons are that the track was lost there, or that the vehicle was hidden by oncoming traffic. |
+
+`logged + belowMinSpeed` is every vehicle that was timed, whatever `minLoggedSpeed` is. The file is replaced whole each
+time it's written: at the end of each video and of the run, and for a camera or stream also when the first frames
+arrive, after each reconnect, and every 10 minutes. So a crash loses at most 10 minutes of it.
+
 ## Unattended runs on a camera or stream
 
 A camera (`--input 0`) or a stream URL (`--input rtsp://...`) runs until it's stopped (Esc, Stop in VST Studio, or
 ending the process). If the picture drops out (a Wi-Fi blip, a camera reboot) VST doesn't end the job: it reopens the
 source after 1, 2, 4, 8 and 16 s, then every 30 s for as long as it takes, and logs each attempt and the reconnect.
 Vehicles being tracked when the picture stopped are dropped, so no speed is ever measured across a gap; frame numbers
-keep counting, so `Frame` never goes backwards. A URL that reports a length (an `http://` link to a recorded file) is
+keep counting, so `Frame` never goes backwards. Each gap is recorded in the
+[run manifest](#the-run-manifest)'s `outages`, which is rewritten every 10 minutes while the job runs. A URL that reports a length (an `http://` link to a recorded file) is
 treated as a file and ends at its end, as files always do.
 
 ## Troubleshooting
