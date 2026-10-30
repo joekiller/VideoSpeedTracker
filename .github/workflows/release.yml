@@ -6,8 +6,8 @@
 # assets are uploaded to it, replacing any with the same name.
 #
 # Pull requests and master pushes that touch the build run everything except the publish step, so a
-# broken platform shows up before the tag does (master's run also keeps the OpenCV caches warm). Manual runs (workflow_dispatch) do the same on a
-# branch, and publish when started on a tag.
+# broken platform shows up before the tag does (master's run also keeps the OpenCV caches warm).
+# Manual runs (workflow_dispatch) do the same on a branch, and publish when started on a tag.
 #
 # Every package holds VideoSpeedTracker and ProcessHiLites plus their sample configs.
 # Outputs (all on OpenCV 5 and checked with the sample-video ctest):
@@ -29,6 +29,7 @@ on:
     # Master runs too, for the same paths: Actions caches are scoped to the ref that saved them, and a
     # PR or tag can only restore its own or the default branch's. Without a master run nothing ever
     # saved the OpenCV builds where PRs could see them, so every new PR rebuilt OpenCV (4-6 min a job).
+    # Path filters don't apply to tag pushes, so releases still always build.
     branches: [master]
     paths:
       - .github/workflows/release.yml
