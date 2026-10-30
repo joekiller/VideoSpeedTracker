@@ -3,6 +3,31 @@
 This guide takes a freshly downloaded release from "does it run?" to measuring speeds on your own street. Release
 packages install it as `GETTING-STARTED.md` next to `README.md`.
 
+## Start here: VST Studio
+
+Most people never need the command line. **VST Studio** is the desktop app: it walks you through choosing a camera,
+drawing the zones, calibrating with one drive past, and leaving it running. It works out where the speed zone should
+go before you mount anything.
+
+1. **Install it.**
+   - **Windows:** run `VideoSpeedTracker-<ver>-windows-x64-setup.exe`. The first page asks whether to install just
+     for you (no admin prompt) or for everyone on the computer. Installing for everyone also lets phones reach the
+     companion app through Windows Firewall on your home network.
+   - **Linux:** `sudo apt install ./videospeedtracker_*.deb`.
+   - **macOS:** untar the release next to Homebrew's `opencv`.
+2. **Open VST Studio** from the Start menu, or the applications menu on Linux. `VSTStudio` starts it from a
+   terminal.
+3. **Follow Get started.** It opens on the bundled sample video, so you can watch cars get measured before your
+   own camera is set up. Then it takes you through Video source, Zones, Calibrate and Live tracking in order. The
+   header's main button always says what the next step is.
+4. **Leave it running.** VST Studio reconnects to a camera that drops out and keeps video under a disk budget.
+   It warns if the camera gets knocked out of line, and logs each day to `Stats/health.csv`.
+5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb.
+6. **Make a street report** from Results when you have a week or two of data.
+
+Everything in VST Studio is described in [VST Studio](vst-studio.md). The rest of this guide covers the same
+ground with the command-line tracker, `VideoSpeedTracker`, for scripts, headless boxes and batch runs.
+
 ## 1. See it work on the sample video
 
 Every release package bundles a 2016 clip from Locust Avenue in Charlottesville (`sample/manual_20160130172251.avi`),
@@ -14,14 +39,16 @@ VideoSpeedTracker --demo --headless   # no window, just the results
 ```
 
 The demo writes a csv of every vehicle it tracked to the `Stats` folder in your per-user data folder
-(see [Where things go](#where-things-go)). It prints the file's path when it starts.
+(see [Where things go](#2-where-things-go)). It prints the file's path when it starts.
 
 If you run `VideoSpeedTracker` with no options, you get the original interactive mode. While you have no videos of
 your own yet, it says where to put them and then offers to run the sample. Press Enter to accept the default answer
 to each question.
 
 On Windows you can also double-click `VideoSpeedTracker.exe`. The window stays open after the program exits, so you
-can read why it stopped.
+can read why it stopped. After a Windows install, the command-line tools are in the install folder:
+`%LOCALAPPDATA%\Programs\VideoSpeedTracker` when installed for you, or `C:\Program Files\VideoSpeedTracker` when
+installed for everyone.
 
 ## 2. Where things go
 

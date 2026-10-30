@@ -16,6 +16,8 @@
 #   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
 #                                                amd64 + arm64; OpenCV linked in statically, apt pulls
 #                                                in the distro's FFmpeg and GTK runtimes
+#   VideoSpeedTracker-<ver>-windows-x64-setup.exe  installer of the same files: Start-menu "VST Studio",
+#                                                per-user or all-users, signed like the exes (packaging/windows)
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes (static OpenCV) + FFmpeg plugin/MSVC runtime DLLs
 #                                                and their licenses
 #   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv` (Homebrew's 5.x)
@@ -220,6 +222,60 @@ jobs:
           Compress-Archive -Path "pkg/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
           Get-ChildItem -Recurse pkg
           Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" | Format-Table Status, Path -AutoSize
+      # The installer (packaging/windows/vst-setup.iss) wraps the same, already signed, files. Inno Setup 6 comes
+      # with the windows-2022 image. Its version resource needs digits only, so a 0.0.0~sha build is 0.0.0.
+      - name: Build the installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 isn't installed on this runner" }
+          $ver = "${{ needs.meta.outputs.version }}"
+          $numeric = ($ver -split '[^0-9.]')[0]
+          & $iscc /Qp "/DSourceDir=$PWD\pkg\$env:PKG_NAME" "/DAppVersion=$ver" "/DNumericVersion=$numeric" "/DOutputDir=$PWD\installer" packaging\windows\vst-setup.iss
+          if ($LASTEXITCODE) { throw "ISCC failed ($LASTEXITCODE)" }
+          Get-ChildItem installer
+      - name: Authenticode-sign the installer
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\installer
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      # Install silently for the current user into a scratch folder, check the files, the Start-menu shortcut and
+      # that VST Studio starts, then uninstall and check it's gone (and that it left the user's config alone).
+      - name: Test the installer
+        run: |
+          $setup = Get-ChildItem installer\*-setup.exe | Select-Object -First 1
+          $dir = "$env:RUNNER_TEMP\vst-install"
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$env:RUNNER_TEMP\setup.log`"" -Wait -PassThru
+          if ($p.ExitCode) { Get-Content "$env:RUNNER_TEMP\setup.log"; throw "setup exited with $($p.ExitCode)" }
+          foreach ($f in 'VSTStudio.exe', 'VideoSpeedTracker.exe', 'ProcessHiLites.exe', 'VST.cfg', 'LICENSE.txt', 'sample\manual_20160130172251.avi', 'companion\index.html') {
+            if (-not (Test-Path "$dir\$f")) { throw "$f wasn't installed" }
+          }
+          if (-not (Get-ChildItem "$dir\opencv_videoio_ffmpeg*.dll")) { throw "the FFmpeg plugin wasn't installed" }
+          $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\VST Studio.lnk"
+          if (-not (Test-Path $lnk)) { throw "no Start-menu shortcut at $lnk" }
+          $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+          if ($sc.TargetPath -ne "$dir\VSTStudio.exe") { throw "the shortcut points at $($sc.TargetPath)" }
+          if ($sc.WorkingDirectory -ne $env:USERPROFILE) { throw "the shortcut starts in $($sc.WorkingDirectory), not the home folder" }
+          # The GUI has no window to show on a runner, but it must at least load (all DLLs present) and stay up.
+          $app = Start-Process "$dir\VSTStudio.exe" -WorkingDirectory $env:USERPROFILE -PassThru
+          Start-Sleep -Seconds 5
+          if ($app.HasExited -and $app.ExitCode -eq -1073741515) { throw "VSTStudio.exe is missing a DLL" }
+          if (-not $app.HasExited) { Stop-Process $app -Force }
+          New-Item -ItemType Directory -Force "$env:APPDATA\VideoSpeedTracker" | Out-Null
+          "kept" | Out-File "$env:APPDATA\VideoSpeedTracker\uninstall-test.txt"
+          Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          # The uninstaller hands off to a copy of itself in %TEMP%, so wait for the files to go.
+          for ($i = 0; $i -lt 30 -and (Test-Path "$dir\VSTStudio.exe"); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$dir\VSTStudio.exe") { throw "uninstall left VSTStudio.exe behind" }
+          if (Test-Path $lnk) { throw "uninstall left the Start-menu shortcut" }
+          if (-not (Test-Path "$env:APPDATA\VideoSpeedTracker\uninstall-test.txt")) { throw "uninstall removed the user's config folder" }
+          Copy-Item $setup.FullName dist/
       - uses: actions/upload-artifact@v7
         with:
           name: dist-windows-x64
@@ -327,6 +383,7 @@ jobs:
           subject-path: |
             dist/*.deb
             dist/*.zip
+            dist/*.exe
       - name: Create or update the release
         working-directory: dist
         env:

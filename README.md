@@ -94,10 +94,12 @@ built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`
 | Platform | File | Install |
 |---|---|---|
 | Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
-| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
+| Windows x64 | `VideoSpeedTracker-<ver>-windows-x64-setup.exe` | run it: installs for you (no admin prompt) or for everyone, adds **VST Studio** to the Start menu, and uninstalls from Settings › Apps. Your config and results stay put across upgrades and uninstalls |
+| Windows x64, portable | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
 | macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
 
-Every package includes the 2016 sample video and a `VST.cfg` set up for it, so the first thing to run is
+Every package includes the 2016 sample video and a `VST.cfg` set up for it. Open **VST Studio** first: it starts on
+the sample and walks you through your own camera. On the command line, the first thing to run is
 `VideoSpeedTracker --demo`. [Getting started](docs/getting-started.md) (installed as `GETTING-STARTED.md`) then walks
 through setting VST up for your own camera: geometry, calibration and batch runs.
 
@@ -134,7 +136,9 @@ signed; PR and master builds stay unsigned.
 3. Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. Variables: `AZURE_SIGNING_ENDPOINT`
    (for example `https://eus.codesigning.azure.net/`), `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`.
 
-SmartScreen still warns until the signing identity builds reputation over a few releases.
+The exes are signed first, then the installer is built around them and signed too. Its uninstaller is generated
+at install time and is not signed. SmartScreen still warns until the signing identity builds reputation over a
+few releases.
 
 **macOS — Apple Developer Program ($99/year).**
 1. Enroll as an individual, create a *Developer ID Application* certificate and export it with its key as a .p12.

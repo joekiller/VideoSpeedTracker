@@ -149,6 +149,12 @@ add_executable(VSTStudio WIN32
   ${SINGLE_DIR}/qrcodegen.cpp
   ${EMBEDDED})
 target_include_directories(VSTStudio PRIVATE ${pfd_SOURCE_DIR} ${SINGLE_DIR})
+if(WIN32)
+  # The app icon (packaging/windows/vst-studio.ico, made from packaging/vst-studio.png); rc.exe takes forward slashes.
+  set(VST_STUDIO_ICO ${CMAKE_SOURCE_DIR}/packaging/windows/vst-studio.ico)
+  configure_file(VSTStudio.rc.in ${CMAKE_CURRENT_BINARY_DIR}/VSTStudio.rc @ONLY)
+  target_sources(VSTStudio PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/VSTStudio.rc)
+endif()
 # Long-lived MJPEG and server-sent-event connections each hold a worker, so allow more than the default 8.
 target_compile_definitions(VSTStudio PRIVATE CPPHTTPLIB_THREAD_POOL_COUNT=16)
 target_compile_definitions(VSTStudio PRIVATE VST_VERSION="${VST_VERSION}")
