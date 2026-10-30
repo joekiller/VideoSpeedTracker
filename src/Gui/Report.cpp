@@ -1177,7 +1177,7 @@ std::string renderHtml(const Study& st) {
 	h << "<tr><td>Timed and logged in this range</td><td class='n'>" << thousands(st.all.n + st.flaggedExcluded) << "</td><td>"
 	  << (st.flaggedExcluded ? thousands(st.flaggedExcluded) + " flagged as implausible and left out of the statistics" : std::string("every logged vehicle is in the statistics")) << "</td></tr>";
 	if (st.manifestRuns) {
-		h << "<tr><td>Below the logging minimum</td><td class='n'>" << thousands(st.mBelow) << "</td><td>timed under " << st.minLoggedSpeed << " mph (turning, parking, stopping) and not logged</td></tr>";
+		h << "<tr><td>Below the logging minimum</td><td class='n'>" << thousands(st.mBelow) << "</td><td>timed under " << st.minLoggedSpeed << " mph (walkers, cyclists, cars turning or parking) and not logged</td></tr>";
 		h << "<tr><td>Seen but not timed</td><td class='n'>" << thousands(st.mUntimed) << "</td><td>entered the zone but couldn't be timed: overlapping vehicles, occlusion</td></tr>";
 	}
 	h << "<tr><td>Vehicles per observed hour</td><td class='n'>" << (st.hours > 0 ? f1((st.all.n + st.flaggedExcluded) / st.hours) : std::string("—")) << "</td><td>logged vehicles ÷ hours observed</td></tr>";
@@ -1365,7 +1365,7 @@ std::string renderHtml(const Study& st) {
 	  << "separately for each direction because the near and far lanes are at different distances from the camera. A later check pass at a known speed shows how far off the calibration reads. "
 	  << "A direction counts as verified when its latest check after its latest calibration is within 2 mph.</p>";
 	h << "<h3>What is excluded and why</h3><ul>";
-	h << "<li>Vehicles timed under " << st.minLoggedSpeed << " mph (the logging minimum): mostly turning, parking or stopping, not free-flowing traffic.</li>";
+	h << "<li>Vehicles timed under " << st.minLoggedSpeed << " mph (the logging minimum): mostly walkers, cyclists and cars turning or parking, not free-flowing traffic.</li>";
 	h << "<li>Vehicles that couldn't be timed cleanly (two vehicles overlapping, a vehicle hidden behind another): their crossing can't be measured.</li>";
 	h << "<li>Speeds flagged as implausible (more than 20 mph over the “way over” setting): usually two vehicles merged into one; they're left out of every statistic.</li>";
 	h << "<li>Vehicles tracked across a camera dropout: dropped, so no speed is ever measured across a gap.</li></ul>";

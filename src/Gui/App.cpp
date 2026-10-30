@@ -2019,6 +2019,7 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 	in.current.framesR2L = g.CalibrationFramesR2L;
 	in.current.calSpeed = g.CalibrationSpeed;
 	in.current.calFps = g.CalibrationFPS;
+	in.current.minLoggedSpeed = g.minLoggedSpeed;
 	if (!snapshots) return in;
 	// Example frames exist only for this session's vehicles (kept in memory).  Take the six fastest in the date range,
 	// each made safe by blurForReport before it ever reaches the report.
