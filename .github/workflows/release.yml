@@ -56,7 +56,7 @@ concurrency:
 
 jobs:
   meta:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
@@ -104,10 +104,10 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file \
             pkg-config zlib1g-dev libpng-dev libjpeg-dev libgtk-3-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Cache OpenCV
         id: opencv-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /opt/opencv
           key: opencv-5.0.0-${{ matrix.distro }}-${{ matrix.arch }}-${{ hashFiles('packaging/build-opencv.sh') }}
@@ -128,7 +128,7 @@ jobs:
           cp build/videospeedtracker_*.deb \
              "dist/videospeedtracker_${{ needs.meta.outputs.version }}_${{ matrix.distro }}_${{ matrix.arch }}.deb"
           dpkg-deb --info dist/*.deb
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-linux-${{ matrix.distro }}-${{ matrix.arch }}
           path: dist/*
@@ -148,11 +148,11 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Static OpenCV 5; videoio loads FFmpeg from OpenCV's prebuilt opencv_videoio_ffmpeg plugin DLL.
       - name: Cache OpenCV
         id: opencv-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: C:\opencv
           key: opencv-5.0.0-windows-x64-${{ hashFiles('packaging/build-opencv.sh') }}
@@ -210,7 +210,7 @@ jobs:
           Compress-Archive -Path "pkg/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
           Get-ChildItem -Recurse pkg
           Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" | Format-Table Status, Path -AutoSize
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-windows-x64
           path: dist/*
@@ -220,10 +220,11 @@ jobs:
   # its runners can sit queued far longer, so publish goes ahead without it and macos-release adds the
   # tarball and checksum to the existing release afterwards. Uploading runs on Linux, so the macOS
   # runner (billed at 10x) is held only for the build itself.
-  # macos-latest is the current Apple-silicon image; macos-14 is retired on 2026-11-02.
+  # Runner images are pinned rather than *-latest, whose labels move to new OS releases (and warn
+  # about it in every run). macos-15 is Apple silicon; macos-14 is retired on 2026-11-02.
   macos:
     needs: meta
-    runs-on: macos-latest
+    runs-on: macos-15
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
@@ -232,7 +233,7 @@ jobs:
       # "Code signing" in README.md); without them the binaries keep the linker's ad-hoc signature.
       SIGN_MACOS: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install OpenCV
         run: brew install opencv
       - name: Build
@@ -287,7 +288,7 @@ jobs:
           mkdir dist
           tar -C pkg -czf "dist/$name.tar.gz" "$name"
           otool -L "pkg/$name/VideoSpeedTracker"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-macos-arm64
           path: dist/*
@@ -295,13 +296,13 @@ jobs:
   publish:
     needs: [meta, linux, windows]
     if: needs.meta.outputs.tag != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write      # Sigstore signing for the provenance attestations
       attestations: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           merge-multiple: true
@@ -309,7 +310,7 @@ jobs:
       # Signed SLSA provenance for every package, tying each file's digest to this workflow run,
       # commit and tag; verify with `gh attestation verify <file> -R joekiller/VideoSpeedTracker`.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.deb
@@ -331,18 +332,18 @@ jobs:
 
   macos-release:
     needs: [meta, publish, macos]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write      # Sigstore signing for the provenance attestation
       attestations: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: dist-macos-arm64
           path: dist
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*.tar.gz
       - name: Add to the release
