@@ -2,6 +2,16 @@
 # Builds the original sources in src/Wintel64 against OpenCV 4 or 5 on Linux, macOS or Windows.
 cmake_minimum_required(VERSION 3.16)
 project(VideoSpeedTracker CXX)
+# install() normalizes DESTINATION paths (./companion becomes companion): the same install tree, minus a dev
+# warning per install() on CMake 3.31+.
+if(POLICY CMP0177)
+  cmake_policy(SET CMP0177 NEW)
+endif()
+# MSVC compiles a target's sources one at a time unless told otherwise; /MP spreads them over every core.
+# /utf-8 makes the source and execution character sets UTF-8 for every target, not just VST Studio's.
+if(MSVC)
+  add_compile_options(/MP /utf-8)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -53,16 +63,20 @@ add_test(NAME sample_video_baseline
     -DSRC=${CMAKE_SOURCE_DIR}
     -DOUT=${CMAKE_BINARY_DIR}/test-out
     -P ${CMAKE_SOURCE_DIR}/tests/run_sample.cmake)
-# minLoggedSpeed off and raised, checked against the default run's manifest from sample_video_baseline.
-add_test(NAME min_logged_speed
-  COMMAND ${CMAKE_COMMAND}
-    -DVST=$<TARGET_FILE:VideoSpeedTracker>
-    -DSRC=${CMAKE_SOURCE_DIR}
-    -DOUT=${CMAKE_BINARY_DIR}/test-min-speed
-    -DBASE=${CMAKE_BINARY_DIR}/test-out
-    -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
+# minLoggedSpeed off (0) and raised (30), checked against the default run's manifest from sample_video_baseline.
+# One test per value: each is a full pass over the sample, so under ctest -j the two run side by side.
 set_tests_properties(sample_video_baseline PROPERTIES FIXTURES_SETUP sample_run)
-set_tests_properties(min_logged_speed PROPERTIES FIXTURES_REQUIRED sample_run)
+foreach(min 0 30)
+  add_test(NAME min_logged_speed_${min}
+    COMMAND ${CMAKE_COMMAND}
+      -DVST=$<TARGET_FILE:VideoSpeedTracker>
+      -DSRC=${CMAKE_SOURCE_DIR}
+      -DOUT=${CMAKE_BINARY_DIR}/test-min-speed
+      -DBASE=${CMAKE_BINARY_DIR}/test-out
+      -DMIN=${min}
+      -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
+  set_tests_properties(min_logged_speed_${min} PROPERTIES FIXTURES_REQUIRED sample_run)
+endforeach()
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}
     -DVST=$<TARGET_FILE:VideoSpeedTracker>
@@ -169,7 +183,9 @@ if(FFMPEG_EXECUTABLE AND BASH_EXECUTABLE AND NOT WIN32)
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stream_reconnect.sh
       $<TARGET_FILE:VideoSpeedTracker> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-reconnect
       ${FFMPEG_EXECUTABLE} ${engine_test})
-  set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180)
+  # Real-time: ffmpeg gets half a second to bind before VST connects and the dropout waits are wall-clock, so with
+  # other tests loading every core (ctest -j) it can miss its cues. It runs on its own, after the parallel ones.
+  set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
 endif()
 
 # VST Studio's companion API (docs/companion-api.md), end to end: the real app under a virtual display, driven with

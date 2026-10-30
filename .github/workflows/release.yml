@@ -104,11 +104,17 @@ jobs:
         run: |
           # Mirrors occasionally drop a connection; apt retries each fetch instead of failing the job.
           echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file \
-            pkg-config zlib1g-dev libpng-dev libjpeg-dev libgtk-3-dev \
+          # The container is thrown away after the job, so dpkg can skip its fsyncs and the docs and man pages.
+          printf '%s\n' force-unsafe-io 'path-exclude=/usr/share/doc/*' 'path-exclude=/usr/share/man/*' \
+            'path-include=/usr/share/doc/*/copyright' > /etc/dpkg/dpkg.cfg.d/90-ci
+          # Some 2,000 lines of unpack/setup chatter go to a log that is printed only if the install fails.
+          apt-get -qq update
+          apt-get install -y -qq -o Dpkg::Use-Pty=0 --no-install-recommends ca-certificates git cmake make g++ \
+            dpkg-dev file pkg-config zlib1g-dev libpng-dev libjpeg-dev libgtk-3-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
-            libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+            libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            > "$RUNNER_TEMP/apt.log" 2>&1 || { cat "$RUNNER_TEMP/apt.log"; exit 1; }
+          cmake --version | head -1; g++ --version | head -1
       - uses: actions/checkout@v7
       - name: Cache OpenCV
         id: opencv-cache
@@ -124,8 +130,9 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/opencv \
                 -DVST_VERSION=${{ needs.meta.outputs.version }}
           cmake --build build -j"$(nproc)"
+      # Independent tests run side by side; min_logged_speed_0/_30 still wait for sample_video_baseline (fixture).
       - name: Sample video regression test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -j"$(nproc)"
       - name: Package
         run: |
           (cd build && cpack -G DEB)
@@ -138,6 +145,7 @@ jobs:
           name: dist-linux-${{ matrix.distro }}-${{ matrix.arch }}
           path: dist/*
           retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
+          compression-level: 0 # .deb/.zip/.tar.gz are compressed already; deflating them again only costs time
 
   windows:
     needs: meta
@@ -151,7 +159,7 @@ jobs:
       id-token: write      # OIDC login to Azure for Artifact Signing
     env:
       # Authenticode signing runs on tag builds once the Azure Artifact Signing secrets/variables are set
-      # (see "Code signing" in README.md); without them the zip ships unsigned as before. PR and master
+      # (see docs/code-signing.md); without them the zip ships unsigned as before. PR and master
       # builds are never published, and their OIDC subjects don't match the tag-scoped federated credential.
       SIGN_WINDOWS: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
     defaults:
@@ -181,9 +189,10 @@ jobs:
           # OpenCV's Windows config picks shared libs unless told otherwise. The -D values are quoted
           # because pwsh splits an unquoted 0.0.0~sha at the first dot.
           cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH=C:/opencv -DOpenCV_STATIC=ON "-DVST_VERSION=${{ needs.meta.outputs.version }}"
-          cmake --build build --config Release
+          # --parallel lets MSBuild build independent projects at once; /MP (CMakeLists.txt) parallelizes inside each.
+          cmake --build build --config Release --parallel
       - name: Sample video regression test
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure -j $env:NUMBER_OF_PROCESSORS
       - name: Stage package
         run: |
           $name = "VideoSpeedTracker-${{ needs.meta.outputs.version }}-windows-x64"
@@ -213,6 +222,12 @@ jobs:
           certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
           files-folder: ${{ github.workspace }}\pkg\${{ env.PKG_NAME }}
           files-folder-filter: exe
+          # Shown as the program name (and its link) in the UAC prompt instead of the bare file name.
+          description: VideoSpeedTracker
+          description-url: https://github.com/joekiller/VideoSpeedTracker
+          # azure/login leaves an Azure CLI session; skip the environment credential that DefaultAzureCredential
+          # would otherwise try first.
+          exclude-environment-credential: true
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
@@ -220,29 +235,33 @@ jobs:
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Compress-Archive -Path "pkg/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
-          Get-ChildItem -Recurse pkg
-          Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" | Format-Table Status, Path -AutoSize
+          Get-ChildItem "pkg/$env:PKG_NAME" | Format-Table Mode, Length, Name -AutoSize
+          Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" |
+            Format-Table Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } }, Path -AutoSize
+          Get-Item "dist/$env:PKG_NAME.zip" | Format-Table Length, Name -AutoSize
       - uses: actions/upload-artifact@v7
         with:
           name: dist-windows-x64
           path: dist/*
           retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
+          compression-level: 0 # .deb/.zip/.tar.gz are compressed already; deflating them again only costs time
 
   # macOS builds alongside the others but doesn't gate the release: GitHub's macOS pool is small and
   # its runners can sit queued far longer, so publish goes ahead without it and macos-release adds the
   # tarball and checksum to the existing release afterwards. Uploading runs on Linux, so the macOS
   # runner (billed at 10x) is held only for the build itself.
-  # Runner images are pinned rather than *-latest, whose labels move to new OS releases (and warn
-  # about it in every run). macos-15 is Apple silicon; macos-14 is retired on 2026-11-02.
+  # macos-latest follows GitHub's current Apple-silicon image, so macOS retirements need no edits here (the
+  # package is built against Homebrew's OpenCV of the day either way). Linux and Windows stay pinned: their
+  # .deb dependencies and MSVC toolset are tied to the image.
   macos:
     needs: meta
-    runs-on: macos-15
+    runs-on: macos-latest
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
-      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+      # Not HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: Homebrew answers it with a ##[warning] annotation on every run.
       # Developer ID signing + notarization runs on tag builds once the Apple secrets are set (see
-      # "Code signing" in README.md); without them the binaries keep the linker's ad-hoc signature.
+      # docs/code-signing.md); without them the binaries keep the linker's ad-hoc signature.
       # Unpublished PR/master builds skip it rather than wait on Apple's notary service.
       SIGN_MACOS: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
@@ -256,7 +275,7 @@ jobs:
                 -DVST_VERSION=${{ needs.meta.outputs.version }}
           cmake --build build -j"$(sysctl -n hw.ncpu)"
       - name: Sample video regression test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -j"$(sysctl -n hw.ncpu)"
       # Links against Homebrew's OpenCV dylibs rather than bundling them (that would drag in
       # FFmpeg and most of its codec stack), so the archive is for machines with Homebrew.
       - name: Stage package
@@ -307,6 +326,8 @@ jobs:
           name: dist-macos-arm64
           path: dist/*
           retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
+          compression-level: 0 # .deb/.zip/.tar.gz are compressed already; deflating them again only costs time
+
   publish:
     needs: [meta, linux, windows]
     if: needs.meta.outputs.tag != ''
@@ -316,9 +337,11 @@ jobs:
       id-token: write      # Sigstore signing for the provenance attestations
       attestations: write
     steps:
+      # Linux and Windows only. When macOS happened to finish first its tarball used to come along too and be
+      # uploaded (unattested) here, then again by macos-release.
       - uses: actions/download-artifact@v8
         with:
-          pattern: dist-*
+          pattern: dist-{linux,windows}-*
           merge-multiple: true
           path: dist
       # Signed SLSA provenance for every package, tying each file's digest to this workflow run,

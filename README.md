@@ -121,28 +121,10 @@ Windows Authenticode or Apple notarization, so Windows SmartScreen and macOS Gat
 
 ### Code signing (optional)
 
-Releases build and publish unsigned until these are configured; each platform's signing steps switch on by
-themselves once its secrets exist (repo **Settings → Secrets and variables → Actions**). Only tag builds are
-signed; PR and master builds stay unsigned.
-
-**Windows — Azure Artifact Signing (~$9.99/month).** Individuals in the US/Canada qualify.
-1. Create an Azure subscription, then an Artifact Signing account and an identity validation (Public Trust,
-   individual; takes a few days) and a certificate profile.
-2. Create an app registration with a federated credential for this repo (GitHub OIDC, entity type
-   *Environment*, environment `release`; tag builds sign from that environment), and give it the
-   *Artifact Signing Certificate Profile Signer* role on the account.
-3. Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` (no subscription ID needed). Variables: `AZURE_SIGNING_ENDPOINT`
-   (for example `https://eus.codesigning.azure.net/`), `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`.
-
-SmartScreen still warns until the signing identity builds reputation over a few releases.
-
-**macOS — Apple Developer Program ($99/year).**
-1. Enroll as an individual, create a *Developer ID Application* certificate and export it with its key as a .p12.
-2. Create an app-specific password for your Apple ID.
-3. Secrets: `MACOS_CERT_P12_BASE64` (`base64 -i cert.p12`), `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`,
-   `APPLE_APP_PASSWORD`.
-
-The binaries are then signed with the hardened runtime and notarized.
+Releases build and publish unsigned until signing is configured; each platform's signing steps switch on by
+themselves once its secrets exist. Only tag builds are signed. Windows uses Azure Artifact Signing (about
+$9.99/month, signed in through GitHub OIDC, no stored client secret); macOS uses an Apple Developer ID with
+notarization ($99/year). Setup steps and troubleshooting: [docs/code-signing.md](docs/code-signing.md).
 
 ### Where config and data live
 
