@@ -7,7 +7,7 @@
 #
 # What runs depends on what is staged:
 #   companion/**                                    node --test on the phone companion's tests (needs Node 20+)
-#   src/** tests/** bin/** cmake/** CMakeLists.txt  incremental build of $VST_BUILD_DIR (default: build) and ctest,
+#   src/** tests/** bin/** cmake/** sampleData/** CMakeLists.txtincremental build of $VST_BUILD_DIR (default: build) and ctest,
 #                                                   configuring it first if it doesn't exist (needs OpenCV, see
 #                                                   README "Building from source")
 # The two slow wall-clock tests, live_stream_reconnect (~45 s) and companion_api_smoke (VST Studio under Xvfb), are

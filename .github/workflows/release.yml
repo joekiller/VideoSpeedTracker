@@ -37,10 +37,14 @@ on:
     # saved the OpenCV builds where tags and manual branch runs could see them (4-6 min a job to rebuild).
     # Path filters don't apply to tag pushes, so releases still always build.
     branches: [master]
+    # Only what changes a package or its tests; docs and the companion don't.
     paths:
       - .github/workflows/release.yml
       - CMakeLists.txt
+      - bin/**
+      - cmake/**
       - packaging/**
+      - sampleData/**
       - src/**
       - tests/**
   workflow_dispatch:
