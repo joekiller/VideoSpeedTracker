@@ -131,7 +131,7 @@ void aimSketch(ImVec2 size) {
 	dl->AddLine(ImVec2(sl, a0.y), ImVec2(sl, a1.y), c::text, 2);
 	dl->AddLine(ImVec2(sr, a0.y), ImVec2(sr, a1.y), c::text, 2);
 	for (float y = f0.y; y < f1.y; y += px(10)) dl->AddLine(ImVec2((f0.x + f1.x) * .5f, y), ImVec2((f0.x + f1.x) * .5f, y + px(4)), alpha(c::text, .25f));
-	dl->AddText(fonts.small, fsz(fonts.small), ImVec2(f0.x + px(10), f1.y - px(22)), c::dim, "street level and centred, square-on, 100+ ft in view");
+	dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(f0.x + px(10), f1.y - px(22)), c::dim, "street level and centred, square-on, 100+ ft in view");
 	ImGui::Dummy(size);
 }
 
@@ -157,22 +157,22 @@ void planDiagram(const AppPrefs& pr, const Eval& r, const Globals& g, ImVec2 siz
 	}
 	char t[160];
 	snprintf(t, sizeof t, "zone %.1f m (%.0f ft)   ·   clear %.1f m   ·   in frame %.1f m", r.zone, r.zone * 3.281, pr.planClear, r.cover);
-	ImVec2 ts = fonts.small->CalcTextSizeA(fsz(fonts.small), FLT_MAX, 0, t);
-	dl->AddText(fonts.small, fsz(fonts.small), ImVec2(cx - ts.x * .5f, laneY - ts.y - px(4)), c::text, t);
+	ImVec2 ts = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, t);
+	dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(cx - ts.x * .5f, laneY - ts.y - px(4)), c::text, t);
 	// One-way callout on the lane, using the street's configured legal direction.
 	if (g.LegalDirection != "Both") {
 		bool legalL2R = g.LegalDirection == "L2R";
 		std::string legal = std::string(legalL2R ? "" : "← ") + "legal: " + (legalL2R ? g.L2RDirection : g.R2LDirection) + (legalL2R ? " →" : "");
 		std::string wrong = legalL2R ? "← wrong way" : "wrong way →";
-		ImVec2 ls = fonts.small->CalcTextSizeA(fsz(fonts.small), FLT_MAX, 0, legal.c_str());
-		ImVec2 ws = fonts.small->CalcTextSizeA(fsz(fonts.small), FLT_MAX, 0, wrong.c_str());
+		ImVec2 ls = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, legal.c_str());
+		ImVec2 ws = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, wrong.c_str());
 		float ty = laneMid - ls.y * .5f;
-		dl->AddText(fonts.small, fsz(fonts.small), ImVec2(legalL2R ? p.x + size.x - ls.x - px(10) : p.x + px(10), ty), c::ok, legal.c_str());
-		dl->AddText(fonts.small, fsz(fonts.small), ImVec2(legalL2R ? p.x + px(10) : p.x + size.x - ws.x - px(10), ty), c::wrong, wrong.c_str());
+		dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(legalL2R ? p.x + size.x - ls.x - px(10) : p.x + px(10), ty), c::ok, legal.c_str());
+		dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(legalL2R ? p.x + px(10) : p.x + size.x - ws.x - px(10), ty), c::wrong, wrong.c_str());
 	}
 	dl->AddCircleFilled(ImVec2(cx, camY), px(7), c::warn);
 	snprintf(t, sizeof t, ICON_CAMERA "  camera, %.1f m from the lane", pr.planDist);
-	dl->AddText(fonts.small, fsz(fonts.small), ImVec2(cx + px(14), camY - px(8)), c::dim, t);
+	dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(cx + px(14), camY - px(8)), c::dim, t);
 	ImGui::Dummy(size);
 }
 
@@ -298,7 +298,7 @@ void App::pageGuide() {
 			if (i < n - 1) dl->AddLine(c0 + ImVec2(px(18), 0), ImVec2(p.x + w * (i + 1) + px(2), c0.y), done ? c::accent : c::border, 2);
 			dl->AddCircleFilled(c0, px(14), cur ? c::accent : done ? alpha(c::accent, .25f) : c::bg3);
 			std::string num = done ? ICON_CHECK : std::to_string(i + 1);
-			ImFont* f = fonts.small;
+			ImFont* f = fonts.caption;
 			ImVec2 ts = f->CalcTextSizeA(fsz(f), FLT_MAX, 0, num.c_str());
 			dl->AddText(f, fsz(f), c0 - ts * .5f, cur ? c::rgb(0xFFFFFF) : done ? c::accent : c::dim, num.c_str());
 			dl->AddText(cur ? fonts.strong : fonts.body, fsz(fonts.body), c0 + ImVec2(-px(14), px(20)), cur ? c::text : c::dim, steps[i]);

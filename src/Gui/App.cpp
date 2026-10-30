@@ -400,7 +400,7 @@ void App::drawRail(float h) {
 		ImGui::PushFont(fonts.title);
 		ImGui::TextUnformatted("VST Studio");
 		ImGui::PopFont();
-		ImGui::PushFont(fonts.small);
+		ImGui::PushFont(fonts.caption);
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
 		ImGui::TextUnformatted("Video Speed Tracker");
 		ImGui::PopStyleColor();
@@ -437,14 +437,14 @@ void App::drawRail(float h) {
 			ImVec2 cc = pos + ImVec2(iw - px(18), ih * .5f);
 			if (done) {
 				dl->AddCircleFilled(cc, px(9), alpha(c::ok, .2f));
-				ImFont* sf = fonts.small;
+				ImFont* sf = fonts.caption;
 				ImVec2 ts = sf->CalcTextSizeA(fsz(sf), FLT_MAX, 0, ICON_CHECK);
 				dl->AddText(sf, fsz(sf), cc - ts * .5f, c::ok, ICON_CHECK);
 			}
 			else {
 				dl->AddCircle(cc, px(9), c::faint, 0, 1.5f);
 				std::string n = std::to_string(step);
-				ImFont* sf = fonts.small;
+				ImFont* sf = fonts.caption;
 				ImVec2 ts = sf->CalcTextSizeA(fsz(sf), FLT_MAX, 0, n.c_str());
 				dl->AddText(sf, fsz(sf), cc - ts * .5f, c::faint, n.c_str());
 			}
@@ -477,9 +477,9 @@ void App::drawRail(float h) {
 	dl->AddText(fonts.strong, fsz(fonts.strong), p + ImVec2(px(30), px(11)), c::text, st);
 	std::string cfgName = cfg.path().empty() ? "no config" : fs::path(cfg.path()).filename().string();
 	std::string l1 = std::string(ICON_GEAR "  ") + cfgName + (cfg.dirty() ? "  (edited)" : "");
-	dl->AddText(fonts.small, fsz(fonts.small), p + ImVec2(px(12), px(38)), cfg.dirty() ? c::warn : c::dim, l1.c_str());
+	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(38)), cfg.dirty() ? c::warn : c::dim, l1.c_str());
 	std::string l2 = std::string(ICON_BROADCAST "  companion ") + (server && server->running() ? "on" : "off");
-	dl->AddText(fonts.small, fsz(fonts.small), p + ImVec2(px(12), px(60)), server && server->running() ? c::accent2 : c::faint, l2.c_str());
+	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(60)), server && server->running() ? c::accent2 : c::faint, l2.c_str());
 	ImGui::EndChild();
 }
 
@@ -817,7 +817,7 @@ void App::pageZones() {
 		ImGui::TextUnformatted(keys[i].name);
 		ImGui::PopFont();
 		ImGui::SetCursorScreenPos(p + ImVec2(px(28), fsz(fonts.strong) + px(4)));
-		ImGui::PushFont(fonts.small);
+		ImGui::PushFont(fonts.caption);
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
 		ImGui::TextUnformatted(keys[i].what);
 		ImGui::PopStyleColor();
@@ -1028,8 +1028,8 @@ void App::pageCalibrate() {
 			ImVec2 p = ImGui::GetCursorScreenPos();
 			dl->AddCircleFilled(p + ImVec2(px(11), px(11)), px(11), alpha(c::accent, .2f));
 			std::string s = std::to_string(n);
-			ImVec2 ts = fonts.small->CalcTextSizeA(fsz(fonts.small), FLT_MAX, 0, s.c_str());
-			dl->AddText(fonts.small, fsz(fonts.small), p + ImVec2(px(11), px(11)) - ts * .5f, c::accent, s.c_str());
+			ImVec2 ts = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, s.c_str());
+			dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(11), px(11)) - ts * .5f, c::accent, s.c_str());
 			ImGui::SetCursorScreenPos(p + ImVec2(px(32), 0));
 			ImGui::PushTextWrapPos(0);
 			ImGui::TextUnformatted(text);
@@ -1193,7 +1193,7 @@ void App::pageTrack() {
 		dl->AddRectFilled(p, p + ImVec2(bw * frac, px(6)), c::accent, px(3));
 		char t[96];
 		snprintf(t, sizeof t, "%s%d%%", prog.jobs > 1 ? ("video " + std::to_string(prog.job + 1) + " of " + std::to_string(prog.jobs) + "   ").c_str() : "", int(frac * 100));
-		dl->AddText(fonts.small, fsz(fonts.small), p + ImVec2(0, px(10)), c::dim, t);
+		dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(0, px(10)), c::dim, t);
 	}
 	ImGui::EndChild();
 
@@ -1219,7 +1219,7 @@ void App::pageTrack() {
 	beginCard("log", nullptr, nullptr, ImVec2(canvasW, logH), logOpen_);
 	if (ImGui::Selectable(logOpen_ ? ICON_TERMINAL "  Tracker log   " ICON_CHEVRON_DOWN : ICON_TERMINAL "  Tracker log   " ICON_CHEVRON_RIGHT, false)) logOpen_ = !logOpen_;
 	if (logOpen_) {
-		ImGui::PushFont(fonts.small);
+		ImGui::PushFont(fonts.caption);
 		for (auto& l : tracker.logTail(200)) {
 			bool warn = l.find("WRONG") != std::string::npos || l.find("Can't") != std::string::npos || l.find("Warning") != std::string::npos;
 			ImGui::PushStyleColor(ImGuiCol_Text, v4(warn ? c::warn : c::dim));
@@ -1332,18 +1332,18 @@ void App::vehicleCard(const Vehicle& v, float width) {
 	std::string speed = std::to_string(v.ev.speed);
 	dl->AddText(fonts.stat, fsz(fonts.stat), sp, col, speed.c_str());
 	ImVec2 ss = fonts.stat->CalcTextSizeA(fsz(fonts.stat), FLT_MAX, 0, speed.c_str());
-	dl->AddText(fonts.small, fsz(fonts.small), sp + ImVec2(ss.x + px(4), ss.y - fsz(fonts.small) - px(4)), c::dim, "mph");
+	dl->AddText(fonts.caption, fsz(fonts.caption), sp + ImVec2(ss.x + px(4), ss.y - fsz(fonts.caption) - px(4)), c::dim, "mph");
 	std::string dir = std::string(v.ev.leftToRight ? "→ " : "← ") + v.ev.compass + (v.large ? "   " ICON_TRUCK : "");
 	dl->AddText(fonts.body, fsz(fonts.body), sp + ImVec2(0, ss.y + px(2)), v.ev.leftToRight ? c::l2r : c::r2l, dir.c_str());
 	std::string when = v.time.size() > 11 ? v.time.substr(11) : v.time;
-	ImVec2 ws = fonts.small->CalcTextSizeA(fsz(fonts.small), FLT_MAX, 0, when.c_str());
-	dl->AddText(fonts.small, fsz(fonts.small), p + ImVec2(width - ws.x - px(12), px(10)), c::faint, when.c_str());
+	ImVec2 ws = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, when.c_str());
+	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(width - ws.x - px(12), px(10)), c::faint, when.c_str());
 	if (v.ev.wrongWay) {
 		const char* ww = ICON_WARN " WRONG WAY";
 		ImVec2 s = pillSize(ww);
 		ImVec2 at = p + ImVec2(width - s.x - px(10), h - s.y - px(10));
 		dl->AddRectFilled(at, at + s, c::wrong, s.y * .5f);
-		dl->AddText(fonts.small, fsz(fonts.small), at + ImVec2(px(8), px(3)), c::rgb(0xFFFFFF), ww);
+		dl->AddText(fonts.caption, fsz(fonts.caption), at + ImVec2(px(8), px(3)), c::rgb(0xFFFFFF), ww);
 	}
 	ImGui::Dummy(ImVec2(width, h));
 	if (ImGui::IsItemClicked()) {
@@ -1608,12 +1608,12 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		float lx = p.x + (prefs.speedLimit + 1 - lo) / 2.f * bw;
 		for (float y = p.y; y < p.y + sz.y; y += px(8)) dl->AddLine(ImVec2(lx, y), ImVec2(lx, y + px(4)), c::text, 1.5f);
 		std::string lim = std::to_string(prefs.speedLimit) + " mph limit";
-		dl->AddText(fonts.small, fsz(fonts.small), ImVec2(lx + px(6), p.y), c::text, lim.c_str());
+		dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(lx + px(6), p.y), c::text, lim.c_str());
 		dl->AddLine(ImVec2(p.x, p.y + sz.y), ImVec2(p.x + sz.x, p.y + sz.y), c::border);
 		for (int mph = (lo + 9) / 10 * 10; mph <= hi; mph += 10) {
 			float x = p.x + (mph - lo) / 2.f * bw;
 			std::string t = std::to_string(mph);
-			dl->AddText(fonts.small, fsz(fonts.small), ImVec2(x - px(6), p.y + sz.y + px(2)), c::faint, t.c_str());
+			dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(x - px(6), p.y + sz.y + px(2)), c::faint, t.c_str());
 		}
 		ImGui::Dummy(ImVec2(sz.x, sz.y + px(14)));
 		if (hoverBin >= 0) ImGui::SetTooltip("%d-%d mph: %d vehicles", lo + hoverBin * 2, lo + hoverBin * 2 + 1, counts[hoverBin]);

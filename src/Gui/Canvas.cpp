@@ -53,7 +53,7 @@ void laneArrow(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float t) {
 }
 
 static void tag(ImDrawList* dl, ImVec2 at, const char* text, ImU32 fg, ImU32 bg, bool centre = false) {
-	ImFont* f = fonts.small;
+	ImFont* f = fonts.caption;
 	ImVec2 ts = f->CalcTextSizeA(fsz(f), FLT_MAX, 0, text);
 	ImVec2 pad(px(7), px(3));
 	if (centre) at.x -= ts.x * .5f + pad.x;
@@ -276,9 +276,9 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 		}
 		ImVec2 ta = b0 - ImVec2(0, px(26));
 		const char* label = ICON_ARROWS_LR "  analysis box";
-		ImVec2 ts = fonts.small->CalcTextSizeA(fsz(fonts.small), FLT_MAX, 0, label);
+		ImVec2 ts = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, label);
 		dl->AddRectFilled(ta, ta + ImVec2(ts.x + px(16), px(24)), A(c::accent2, shown == H_BoxMove ? 1.f : .85f), px(5), ImDrawFlags_RoundCornersTop);
-		dl->AddText(fonts.small, fsz(fonts.small), ta + ImVec2(px(8), px(5)), c::bg0, label);
+		dl->AddText(fonts.caption, fsz(fonts.caption), ta + ImVec2(px(8), px(5)), c::bg0, label);
 	}
 	return changed;
 }
@@ -297,7 +297,7 @@ void trackOverlay(const View& v, const Globals& g, const cv::Rect& ab, const std
 		dl->AddLine(ImVec2(fx, a.y), ImVec2(fx, b.y), alpha(c::rgb(0xFFFFFF), .9f), 3.f);
 		std::string label = t.speed > 0 ? std::to_string(t.speed) + " mph" : std::string(t.leftToRight ? "→" : "←") + " tracking";
 		if (wrong) label = ICON_WARN " WRONG WAY  " + label;
-		ImFont* f = t.speed > 0 ? fonts.strong : fonts.small;
+		ImFont* f = t.speed > 0 ? fonts.strong : fonts.caption;
 		ImVec2 ts = f->CalcTextSizeA(fsz(f), FLT_MAX, 0, label.c_str());
 		ImVec2 ta(a.x, a.y - ts.y - px(10));
 		dl->AddRectFilled(ta, ta + ts + ImVec2(px(14), px(8)), col, px(6));

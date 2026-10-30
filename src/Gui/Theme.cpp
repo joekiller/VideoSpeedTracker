@@ -73,7 +73,7 @@ void setup(float s, float raster) {
 	io.FontGlobalScale = 1.f / raster;
 	fonts.body = addFont(font_inter_regular, font_inter_regular_size, px(15.5f), true);
 	fonts.strong = addFont(font_inter_semibold, font_inter_semibold_size, px(15.5f), true);
-	fonts.small = addFont(font_inter_regular, font_inter_regular_size, px(13.f), true);
+	fonts.caption = addFont(font_inter_regular, font_inter_regular_size, px(13.f), true);
 	fonts.title = addFont(font_inter_semibold, font_inter_semibold_size, px(22.f), true);
 	fonts.stat = addFont(font_inter_bold, font_inter_bold_size, px(30.f), false);
 	fonts.hero = addFont(font_inter_bold, font_inter_bold_size, px(54.f), false);
@@ -187,13 +187,13 @@ bool beginCard(const char* id, const char* icon, const char* title, ImVec2 size,
 void endCard() { ImGui::EndChild(); }
 
 ImVec2 pillSize(const char* text, ImFont* font) {
-	if (!font) font = fonts.small;
+	if (!font) font = fonts.caption;
 	ImVec2 ts = font->CalcTextSizeA(fsz(font), FLT_MAX, 0, text);
 	return ImVec2(ts.x + px(16), ts.y + px(6));
 }
 
 ImVec2 pill(const char* text, ImU32 fg, ImU32 bg, ImFont* font) {
-	if (!font) font = fonts.small;
+	if (!font) font = fonts.caption;
 	ImVec2 size = pillSize(text, font);
 	ImVec2 p = ImGui::GetCursorScreenPos();
 	ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -272,7 +272,7 @@ void statTile(const char* icon, const char* caption, const std::string& value, c
 	// A soft glow of the tile's colour in the corner gives each metric its identity without shouting.
 	dl->AddRectFilledMultiColor(p + ImVec2(1, 1), p + ImVec2(size.x * .6f, size.y - 1), alpha(color, .10f), alpha(color, 0), alpha(color, 0), alpha(color, .04f));
 	float pad = px(14);
-	ImFont* sf = fonts.small;
+	ImFont* sf = fonts.caption;
 	std::string head = std::string(icon) + "  " + caption;
 	dl->AddText(sf, fsz(sf), p + ImVec2(pad, pad), alpha(color, .95f), head.c_str());
 	ImFont* nf = fonts.stat;
@@ -284,7 +284,7 @@ void statTile(const char* icon, const char* caption, const std::string& value, c
 
 void sectionLabel(const char* text) {
 	ImGui::Dummy(ImVec2(0, px(2)));
-	ImGui::PushFont(fonts.small);
+	ImGui::PushFont(fonts.caption);
 	ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
 	ImGui::TextUnformatted(text);
 	ImGui::PopStyleColor();

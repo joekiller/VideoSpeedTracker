@@ -38,7 +38,7 @@ ImU32 alpha(ImU32 col, float a);
 struct Fonts {
 	ImFont* body = nullptr;      // Inter Regular + icons
 	ImFont* strong = nullptr;    // Inter SemiBold + icons
-	ImFont* small = nullptr;     // Inter Regular, smaller
+	ImFont* caption = nullptr;   // Inter Regular, smaller ("small" is a macro in Windows headers)
 	ImFont* title = nullptr;     // Inter SemiBold, page titles
 	ImFont* stat = nullptr;      // Inter Bold, big numbers
 	ImFont* hero = nullptr;      // Inter Bold, the speed readout
