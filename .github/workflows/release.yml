@@ -9,7 +9,9 @@
 # broken platform shows up before the tag does (master's run also keeps the OpenCV caches warm).
 # Manual runs (workflow_dispatch) do the same on a branch, and publish when started on a tag.
 #
-# Every package holds VideoSpeedTracker and ProcessHiLites plus their sample configs.
+# Every package holds VideoSpeedTracker, ProcessHiLites and the VST Studio desktop app (VSTStudio) plus
+# their sample configs. VST Studio's own dependencies (GLFW, Dear ImGui, fonts, ...) are fetched by CMake at
+# configure time and linked statically, so the packages need nothing new at run time.
 # Outputs (all on OpenCV 5 and checked with the sample-video ctest):
 #   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
 #                                                amd64 + arm64; OpenCV linked in statically, apt pulls
@@ -100,10 +102,13 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          # Mirrors occasionally drop a connection; apt retries each fetch instead of failing the job.
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file \
             pkg-config zlib1g-dev libpng-dev libjpeg-dev libgtk-3-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
       - uses: actions/checkout@v7
       - name: Cache OpenCV
         id: opencv-cache
@@ -196,7 +201,7 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      # Signs only our two exes; the OpenCV DLLs are third-party and the MSVC runtime is Microsoft-signed.
+      # Signs only our exes; the OpenCV DLLs are third-party and the MSVC runtime is Microsoft-signed.
       - name: Authenticode-sign the executables
         if: env.SIGN_WINDOWS == 'true'
         uses: azure/artifact-signing-action@v2
@@ -241,7 +246,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install OpenCV
-        run: brew install opencv
+        # Homebrew has no retry option, so a failed bottle download gets two more tries.
+        run: for i in 1 2 3; do brew install opencv && exit 0; sleep $((i * 15)); done; exit 1
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix opencv)" \
@@ -278,7 +284,7 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          for exe in VideoSpeedTracker ProcessHiLites; do
+          for exe in VideoSpeedTracker ProcessHiLites VSTStudio; do
             codesign --force --timestamp --options runtime \
               --entitlements packaging/macos-entitlements.plist \
               --sign "Developer ID Application" --keychain "$keychain" "pkg/$PKG_NAME/$exe"

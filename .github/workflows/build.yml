@@ -18,9 +18,20 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install OpenCV
-        run: sudo apt-get update && sudo apt-get install -y libopencv-dev
+      - name: Install OpenCV and the X11/OpenGL headers VST Studio needs
+        run: |
+          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
+          sudo apt-get update
+          sudo apt-get install -y libopencv-dev libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev xvfb
       - name: Build
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
       - name: Sample video regression test
         run: ctest --test-dir build --output-on-failure
+      # Drives every page of the desktop app on the sample video under a virtual display and saves a screenshot
+      # of each, so a broken page shows up here and the README images can be refreshed from the artifact.
+      - name: VST Studio screenshot tour
+        run: xvfb-run -a -s "-screen 0 1600x980x24" build/src/Gui/VSTStudio --config bin/VST.cfg --shots shots
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vst-studio-screenshots
+          path: shots/*.png

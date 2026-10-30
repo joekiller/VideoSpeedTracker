@@ -43,3 +43,8 @@ string(REGEX REPLACE "AnalysisBoxWidth = [0-9]+" "AnalysisBoxWidth = 1300" wide 
 expect_run(too_wide "${wide}" "analysis box too wide")
 
 expect_run(bad_arg "${sample}" "--speed-limit needs a whole number" --speed-limit fast)
+
+# LegalDirection (one-way streets) takes Both, L2R, R2L or one of the two compass labels, in any case.
+expect_run(legal_compass "${sample}LegalDirection = nw\n" "Can't open video")
+expect_run(legal_l2r "${sample}LegalDirection = L2R\n" "Can't open video")
+expect_run(legal_bad "${sample}LegalDirection = uphill\n" "LegalDirection must be Both, L2R, R2L, SE or NW")

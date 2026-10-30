@@ -1,0 +1,251 @@
+// VST Studio entry point: window, OpenGL and ImGui setup, and the frame loop.
+//
+//   VSTStudio                       normal start
+//   VSTStudio --config FILE         use this VST.cfg instead of the remembered/per-user one
+//   VSTStudio --shots DIR           documentation mode: fresh preferences, the bundled sample video, a scripted
+//                                   tour of every page, a PNG of each in DIR, then exit (works under Xvfb)
+//   VSTStudio --write-icon FILE     write the app icon as a 256x256 PNG (packaging/vst-studio.png)
+#include "App.h"
+#include "Icons.h"
+#include "Theme.h"
+#include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <string>
+
+namespace fs = std::filesystem;
+
+// The icon: a speedometer dial (green-amber-red arc) with the needle in the red, on the app's dark tile.
+static cv::Mat makeIcon(int size) {
+	int s = size * 4;   // draw large and scale down for anti-aliasing
+	cv::Mat img(s, s, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+	cv::rectangle(img, cv::Rect(s / 16, s / 16, s * 7 / 8, s * 7 / 8), cv::Scalar(32, 22, 17, 255), cv::FILLED, cv::LINE_AA);
+	// Rounded corners: clear them and add quarter discs.
+	int r = s / 5, a = s / 16, b = s - s / 16;
+	cv::Mat mask(s, s, CV_8UC1, cv::Scalar(0));
+	cv::rectangle(mask, cv::Rect(a + r, a, b - a - 2 * r, b - a), 255, cv::FILLED);
+	cv::rectangle(mask, cv::Rect(a, a + r, b - a, b - a - 2 * r), 255, cv::FILLED);
+	for (cv::Point c : { cv::Point(a + r, a + r), cv::Point(b - r, a + r), cv::Point(a + r, b - r), cv::Point(b - r, b - r) })
+		cv::circle(mask, c, r, 255, cv::FILLED, cv::LINE_AA);
+	cv::Mat out(s, s, CV_8UC4, cv::Scalar(0, 0, 0, 0));
+	img.copyTo(out, mask);
+	cv::Point c(s / 2, s * 9 / 16);
+	int rad = s * 5 / 16, th = s / 14;
+	cv::ellipse(out, c, { rad, rad }, 0, 150, 255, cv::Scalar(94, 197, 34, 255), th, cv::LINE_AA);
+	cv::ellipse(out, c, { rad, rad }, 0, 262, 330, cv::Scalar(36, 165, 245, 255), th, cv::LINE_AA);
+	cv::ellipse(out, c, { rad, rad }, 0, 337, 390, cv::Scalar(68, 68, 239, 255), th, cv::LINE_AA);
+	double ang = 370 * CV_PI / 180;
+	cv::Point tip(c.x + int(std::cos(ang) * rad * .82), c.y + int(std::sin(ang) * rad * .82));
+	cv::line(out, c, tip, cv::Scalar(243, 235, 231, 255), s / 22, cv::LINE_AA);
+	cv::circle(out, c, s / 16, cv::Scalar(243, 235, 231, 255), cv::FILLED, cv::LINE_AA);
+	cv::resize(out, out, cv::Size(size, size), 0, 0, cv::INTER_AREA);
+	return out;
+}
+
+static void setWindowIcon(GLFWwindow* w) {
+	cv::Mat icon = makeIcon(128), rgba;
+	cv::cvtColor(icon, rgba, cv::COLOR_BGRA2RGBA);
+	GLFWimage img{ rgba.cols, rgba.rows, rgba.data };
+	glfwSetWindowIcon(w, 1, &img);   // ignored on macOS and Wayland
+}
+
+static void savePng(int w, int h, const std::string& path) {
+	cv::Mat px(h, w, CV_8UC4);
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data);
+	cv::flip(px, px, 0);
+	cv::cvtColor(px, px, cv::COLOR_RGBA2BGR);
+	cv::imwrite(path, px);
+	std::printf("wrote %s\n", path.c_str());
+}
+
+// Scripted tour for --shots: each step waits for a condition (or a number of frames), sets up a page, and
+// captures it.  Drives the real UI, so the screenshots show exactly what users see.
+struct DemoScript {
+	App& app;
+	std::string dir;
+	int step = 0, frames = 0;
+	bool done = false;
+	std::string pendingShot;
+
+	void shot(const char* name) { pendingShot = (fs::path(dir) / name).string(); }
+	void next() { step++; frames = 0; }
+
+	void tick() {
+		frames++;
+		switch (step) {
+		case 0:
+			app.page = Page::Guide;
+			if (frames == 20) { shot("01-get-started.png"); next(); }
+			break;
+		case 1:
+			app.guideStep_ = 1;
+			if (frames == 20) { shot("02-site-planner.png"); next(); }
+			break;
+		case 2:
+			if (frames == 1) {
+				app.openSource(app.findSample());
+				app.cfg.g.LegalDirection = "R2L";   // demo: treat the sample street as one-way, to show wrong-way callouts
+				app.page = Page::Source;
+			}
+			if (frames == 20) { shot("03-source.png"); next(); }
+			break;
+		case 3:
+			if (frames == 1) { app.page = Page::Zones; app.player.seek(2186); }
+			if (frames == 20) { shot("04-zones.png"); next(); }
+			break;
+		case 4:
+			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }
+			// Wait for a moment with a measured vehicle on screen and a few in the feed.
+			if (frames > 30 && app.tracker.counts().vehicles >= 9 && !app.live_.boxes.empty()
+				&& std::any_of(app.live_.boxes.begin(), app.live_.boxes.end(), [](const vst::TrackBox& b) { return b.speed > 0; })) {
+				app.tracker.setPaused(true);
+				next();
+			}
+			if (frames > 6000 || (frames > 30 && !app.tracker.running())) next();
+			break;
+		case 5:
+			// The frame on screen can be a few frames newer than the one that triggered the pause; retry if it
+			// no longer shows a measured vehicle.
+			if (frames == 8 && !std::any_of(app.live_.boxes.begin(), app.live_.boxes.end(), [](const vst::TrackBox& b) { return b.speed > 0; })) {
+				app.tracker.setPaused(false);
+				step = 4;
+				frames = 2;
+				break;
+			}
+			if (frames == 10) app.toasts_.clear();
+			if (frames == 15) { shot("05-live-tracking.png"); }
+			if (frames == 20) { app.prefs.showMotion = false; app.tracker.setPaused(false); next(); }
+			break;
+		case 6:
+			if (!app.tracker.running() && frames > 10) {
+				app.page = Page::Results;
+				app.showSessionResults();
+				// Select the fastest vehicle for the detail panel.
+				int best = 0;
+				for (size_t i = 0; i < app.rows.size(); i++) if (app.rows[i].speed > app.rows[best].speed) best = int(i);
+				app.selectedRow_ = best;
+				next();
+			}
+			break;
+		case 7:
+			if (frames == 5) app.toasts_.clear();
+			if (frames == 20) { shot("06-results.png"); next(); }
+			break;
+		case 8:
+			if (frames == 1) {
+				app.page = Page::Calibrate;
+				app.calibMode_ = 1;
+				app.player.seek(2180);
+				app.calibMarks[0][0] = 2161;
+			}
+			if (frames == 5) app.toasts_.clear();
+			if (frames == 20) { shot("07-calibrate.png"); next(); }
+			break;
+		case 9:
+			if (frames == 1) { app.page = Page::Companion; app.setRemote(true); }
+			if (frames == 20) { shot("08-companion.png"); next(); }
+			break;
+		default:
+			done = true;
+		}
+	}
+};
+
+int main(int argc, char** argv) {
+	std::string shotsDir, configArg;
+	for (int i = 1; i < argc; i++) {
+		std::string a = argv[i];
+		if (a == "--shots" && i + 1 < argc) shotsDir = argv[++i];
+		else if (a == "--config" && i + 1 < argc) configArg = argv[++i];
+		else if (a == "--write-icon" && i + 1 < argc) { cv::imwrite(argv[++i], makeIcon(256)); return 0; }
+		else if (a == "--help" || a == "-h") {
+			std::printf("Usage: VSTStudio [--config VST.cfg] [--shots DIR] [--write-icon FILE]\n");
+			return 0;
+		}
+	}
+
+	glfwSetErrorCallback([](int code, const char* desc) { std::fprintf(stderr, "GLFW error %d: %s\n", code, desc); });
+	if (!glfwInit()) return 1;
+	// OpenGL 3.2 core works everywhere VST runs, including macOS (which needs forward-compatible core profiles).
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+	glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
+	bool shots = !shotsDir.empty();
+	if (shots) glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+	int winW = shots ? 1600 : 1480, winH = shots ? 980 : 920;
+	GLFWwindow* window = glfwCreateWindow(winW, winH, "VST Studio", nullptr, nullptr);
+	if (!window) { glfwTerminate(); return 1; }
+	glfwMakeContextCurrent(window);
+	glfwSwapInterval(1);
+	setWindowIcon(window);
+
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO();
+	io.IniFilename = nullptr;   // layout is fixed; preferences live in vst-studio.ini
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+	ImGui_ImplGlfw_InitForOpenGL(window, true);
+	ImGui_ImplOpenGL3_Init("#version 150");
+
+	// Fonts are rasterised at the monitor's content scale so text stays sharp on HiDPI screens.
+	float xs = 1, ys = 1;
+	glfwGetWindowContentScale(window, &xs, &ys);
+#ifdef __APPLE__
+	theme::setup(1.f, xs);   // points-based UI, atlas at Retina resolution
+#else
+	theme::setup(shots ? 1.f : xs);
+#endif
+
+	App app;
+	app.screenshotMode = shots;
+	app.persist = !shots;   // a documentation run must not overwrite the user's preferences
+	app.init(shots);
+	if (!configArg.empty() && !app.loadConfig(configArg)) app.toast(app.cfg.error, theme::c::bad, ICON_WARN);
+	DemoScript script{ app, shotsDir };
+	if (shots) {
+		fs::create_directories(shotsDir);
+		std::string data = (fs::path(shotsDir) / "data").string();
+		fs::create_directories(data);
+		app.cfg.g.dataPathPrefix = data;
+	}
+
+	while (!glfwWindowShouldClose(window)) {
+		// Idle politely: redraw on input, or continuously while video is moving.
+		if (shots || app.wantsContinuousFrames()) glfwPollEvents();
+		else glfwWaitEventsTimeout(0.25);
+		ImGui_ImplOpenGL3_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
+		if (shots) script.tick();
+		app.frame(io.DisplaySize.x, io.DisplaySize.y);
+		ImGui::Render();
+		int fw, fh;
+		glfwGetFramebufferSize(window, &fw, &fh);
+		glViewport(0, 0, fw, fh);
+		ImVec4 bg = theme::v4(theme::c::bg0);
+		glClearColor(bg.x, bg.y, bg.z, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+		if (!script.pendingShot.empty()) { savePng(fw, fh, script.pendingShot); script.pendingShot.clear(); }
+		glfwSwapBuffers(window);
+		if (shots && (script.done || ImGui::GetFrameCount() > 60000)) break;   // never hang a CI job
+	}
+
+	app.shutdown();
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
+	glfwDestroyWindow(window);
+	glfwTerminate();
+	return 0;
+}

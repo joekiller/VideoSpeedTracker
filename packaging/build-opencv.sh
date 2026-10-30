@@ -16,7 +16,12 @@ version="${OPENCV_VERSION:-5.0.0}"
 work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/opencv-$version"
 
 rm -rf "$work"
-git clone --depth 1 --branch "$version" https://github.com/opencv/opencv.git "$work/src"
+# A dropped connection to GitHub shouldn't cost the whole job: try the clone up to three times.
+for attempt in 1 2 3; do
+  git clone --depth 1 --branch "$version" https://github.com/opencv/opencv.git "$work/src" && break
+  [ "$attempt" = 3 ] && exit 1
+  rm -rf "$work/src"; sleep $((attempt * 15))
+done
 
 extra=()
 case "$(uname -s)" in

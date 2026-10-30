@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=VST Studio
+GenericName=Traffic speed tracker
+Comment=Measure vehicle speeds and catch wrong-way drivers from street video
+Exec=VSTStudio
+Icon=vst-studio
+Terminal=false
+Categories=AudioVideo;Video;Science;
+Keywords=speed;traffic;camera;street;radar;

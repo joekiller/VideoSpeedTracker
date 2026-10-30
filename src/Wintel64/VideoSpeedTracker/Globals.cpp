@@ -103,6 +103,7 @@ bool Globals::readConfig(const string& path){
 		{ "dataPathPrefix", strKey(dataPathPrefix) },
 		{ "L2RDirection", strKey(L2RDirection) },
 		{ "R2LDirection", strKey(R2LDirection) },
+		{ "LegalDirection", strKey(LegalDirection) },
 		{ "obstruction", [this](const string& v){  // [left,right]; use left >= right (e.g. [0,0]) for no obstruction
 			string inner = trim(v);
 			if (inner.size() < 2 || inner.front() != '[' || inner.back() != ']') return false;
@@ -177,8 +178,15 @@ bool Globals::readConfig(const string& path){
 	}
 	if (!ok) return false;
 
+	for (const string& why : problems()){ cerr << path << ": " << why << endl; ok = false; }
+	return ok;
+};
+
+
+vector<string> Globals::problems(){
+	vector<string> out;
+	auto bad = [&](const string& why){ out.push_back(why); };
 	// The analysis box, speed lines and hubcap lines are all in 1280x720 frame pixels (frames of other sizes are scaled to it).
-	auto bad = [&](const string& why){ cerr << path << ": " << why << endl; ok = false; };
 	if (AnalysisBoxLeft < 0 || AnalysisBoxTop < 0 || AnalysisBoxWidth <= 0 || AnalysisBoxHeight <= 0)
 		bad("AnalysisBoxLeft/Top must be >= 0 and AnalysisBoxWidth/Height must be > 0");
 	if (AnalysisBoxLeft + AnalysisBoxWidth > FrameWidth)
@@ -193,5 +201,11 @@ bool Globals::readConfig(const string& path){
 		bad("CalibrationFramesL2R, CalibrationFramesR2L, CalibrationSpeed and CalibrationFPS must all be > 0");
 	if (BLUR_SIZE <= 0)
 		bad("BLUR_SIZE must be > 0");
-	return ok;
-};
+	// LegalDirection: Both, L2R, R2L, or the compass name given for one of the two directions.
+	string legal = lower(trim(LegalDirection));
+	if (legal == "both" || legal.empty()) LegalDirection = "Both";
+	else if (legal == "l2r" || legal == lower(L2RDirection)) LegalDirection = "L2R";
+	else if (legal == "r2l" || legal == lower(R2LDirection)) LegalDirection = "R2L";
+	else bad("LegalDirection must be Both, L2R, R2L, " + L2RDirection + " or " + R2LDirection + ", got \"" + LegalDirection + "\"");
+	return out;
+}

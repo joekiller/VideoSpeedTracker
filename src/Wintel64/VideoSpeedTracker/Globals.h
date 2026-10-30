@@ -37,6 +37,7 @@
 #define CVBlack 0,0,0
 
 #include <string>
+#include <vector>
 
 enum direction { L2R, R2L, UNK };
 enum vehicleStatus { entering, inMiddle, exiting, exited };
@@ -57,6 +58,16 @@ public:
 
 	bool readConfig(const string& path = "VST.cfg");
 
+	// Everything wrong with the current values (analysis box off the frame, speed lines out of order, ...), one
+	// message per problem; empty when the settings are usable.  readConfig() reports these after reading.
+	// Also resolves a compass LegalDirection ("NE") to L2R or R2L, so call it after changing the directions.
+	vector<string> problems();
+
+	// True when a vehicle travelling this way is going against LegalDirection on a one-way street.
+	bool isWrongWay(bool leftToRight) const {
+		return (leftToRight && LegalDirection == "R2L") || (!leftToRight && LegalDirection == "L2R");
+	}
+
 	// VST works in 1280x720 frame coordinates; every config pixel value refers to them.  Input video of any
 	// other size is resized to this before analysis (see main() in videoSpeedTracker.cpp).
 	static constexpr int FrameWidth = 1280;
@@ -71,6 +82,7 @@ public:
 	string dataPathPrefix;						// path to data directories, IPCam, Stats, etc.  Empty = userpaths::dataDir().  Don't use double backslash in config file!.
 	string L2RDirection = "SE";					// Compass Direction L2R vehicles are heading
 	string R2LDirection = "NW";					// Compass Direction R2L vehicles are heading
+	string LegalDirection = "Both";				// One-way streets: L2R or R2L (or the compass name of one, e.g. NE); the other way is logged as wrong-way.  Both = two-way.
 	int obstruction[2];				// left / right x coords bounding vertical obstructions in foreground.Max 2. Relative to AnalysisBoxLeft. ...pixels
 	int AnalysisBoxLeft = 10;		// How much to crop off left side of full frame for analysis box. Want to keep this small(zero!) if possible
 	int AnalysisBoxTop = 220;		// How much to crop off top of full frame to get rid of tree tops, across - the - street houses, etc.
