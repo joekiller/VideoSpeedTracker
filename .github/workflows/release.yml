@@ -5,9 +5,9 @@
 # The release is created with generated notes if it doesn't exist yet, otherwise the
 # assets are uploaded to it, replacing any with the same name.
 #
-# Pull requests that touch the build run everything except the publish step, so a broken
-# platform shows up before the tag does. Manual runs (workflow_dispatch) do the same on a
-# branch, and publish when started on a tag.
+# Pull requests and master pushes that touch the build run everything except the publish step, so a
+# broken platform shows up before the tag does (master's run also keeps the OpenCV caches warm).
+# Manual runs (workflow_dispatch) do the same on a branch, and publish when started on a tag.
 #
 # Every package holds VideoSpeedTracker and ProcessHiLites plus their sample configs.
 # Outputs (all on OpenCV 5 and checked with the sample-video ctest):
@@ -26,6 +26,17 @@ name: release
 on:
   push:
     tags: ['v[0-9]*']
+    # Master runs too, for the same paths: Actions caches are scoped to the ref that saved them, and a
+    # PR or tag can only restore its own or the default branch's. Without a master run nothing ever
+    # saved the OpenCV builds where PRs could see them, so every new PR rebuilt OpenCV (4-6 min a job).
+    # Path filters don't apply to tag pushes, so releases still always build.
+    branches: [master]
+    paths:
+      - .github/workflows/release.yml
+      - CMakeLists.txt
+      - packaging/**
+      - src/**
+      - tests/**
   pull_request:
     paths:
       - .github/workflows/release.yml
@@ -38,14 +49,14 @@ on:
 permissions:
   contents: read
 
-# A new push to a PR supersedes its running build; tag builds always finish.
+# A newer push to the same PR or branch supersedes its running build; tag builds always finish.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   meta:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
@@ -93,10 +104,10 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates git cmake make g++ dpkg-dev file \
             pkg-config zlib1g-dev libpng-dev libjpeg-dev libgtk-3-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Cache OpenCV
         id: opencv-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: /opt/opencv
           key: opencv-5.0.0-${{ matrix.distro }}-${{ matrix.arch }}-${{ hashFiles('packaging/build-opencv.sh') }}
@@ -117,30 +128,36 @@ jobs:
           cp build/videospeedtracker_*.deb \
              "dist/videospeedtracker_${{ needs.meta.outputs.version }}_${{ matrix.distro }}_${{ matrix.arch }}.deb"
           dpkg-deb --info dist/*.deb
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-linux-${{ matrix.distro }}-${{ matrix.arch }}
           path: dist/*
+          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
 
   windows:
     needs: meta
     runs-on: windows-2022
+    # Tag builds run in the `release` environment, so their OIDC subject is
+    # repo:<owner>/<repo>:environment:release, the one subject Azure's federated credential has to match
+    # (a Tag credential would need one per tag name). Other builds use no environment and don't sign.
+    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
     permissions:
       contents: read
       id-token: write      # OIDC login to Azure for Artifact Signing
     env:
-      # Authenticode signing runs only once the Azure Artifact Signing secrets/variables are set
-      # (see "Code signing" in README.md); without them the zip ships unsigned as before.
-      SIGN_WINDOWS: ${{ secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
+      # Authenticode signing runs on tag builds once the Azure Artifact Signing secrets/variables are set
+      # (see "Code signing" in README.md); without them the zip ships unsigned as before. PR and master
+      # builds are never published, and their OIDC subjects don't match the tag-scoped federated credential.
+      SIGN_WINDOWS: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
     defaults:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Static OpenCV 5; videoio loads FFmpeg from OpenCV's prebuilt opencv_videoio_ffmpeg plugin DLL.
       - name: Cache OpenCV
         id: opencv-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: C:\opencv
           key: opencv-5.0.0-windows-x64-${{ hashFiles('packaging/build-opencv.sh') }}
@@ -198,31 +215,31 @@ jobs:
           Compress-Archive -Path "pkg/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
           Get-ChildItem -Recurse pkg
           Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" | Format-Table Status, Path -AutoSize
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-windows-x64
           path: dist/*
+          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
 
-  # macOS runners can sit queued far longer than the others (GitHub's macOS pool is small), so
-  # this job doesn't gate the release: it starts once publish has run (or been skipped on PRs)
-  # and adds its tarball and checksum to the existing release on its own.
-  # macos-latest is the current Apple-silicon image; macos-14 is retired on 2026-11-02.
+  # macOS builds alongside the others but doesn't gate the release: GitHub's macOS pool is small and
+  # its runners can sit queued far longer, so publish goes ahead without it and macos-release adds the
+  # tarball and checksum to the existing release afterwards. Uploading runs on Linux, so the macOS
+  # runner (billed at 10x) is held only for the build itself.
+  # Runner images are pinned rather than *-latest, whose labels move to new OS releases (and warn
+  # about it in every run). macos-15 is Apple silicon; macos-14 is retired on 2026-11-02.
   macos:
-    permissions:
-      contents: write
-      id-token: write      # Sigstore signing for the provenance attestation
-      attestations: write
-    needs: [meta, publish]
-    if: always() && needs.meta.result == 'success' && needs.publish.result != 'failure'
-    runs-on: macos-latest
+    needs: meta
+    runs-on: macos-15
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
-      # Developer ID signing + notarization runs only once the Apple secrets are set (see
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
+      # Developer ID signing + notarization runs on tag builds once the Apple secrets are set (see
       # "Code signing" in README.md); without them the binaries keep the linker's ad-hoc signature.
-      SIGN_MACOS: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
+      # Unpublished PR/master builds skip it rather than wait on Apple's notary service.
+      SIGN_MACOS: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install OpenCV
         run: brew install opencv
       - name: Build
@@ -277,40 +294,21 @@ jobs:
           mkdir dist
           tar -C pkg -czf "dist/$name.tar.gz" "$name"
           otool -L "pkg/$name/VideoSpeedTracker"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-macos-arm64
           path: dist/*
-      - name: Attest build provenance
-        if: needs.publish.result == 'success'
-        uses: actions/attest-build-provenance@v3
-        with:
-          subject-path: dist/*.tar.gz
-      - name: Add to the release
-        if: needs.publish.result == 'success'
-        working-directory: dist
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.meta.outputs.tag }}
-        run: |
-          gh release upload "$TAG" *.tar.gz --clobber
-          gh release download "$TAG" --pattern SHA256SUMS
-          grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
-          shasum -a 256 *.tar.gz >> SHA256SUMS.new
-          mv SHA256SUMS.new SHA256SUMS
-          gh release upload "$TAG" SHA256SUMS --clobber
-
+          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
   publish:
     needs: [meta, linux, windows]
     if: needs.meta.outputs.tag != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write      # Sigstore signing for the provenance attestations
       attestations: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           merge-multiple: true
@@ -318,7 +316,7 @@ jobs:
       # Signed SLSA provenance for every package, tying each file's digest to this workflow run,
       # commit and tag; verify with `gh attestation verify <file> -R joekiller/VideoSpeedTracker`.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*.deb
@@ -337,3 +335,33 @@ jobs:
           else
             gh release create "$TAG" * --verify-tag --generate-notes --title "$TAG"
           fi
+
+  macos-release:
+    needs: [meta, publish, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write      # Sigstore signing for the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-macos-arm64
+          path: dist
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Add to the release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          gh release upload "$TAG" *.tar.gz --clobber
+          gh release download "$TAG" --pattern SHA256SUMS
+          grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
+          sha256sum *.tar.gz >> SHA256SUMS.new
+          mv SHA256SUMS.new SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
