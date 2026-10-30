@@ -18,6 +18,12 @@
 namespace fs = std::filesystem;
 using namespace theme;
 
+// Font Awesome "file-lines" for the street report, kept here rather than in Icons.h while only the report uses it.
+#define ICON_REPORT "\xef\x85\x9c"
+#ifndef VST_VERSION
+#define VST_VERSION "dev"
+#endif
+
 static ImTextureID tid(Texture& t) { return (ImTextureID)(intptr_t)t.imguiId(); }
 
 static const char* pageTitle(Page p) {
@@ -1723,6 +1729,9 @@ void App::pageResults() {
 	if (ghostButton(ICON_FILM " Highlights")) openWithSystem((fs::path(dataDir()) / "HiLites").string());
 	ImGui::SameLine();
 	if (ghostButton(ICON_FOLDER_OPEN " Folder")) openWithSystem((fs::path(dataDir()) / "Stats").string());
+	ImGui::SameLine();
+	if (primaryButton(ICON_REPORT "  Make report")) { reportForm_.saved.clear(); reportForm_.error.clear(); ImGui::OpenPopup("Street report"); }
+	reportDialog();
 
 	// Filtered view.
 	int minSpeed = 0;
@@ -1762,7 +1771,7 @@ void App::pageResults() {
 		speeds.push_back(r.speed);
 	}
 	std::sort(speeds.begin(), speeds.end());
-	int p85 = speeds.empty() ? 0 : speeds[std::min(speeds.size() - 1, size_t(speeds.size() * .85))];
+	int p85 = report::percentile(speeds, 85);   // nearest rank, the same definition as the street report and the phone
 	float tw = (avail - px(48)) / 5, th = px(100);
 	char sub[64];
 	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
@@ -1990,6 +1999,125 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		if (hov) ImGui::SetTooltip("%d mph %s%s", hov->speed, hov->l2r ? "→" : "←", hov->wrongWay ? "  (wrong way)" : "");
 	}
 	endCard();
+}
+
+// ---- street report ----------------------------------------------------------------------------------------
+
+report::Input App::reportInput(bool snapshots, const std::string& from, const std::string& to) {
+	const Globals& g = cfg.g;
+	report::Input in;
+	in.dataDir = dataDir();
+	in.configPath = cfg.path();
+	// calibration-history.csv lives in the config folder: next to this VST.cfg, or the per-user config folder.
+	if (!cfg.path().empty()) in.historyFiles.push_back((fs::path(cfg.path()).parent_path() / "calibration-history.csv").string());
+	in.historyFiles.push_back((userpaths::configDir() / "calibration-history.csv").string());
+	// Runs recorded before manifests existed are read with the current settings.
+	in.current.l2rCompass = g.L2RDirection;
+	in.current.r2lCompass = g.R2LDirection;
+	in.current.legal = g.LegalDirection;
+	in.current.framesL2R = g.CalibrationFramesL2R;
+	in.current.framesR2L = g.CalibrationFramesR2L;
+	in.current.calSpeed = g.CalibrationSpeed;
+	in.current.calFps = g.CalibrationFPS;
+	if (!snapshots) return in;
+	// Example frames exist only for this session's vehicles (kept in memory).  Take the six fastest in the date range,
+	// each made safe by blurForReport before it ever reaches the report.
+	std::vector<Vehicle> vs = tracker.vehiclesSince(0);
+	std::sort(vs.begin(), vs.end(), [](const Vehicle& a, const Vehicle& b) { return a.ev.speed > b.ev.speed; });
+	for (const Vehicle& v : vs) {
+		if (in.snapshots.size() >= 6) break;
+		std::string when = v.live ? v.time : v.recorded;
+		std::string day = when.substr(0, 10);
+		if (v.snapshot.empty() || (!from.empty() && (day.empty() || day < from)) || (!to.empty() && (day.empty() || day > to))) continue;
+		std::string jpeg = report::blurForReport(v.snapshot);
+		if (!jpeg.empty()) in.snapshots.push_back({ jpeg, v.ev.speed, v.ev.leftToRight, when });
+	}
+	return in;
+}
+
+report::Settings App::reportSettings() {
+	report::Settings s;
+	s.siteName = prefs.siteName;
+	s.speedLimit = prefs.speedLimit;
+	s.wayOver = prefs.egregious;
+	s.version = VST_VERSION;
+	return s;
+}
+
+// The "Make report" dialog: a few choices, then one HTML file in <data>/Reports that prints cleanly to PDF.
+void App::reportDialog() {
+	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Appearing);
+	if (!ImGui::BeginPopupModal("Street report", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+	ReportForm& f = reportForm_;
+	float col = px(150);
+	dimText("A printable study of the speeds in your data folder, for a city council or a traffic engineer. "
+		"It lists coverage, speeds per direction, the calibration record and the error band.");
+	ImGui::Dummy(ImVec2(0, px(6)));
+	formLabel("Site name", col);
+	char site[96];
+	snprintf(site, sizeof site, "%s", prefs.siteName.c_str());
+	if (ImGui::InputTextWithHint("##rsite", "Street and block, e.g. Locust Ave, 600 block", site, sizeof site)) prefs.siteName = site;
+	ImGui::SetCursorPosX(col);
+	dimText("Street and block only, never a house number.");
+	float half = (ImGui::GetContentRegionAvail().x - col - px(8)) / 2;
+	formLabel("Dates", col);
+	ImGui::SetNextItemWidth(half);
+	ImGui::InputTextWithHint("##rfrom", "from YYYY-MM-DD", f.from, sizeof f.from);
+	ImGui::SameLine(0, px(8));
+	ImGui::SetNextItemWidth(half);
+	ImGui::InputTextWithHint("##rto", "to YYYY-MM-DD", f.to, sizeof f.to);
+	ImGui::SetCursorPosX(col);
+	dimText("Leave blank for all the data.");
+	ImGui::SetCursorPosX(col);
+	ImGui::Checkbox("Compare with another period (before/after)", &f.compare);
+	if (f.compare) {
+		ImGui::SetCursorPosX(col);
+		ImGui::SetNextItemWidth(half);
+		ImGui::InputTextWithHint("##rcf", "from YYYY-MM-DD", f.cmpFrom, sizeof f.cmpFrom);
+		ImGui::SameLine(0, px(8));
+		ImGui::SetNextItemWidth(half);
+		ImGui::InputTextWithHint("##rct", "to YYYY-MM-DD", f.cmpTo, sizeof f.cmpTo);
+	}
+	ImGui::SetCursorPosX(col);
+	ImGui::Checkbox("Include example frames (blurred)", &f.snapshots);
+	if (f.snapshots) { ImGui::SetCursorPosX(col); dimText("Only this session's vehicles have snapshots. Plates are blurred and nothing identifying is added."); }
+	formLabel("Note", col);
+	ImGui::InputTextMultiline("##rnote", f.note, sizeof f.note, ImVec2(-FLT_MIN, px(70)));
+	ImGui::SetCursorPosX(col);
+	dimText("Limit %d mph, way over %d mph (set on the Live page).", prefs.speedLimit, prefs.egregious);
+
+	if (!f.error.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad)); ImGui::TextWrapped("%s", f.error.c_str()); ImGui::PopStyleColor(); }
+	if (!f.saved.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok)); ImGui::TextWrapped(ICON_CHECK_CIRCLE "  Saved %s", f.saved.c_str()); ImGui::PopStyleColor(); }
+	ImGui::Dummy(ImVec2(0, px(6)));
+	if (primaryButton(ICON_REPORT "  Make report")) {
+		f.error.clear();
+		f.saved.clear();
+		// Dates must be blank or YYYY-MM-DD; the report reads anything else as "all data", so say so here instead.
+		int64_t d;
+		for (const char* v : { f.from, f.to, f.cmpFrom, f.cmpTo })
+			if (*v && !report::parseDay(v, d)) f.error = std::string("\"") + v + "\" isn't a date like 2026-11-02.";
+		if (f.compare && (!*f.cmpFrom || !*f.cmpTo)) f.error = "Give both dates of the period to compare with.";
+		if (f.error.empty()) {
+			report::Settings s = reportSettings();
+			s.from = f.from;
+			s.to = f.to;
+			s.note = f.note;
+			s.includeSnapshots = f.snapshots;
+			if (f.compare) { s.compareFrom = f.cmpFrom; s.compareTo = f.cmpTo; }
+			std::string path, html;
+			if (report::writeReport(reportInput(f.snapshots, s.from, s.to), s, path, html, f.error)) {
+				f.saved = path;
+				toast("Report saved: " + fs::path(path).filename().string(), c::ok, ICON_REPORT);
+			}
+		}
+	}
+	ImGui::SameLine();
+	ImGui::BeginDisabled(f.saved.empty());
+	if (ghostButton(ICON_ARROW_UP_RIGHT "  Open")) openWithSystem(f.saved);
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ghostButton("Close")) ImGui::CloseCurrentPopup();
+	ImGui::EndPopup();
 }
 
 // ======================================================================================================

@@ -509,6 +509,31 @@ void Server::routes() {
 		res.set_content(buf.str(), "text/csv");
 	}));
 
+	// The street report (Report.h) for the phone to open or share: the same file "Make report" writes, without example
+	// frames (those stay an explicit choice on the desktop).  The GUI thread only copies the settings; reading the csvs
+	// and building the page happen here, so a big data folder never stalls the window.
+	http_->Get("/api/report.html", guard([&app, sendJson](const Request& req, Response& res) {
+		std::string from = req.has_param("from") ? req.get_param_value("from") : "";
+		std::string to = req.has_param("to") ? req.get_param_value("to") : "";
+		int64_t day;
+		for (const std::string* d : { &from, &to })
+			if (!d->empty() && !report::parseDay(*d, day)) { sendJson(res, { { "error", "from and to must be dates like 2026-11-02" } }, 400); return; }
+		// Shared with the posted task, which may still run after a timeout here.
+		auto job = std::make_shared<std::pair<report::Input, report::Settings>>();
+		std::string ok = app.post([&app, job] {
+			job->first = app.reportInput(false, "", "");
+			job->second = app.reportSettings();
+			return std::string("ok");
+		});
+		if (ok.empty()) { sendJson(res, { { "error", "VST Studio is busy; try again" } }, 503); return; }
+		job->second.from = from;
+		job->second.to = to;
+		std::string path, html, err;
+		if (!report::writeReport(job->first, job->second, path, html, err)) { sendJson(res, { { "error", err } }, 500); return; }
+		res.set_header("Content-Disposition", "inline; filename=\"" + fs::path(path).filename().string() + "\"");
+		res.set_content(html, "text/html; charset=utf-8");
+	}));
+
 	// The companion web app itself, if installed next to the program.
 	fs::path web = userpaths::executableDir() / "companion";
 	std::error_code ec;

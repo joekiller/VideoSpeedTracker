@@ -15,6 +15,7 @@
 #pragma once
 #include "Calibration.h"
 #include "Media.h"
+#include "Report.h"
 #include "Results.h"
 #include "Settings.h"
 #include "Tracker.h"
@@ -95,6 +96,11 @@ public:
 	CalState calibrationState(bool l2r);
 	void loadResultsCsv(const std::string& path);
 	void showSessionResults();
+	// The street report (Report.h): what it reads (data folder, config, calibration history, and blurred snapshots of
+	// this session's fastest vehicles when asked) and the user's choices.  GUI thread only; the API copies them and
+	// builds the report on its own thread.
+	report::Input reportInput(bool snapshots, const std::string& from, const std::string& to);
+	report::Settings reportSettings();
 	void toast(const std::string& text, unsigned color, const char* icon = nullptr);
 	void setPage(Page p) { page = p; }
 	void setRemote(bool on);
@@ -132,6 +138,7 @@ private:
 	void runOptions();
 	void vehicleCard(const Vehicle& v, float width);
 	void resultsCharts(const std::vector<const ResultRow*>& shown, float width);
+	void reportDialog();
 	Texture* snapshotTexture(int vehicleId);
 	void pumpTracker();
 	void sitePlanner();
@@ -170,4 +177,11 @@ private:
 	char searchBuf_[64] = "";
 	bool logOpen_ = false;
 	std::string status_;
+	// "Make report" dialog on the Results page.
+	struct ReportForm {
+		char from[16] = "", to[16] = "", cmpFrom[16] = "", cmpTo[16] = "";
+		char note[600] = "";
+		bool snapshots = false, compare = false;
+		std::string saved, error;            // path of the last report written, or why it failed
+	} reportForm_;
 };
