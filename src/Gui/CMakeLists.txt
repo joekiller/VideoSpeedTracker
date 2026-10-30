@@ -33,12 +33,32 @@ FetchContent_Declare(inter
   SOURCE_SUBDIR none)
 FetchContent_MakeAvailable(glfw imgui pfd inter)
 
+# file(DOWNLOAD) with a few retries: CI runners occasionally fail to connect to raw.githubusercontent.com, and
+# a single dropped connection shouldn't fail the whole configure.
+function(vst_download url dest hash)
+  foreach(attempt 1 2 3 4)
+    file(DOWNLOAD ${url} ${dest}.part STATUS st TLS_VERIFY ON)
+    list(GET st 0 code)
+    if(code EQUAL 0)
+      file(SHA256 ${dest}.part got)
+      if(got STREQUAL hash)
+        file(RENAME ${dest}.part ${dest})
+        return()
+      endif()
+      message(FATAL_ERROR "${url}: SHA256 ${got}, expected ${hash}")
+    endif()
+    message(STATUS "Download of ${url} failed (${st}), attempt ${attempt}")
+    execute_process(COMMAND ${CMAKE_COMMAND} -E sleep ${attempt})
+  endforeach()
+  message(FATAL_ERROR "Could not download ${url}: ${st}")
+endfunction()
+
 set(FA_DIR ${CMAKE_BINARY_DIR}/_deps/fontawesome)
 if(NOT EXISTS ${FA_DIR}/fa-solid-900.ttf)
-  file(DOWNLOAD https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-solid-900.ttf
-    ${FA_DIR}/fa-solid-900.ttf EXPECTED_HASH SHA256=af19d135d3a935b3ebfbd80320716ffe1202052c5f68dc2c5f1abc57005ac605)
-  file(DOWNLOAD https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/LICENSE.txt
-    ${FA_DIR}/LICENSE.txt EXPECTED_HASH SHA256=9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc)
+  vst_download(https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/webfonts/fa-solid-900.ttf
+    ${FA_DIR}/fa-solid-900.ttf af19d135d3a935b3ebfbd80320716ffe1202052c5f68dc2c5f1abc57005ac605)
+  vst_download(https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.7.2/LICENSE.txt
+    ${FA_DIR}/LICENSE.txt 9b914eae88817d63b576eab5aafde7068c7a1abae125d7cdfb034f1da43a9afc)
 endif()
 
 # Single-file libraries for the companion API: cpp-httplib 0.18.3 (MIT), nlohmann/json 3.11.3 (MIT) and
@@ -56,7 +76,7 @@ foreach(entry IN ITEMS
   list(GET parts 1 name)
   list(GET parts 2 hash)
   if(NOT EXISTS ${SINGLE_DIR}/${name})
-    file(DOWNLOAD ${url} ${SINGLE_DIR}/${name} EXPECTED_HASH SHA256=${hash} TLS_VERIFY ON)
+    vst_download(${url} ${SINGLE_DIR}/${name} ${hash})
   endif()
 endforeach()
 
