@@ -88,7 +88,7 @@ install(TARGETS VideoSpeedTracker ProcessHiLites RUNTIME DESTINATION ${VST_BIN_D
 # per-user config folder (src/Wintel64/Common/UserPaths.h), so installs never need a writable program folder.
 # The phone companion (companion/README.md) is static files; VST Studio serves them when Remote companion is on.
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/companion/ DESTINATION ${VST_DATA_DIR}/companion
-  PATTERN dev EXCLUDE PATTERN README.md EXCLUDE)
+  PATTERN dev EXCLUDE PATTERN test EXCLUDE PATTERN README.md EXCLUDE)
 install(FILES ${CMAKE_SOURCE_DIR}/bin/VST.cfg ${CMAKE_SOURCE_DIR}/bin/ProcessHiLites.cfg ${CMAKE_SOURCE_DIR}/README.md DESTINATION ${VST_DATA_DIR})
 install(FILES ${CMAKE_SOURCE_DIR}/docs/getting-started.md DESTINATION ${VST_DATA_DIR} RENAME GETTING-STARTED.md)
 # The 2016 sample clip (~80 MB) that the VST.cfg template is calibrated for, so `VideoSpeedTracker --demo` (or a
@@ -148,6 +148,22 @@ if(FFMPEG_EXECUTABLE AND BASH_EXECUTABLE AND NOT WIN32)
       $<TARGET_FILE:VideoSpeedTracker> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-reconnect
       ${FFMPEG_EXECUTABLE} ${engine_test})
   set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180)
+endif()
+
+# VST Studio's companion API (docs/companion-api.md), end to end: the real app under a virtual display, driven with
+# curl, run on the sample video and checked against the same baseline as sample_video_baseline. Needs bash, xvfb-run
+# and curl; where any of them or the GUI build is missing the script prints API_SMOKE_SKIPPED and ctest reports the
+# test as skipped rather than passed. Not on Windows, which has neither bash nor Xvfb.
+if(NOT WIN32)
+  if(TARGET VSTStudio)
+    set(VST_STUDIO_EXE $<TARGET_FILE:VSTStudio>)
+  else()
+    set(VST_STUDIO_EXE "")
+  endif()
+  add_test(NAME companion_api_smoke
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/api_smoke.sh "${VST_STUDIO_EXE}" ${CMAKE_SOURCE_DIR}
+      ${CMAKE_BINARY_DIR}/api-smoke ${CMAKE_COMMAND})
+  set_tests_properties(companion_api_smoke PROPERTIES SKIP_REGULAR_EXPRESSION "API_SMOKE_SKIPPED" TIMEOUT 300)
 endif()
 
 set(CPACK_PACKAGE_NAME videospeedtracker)

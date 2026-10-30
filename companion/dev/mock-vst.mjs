@@ -5,6 +5,9 @@
  *
  *   node companion/dev/mock-vst.mjs [--port 8787] [--token devtoken] [--host 0.0.0.0]
  *
+ * `--port 0` picks a free port; the first line printed names it ("Mock VST on port N"), which is how the
+ * contract tests in companion/test/ find it.
+ *
  * Then open the printed pairing URL on a phone on the same network (or in a desktop browser with
  * device emulation). It behaves like VST Studio with Remote companion turned on: Bearer or ?token=
  * auth on /api, /api/hello open, CORS allowed, Server-Sent Events on /api/live, and an MJPEG stream
@@ -41,7 +44,8 @@ function send(res, status, body, type = 'application/json') {
 /** Static file under companion/, refusing anything that escapes it. */
 async function sendFile(res, rel, req) {
   const path = normalize(join(ROOT, rel));
-  if (!path.startsWith(ROOT)) return send(res, 403, { error: 'Forbidden' });
+  // 404 like VST Studio, which doesn't say whether anything exists outside the folder.
+  if (!path.startsWith(ROOT)) return send(res, 404, { error: 'Not found' });
   try {
     const data = await readFile(path);
     const type = TYPES[extname(path)] || 'application/octet-stream';
@@ -100,8 +104,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  const port = server.address().port;   // the real one when --port 0 asked for any free port
   const ips = Object.values(networkInterfaces()).flat().filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
-  console.log(`Mock VST on port ${PORT}. Pair a phone by opening:`);
-  for (const ip of ips.length ? ips : ['localhost']) console.log(`  http://${ip}:${PORT}/#token=${TOKEN}`);
-  console.log(`  http://localhost:${PORT}/#token=${TOKEN}`);
+  console.log(`Mock VST on port ${port}. Pair a phone by opening:`);
+  for (const ip of ips.length ? ips : ['localhost']) console.log(`  http://${ip}:${port}/#token=${TOKEN}`);
+  console.log(`  http://localhost:${port}/#token=${TOKEN}`);
 });

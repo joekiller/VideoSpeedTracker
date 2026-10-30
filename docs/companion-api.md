@@ -217,3 +217,16 @@ Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, 
 `Flag` is `*****` for an implausible speed, else empty. `Timestamp` is when the vehicle passed, ISO 8601 with the
 UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The columns are described
 in the [README](../README.md#the-stats-csv).
+
+## Checking an implementation
+
+`companion/test/contract.test.mjs` checks this document over HTTP (Node 20+, no dependencies):
+
+```sh
+node --test companion/test/*.test.mjs                                   # against the mock
+BASE=http://127.0.0.1:8787 TOKEN=<pairing code> node --test companion/test/*.test.mjs   # a running VST Studio
+```
+
+Against a real VST Studio it only reads and sends requests that must be refused; `MUTATE=1` adds the
+ones that change settings (and put them back). `tests/api_smoke.sh`, run by `ctest`, starts VST
+Studio under Xvfb, tracks the sample video through this API, and runs the suite against it.

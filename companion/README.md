@@ -63,7 +63,18 @@ It prints a pairing URL such as `http://192.168.1.20:8787/#token=devtoken`; open
 browser with device emulation. The mock implements the whole API (auth, SSE live events, MJPEG, config validation,
 calibration), so it is also the reference for checking VST Studio's implementation.
 
+### Tests
+
+```sh
+node --test companion/test/*.test.mjs      # Node 20+, no npm install
+```
+
+`test/helpers.test.mjs` covers the pure helpers (HTML escaping, stats maths, zone geometry, address parsing).
+`test/contract.test.mjs` checks [the API contract](../docs/companion-api.md) over HTTP against the mock, which it
+starts itself, or against a running VST Studio with `BASE=http://<ip>:8787 TOKEN=<pairing code>` (read-only unless
+`MUTATE=1`). `ctest` runs it against a real VST Studio too, as part of `tests/api_smoke.sh`.
+
 ### Packaging
 
-`cmake --install` copies this folder (minus `dev/` and this README) next to the program: `companion/` beside the
+`cmake --install` copies this folder (minus `dev/`, `test/` and this README) next to the program: `companion/` beside the
 executable on Windows and macOS, `share/videospeedtracker/companion/` on Linux.
