@@ -200,7 +200,9 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          # The signing identity only holds a role on the Artifact Signing account, not on a subscription,
+          # so az sees no subscriptions; signing needs just the token, not a subscription context.
+          allow-no-subscriptions: true
       # Signs only our exes; the OpenCV DLLs are third-party and the MSVC runtime is Microsoft-signed.
       - name: Authenticode-sign the executables
         if: env.SIGN_WINDOWS == 'true'

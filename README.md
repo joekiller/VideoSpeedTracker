@@ -131,7 +131,7 @@ signed; PR and master builds stay unsigned.
 2. Create an app registration with a federated credential for this repo (GitHub OIDC, entity type
    *Environment*, environment `release`; tag builds sign from that environment), and give it the
    *Artifact Signing Certificate Profile Signer* role on the account.
-3. Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. Variables: `AZURE_SIGNING_ENDPOINT`
+3. Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` (no subscription ID needed). Variables: `AZURE_SIGNING_ENDPOINT`
    (for example `https://eus.codesigning.azure.net/`), `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`.
 
 SmartScreen still warns until the signing identity builds reputation over a few releases.
