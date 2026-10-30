@@ -164,7 +164,28 @@ struct DemoScript {
 				app.calibMarks[0][0] = 2161;
 			}
 			if (frames == 5) app.toasts_.clear();
-			if (frames == 20) { shot("07-calibrate.png"); next(); }
+			if (frames == 20) shot("07-calibrate.png");
+			// Then the check pass, on the drive-through list: a right-to-left pass "driven" 5 mph slower than the
+			// calibration says it was (a failed check, 07c), then a left-to-right one at what it says (verified,
+			// 07b), so the Current calibration card shows both states.  --shots never writes the history file.
+			if (frames == 21 || frames == 41) {
+				bool l2r = frames == 41;
+				app.calibMode_ = 0;
+				app.calibChecking_ = true;
+				const Globals& g = app.cfg.g;
+				auto vs = app.tracker.vehiclesSince(0);
+				for (auto it = vs.rbegin(); it != vs.rend(); ++it) {   // the newest, at the top of the list
+					const Vehicle& v = *it;
+					if (v.ev.leftToRight != l2r) continue;
+					double says = calib::measuredMph(l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L, v.frames(), v.fps, g.CalibrationSpeed, g.CalibrationFPS);
+					app.calibPickId_ = v.id;
+					app.calibSpeed_ = int(std::lround(says)) + (l2r ? 0 : 5);
+					app.checkCalibration(l2r, app.calibSpeed_, v.frames(), v.fps);
+					break;
+				}
+			}
+			if (frames == 40) shot("07c-calibrate-check-failed.png");
+			if (frames == 60) { shot("07b-calibrate-check.png"); next(); }
 			break;
 		case 9:
 			if (frames == 1) { app.page = Page::Companion; app.setRemote(true); }

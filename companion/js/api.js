@@ -110,6 +110,7 @@ export class Vst extends EventTarget {
   run(action) { return this.request('POST', '/api/run', { action }); }
   calibrationMark(dir, edge) { return this.request('POST', '/api/calibration/mark', { dir, edge }); }
   calibrationApply(body) { return this.request('POST', '/api/calibration/apply', body); }
+  calibrationCheck(body) { return this.request('POST', '/api/calibration/check', body); }
 
   // ---- media ------------------------------------------------------------------------------------
 

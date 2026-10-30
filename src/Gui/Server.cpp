@@ -83,6 +83,18 @@ json configJson(App& app) {
 	};
 }
 
+// Per-direction calibration standing, from calibration-history.csv (App::calibrationState).
+json calibrationJson(App& app) {
+	auto one = [&app](bool l2r) {
+		CalState s = app.calibrationState(l2r);
+		bool checked = s.kind == CalState::Verified || s.kind == CalState::Failed;
+		return json{ { "state", s.apiName() }, { "error", checked ? json(s.error) : json(nullptr) },
+			{ "applied", s.applied.empty() ? json(nullptr) : json(s.applied) }, { "checked", checked ? json(s.checked) : json(nullptr) },
+			{ "frames", l2r ? app.cfg.g.CalibrationFramesL2R : app.cfg.g.CalibrationFramesR2L } };
+	};
+	return json{ { "L2R", one(true) }, { "R2L", one(false) } };
+}
+
 json statusJson(App& app) {
 	auto prog = app.tracker.progress();
 	Counts c = app.tracker.counts();
@@ -103,6 +115,7 @@ json statusJson(App& app) {
 		{ "speedLimit", app.prefs.speedLimit }, { "egregious", app.prefs.egregious },
 		{ "legalDirection", lowerDir(app.cfg.g.LegalDirection) },
 		{ "calibrationMarks", { { "L2R", { app.calibMarks[0][0], app.calibMarks[0][1] } }, { "R2L", { app.calibMarks[1][0], app.calibMarks[1][1] } } } },
+		{ "calibration", calibrationJson(app) },
 	};
 }
 
@@ -435,6 +448,35 @@ void Server::routes() {
 			return json{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) }, { "config", configJson(app) } }.dump();
 		});
 		sendPosted(res, out);   // 200 either way, as for PUT /api/config
+	}));
+
+	// A check pass: the same inputs as apply (a logged pass, or the hand-marked span), but nothing changes except a
+	// "check" row in calibration-history.csv.  The answer says what the calibration in force makes of the pass.
+	http_->Post("/api/calibration/check", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
+		json in;
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
+		std::string out = app.post([&app, in] {
+			double speed = in.value("speed", 0.0);
+			int vid = in.value("vehicleId", 0);
+			std::string err;
+			CalCheck k;
+			if (speed <= 0) err = "speed must be > 0";
+			else if (vid) {
+				Vehicle v;
+				if (!app.tracker.vehicle(vid, v)) err = "no vehicle " + std::to_string(vid);
+				else k = app.checkCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+			}
+			else {
+				int dir = in.value("dir", "L2R") == "R2L" ? 1 : 0;
+				int* m = app.calibMarks[dir];
+				if (m[0] < 0 || m[1] <= m[0]) err = "mark the start and end frames first";
+				else k = app.checkCalibration(dir == 0, speed, m[1] - m[0], app.player.info().fps);
+			}
+			if (!err.empty()) return json{ { "ok", false }, { "problems", json::array({ err }) } }.dump();
+			return json{ { "ok", true }, { "problems", json::array() }, { "direction", k.l2r ? "L2R" : "R2L" },
+				{ "drivenMph", k.drivenMph }, { "measuredMph", k.measuredMph }, { "error", k.error }, { "verified", k.verified } }.dump();
+		});
+		sendPosted(res, out);   // 200 either way, as for apply
 	}));
 
 	http_->Post("/api/run", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {

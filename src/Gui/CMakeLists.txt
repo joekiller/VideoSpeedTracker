@@ -132,6 +132,7 @@ add_executable(VSTStudio WIN32
   Media.cpp
   Guide.cpp
   Results.cpp
+  Calibration.cpp
   Server.cpp
   Settings.cpp
   Theme.cpp

@@ -298,6 +298,25 @@ if [ -n "${NODE_OK:-}" ]; then
   else
     fail "node --test, MUTATE=1, against VST Studio:"; grep -E '^not ok|error:|expected|actual' "$OUT/node-test-mutate.txt" | head -40
   fi
+
+  # The calibration tests above applied and checked calibrations through the API; each must have left a row in
+  # calibration-history.csv in the (throwaway) config folder, under the shared header, for this VST.cfg.
+  echo "Calibration history"
+  HIST=$OUT/config/videospeedtracker/calibration-history.csv
+  if [ -f "$HIST" ]; then
+    [ "$(head -1 "$HIST")" = "Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, MeasuredMph, Error" ] \
+      && pass "calibration-history.csv has the header" || fail "calibration-history.csv header: $(head -1 "$HIST")"
+    grep -q ", apply, \(L2R\|R2L\), " "$HIST" && pass "it records an apply" || fail "no apply row in: $(cat "$HIST")"
+    grep -q ", check, \(L2R\|R2L\), " "$HIST" && pass "it records a check" || fail "no check row in: $(cat "$HIST")"
+    grep -q "^[0-9T:-]*[+-][0-9][0-9]:[0-9][0-9], $OUT/VST.cfg, " "$HIST" \
+      && pass "rows carry an ISO time with its offset and this VST.cfg" || fail "unexpected row format: $(sed -n 2p "$HIST")"
+    # The MUTATE run makes two applies and three checks (refused requests in the read-only run add nothing), and
+    # rows are only ever appended, so all five must be there.
+    ROWS=$(($(grep -c . "$HIST") - 1))
+    [ "$ROWS" -ge 5 ] && pass "$ROWS history rows" || fail "only $ROWS history rows: $(cat "$HIST")"
+  else
+    fail "the calibration tests left no $HIST"
+  fi
 fi
 
 echo
