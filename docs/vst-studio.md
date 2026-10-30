@@ -8,6 +8,10 @@ the Linux applications menu).
 
 ![Live tracking](images/studio/05-live-tracking.jpg)
 
+The screenshots use the bundled 2016 Locust Avenue sample, which is a two-way street. To show the wrong-way
+callouts, the screenshot tour treats it as one-way (right to left), so the "wrong-way" vehicles in these images
+are legal drivers going the other way.
+
 ## Pages
 
 The side rail follows the order a first-time user works in. Every page reads and writes the same `VST.cfg` the
