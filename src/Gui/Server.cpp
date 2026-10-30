@@ -498,7 +498,11 @@ void Server::routes() {
 				if (!send("tracks", tracks)) return false;
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(200));
-			return sink.is_writable();
+			// A comment line every tick (EventSource ignores it).  A closed client is only noticed when a write to it
+			// fails, and while nothing is tracked the events above go out about once a second, longer if the GUI
+			// thread is slow to answer post(); without this a closed tab kept its stream slot for that long, and a
+			// view reopened straight away could find all kMaxStreams taken.
+			return sink.write(":\n\n", 3) && sink.is_writable();
 		});
 	}));
 
