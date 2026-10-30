@@ -27,18 +27,28 @@ jobs:
           node --test companion/test/*.test.mjs
       - name: Install OpenCV and the X11/OpenGL headers VST Studio needs
         run: |
-          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
-          sudo apt-get update
-          sudo apt-get install -y libopencv-dev libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev xvfb
+          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # Most of this step used to be dpkg: rebuilding the man-db index after every package and fsyncing each
+          # file of a runner that is discarded afterwards. Skip both, and leave out Recommends (except Mesa's software
+          # OpenGL, which Xvfb needs for VST Studio's GL 3.2 context).
+          sudo rm -f /var/lib/man-db/auto-update
+          echo force-unsafe-io | sudo tee /etc/dpkg/dpkg.cfg.d/90-ci >/dev/null
+          # The unpack/setup chatter (about 2,000 lines) goes to a log that is printed only if the install fails.
+          sudo apt-get -qq update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Use-Pty=0 --no-install-recommends \
+            libopencv-dev libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            xvfb libgl1-mesa-dri \
+            > "$RUNNER_TEMP/apt.log" 2>&1 || { cat "$RUNNER_TEMP/apt.log"; exit 1; }
       - name: Build
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
       # Sample video regression, config parsing, first run, and the companion API smoke test, which drives VST
       # Studio under Xvfb (xvfb installed above; curl and Node come with the runner). VST_REQUIRE_API_SMOKE makes
-      # that test fail rather than skip if anything it needs goes missing.
+      # that test fail rather than skip if anything it needs goes missing. Independent tests run side by side
+      # (min_logged_speed still waits for sample_video_baseline, whose output it reads).
       - name: Tests
         env:
           VST_REQUIRE_API_SMOKE: 1
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -j"$(nproc)"
       - name: Upload the API smoke test's logs
         if: failure()
         uses: actions/upload-artifact@v7

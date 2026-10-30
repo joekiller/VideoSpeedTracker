@@ -2,6 +2,16 @@
 # Builds the original sources in src/Wintel64 against OpenCV 4 or 5 on Linux, macOS or Windows.
 cmake_minimum_required(VERSION 3.16)
 project(VideoSpeedTracker CXX)
+# install() normalizes DESTINATION paths (./companion becomes companion): the same install tree, minus a dev
+# warning per install() on CMake 3.31+.
+if(POLICY CMP0177)
+  cmake_policy(SET CMP0177 NEW)
+endif()
+# MSVC compiles a target's sources one at a time unless told otherwise; /MP spreads them over every core.
+# /utf-8 makes the source and execution character sets UTF-8 for every target, not just VST Studio's.
+if(MSVC)
+  add_compile_options(/MP /utf-8)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -169,7 +179,9 @@ if(FFMPEG_EXECUTABLE AND BASH_EXECUTABLE AND NOT WIN32)
     COMMAND ${BASH_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stream_reconnect.sh
       $<TARGET_FILE:VideoSpeedTracker> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-reconnect
       ${FFMPEG_EXECUTABLE} ${engine_test})
-  set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180)
+  # Real-time: ffmpeg gets half a second to bind before VST connects and the dropout waits are wall-clock, so with
+  # other tests loading every core (ctest -j) it can miss its cues. It runs on its own, after the parallel ones.
+  set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
 endif()
 
 # VST Studio's companion API (docs/companion-api.md), end to end: the real app under a virtual display, driven with

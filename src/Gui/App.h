@@ -65,7 +65,8 @@ class App {
 public:
 	App();
 	~App();
-	void init(bool fresh);
+	// configPath (from --config) is loaded instead of the remembered or per-user VST.cfg.
+	void init(bool fresh, const std::string& configPath = "");
 	void frame(float width, float height);
 	bool wantsContinuousFrames();
 	void shutdown();
