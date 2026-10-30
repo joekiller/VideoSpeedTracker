@@ -42,20 +42,6 @@ fs::path knownFolder(REFKNOWNFOLDERID id){
 }
 #endif
 
-// Installed template locations, relative to the executable:
-//   <exe dir>/name                          Windows zip / MSIX, macOS tarball (flat layout)
-//   <exe dir>/../share/videospeedtracker/   .deb (/usr/bin -> /usr/share) and other FHS prefixes
-//   <exe dir>/../Resources/                 macOS .app bundle (Contents/MacOS -> Contents/Resources)
-fs::path findTemplate(const string& name){
-	fs::path exe = executableDir();
-	if (exe.empty()) return {};
-	for (const fs::path& candidate : { exe / name, exe / ".." / "share" / "videospeedtracker" / name, exe / ".." / "Resources" / name }){
-		error_code ec;
-		if (fs::is_regular_file(candidate, ec)) return fs::weakly_canonical(candidate, ec);
-	}
-	return {};
-}
-
 // Copies the template line by line, swapping the right-hand side of "dataPathPrefix = ... # comment" for dataDir().
 bool seedConfig(const fs::path& from, const fs::path& to){
 	ifstream in(from);
@@ -80,14 +66,59 @@ bool seedConfig(const fs::path& from, const fs::path& to){
 	return bool(out);
 }
 
-void makeDataDirs(){
+}  // namespace
+
+void makeDataDirs(const fs::path& d){
 	error_code ec;
-	fs::path d = dataDir();
 	for (const char* sub : { "IPCam", "HiLites/forPosting", "Stats", "Trace" })
 		fs::create_directories(d / fs::path(sub).make_preferred(), ec);
 }
 
+fs::path dataPath(const string& dataPathPrefix){
+	if (!dataPathPrefix.empty()) return fs::path(dataPathPrefix);
+	fs::path d = dataDir();
+	makeDataDirs(d);
+	return d;
+}
+
+// Installed file locations, relative to the executable:
+//   <exe dir>/rel                          Windows zip / MSIX, macOS tarball (flat layout)
+//   <exe dir>/../share/videospeedtracker/  .deb (/usr/bin -> /usr/share) and other FHS prefixes
+//   <exe dir>/../Resources/                macOS .app bundle (Contents/MacOS -> Contents/Resources)
+fs::path installedFile(const string& rel){
+	fs::path exe = executableDir();
+	if (exe.empty()) return {};
+	fs::path r = fs::path(rel).make_preferred();
+	for (const fs::path& candidate : { exe / r, exe / ".." / "share" / "videospeedtracker" / r, exe / ".." / "Resources" / r }){
+		error_code ec;
+		if (fs::is_regular_file(candidate, ec)) return fs::weakly_canonical(candidate, ec);
+	}
+	return {};
+}
+
+fs::path sampleVideo(){
+	return installedFile("sample/manual_20160130172251.avi");
+}
+
+#if defined(_WIN32)
+namespace {
+// A console whose only attached process is us was opened for us by Explorer (double-click), and
+// closes the moment we exit.  Keep it up so the messages printed before exit can be read.
+void pauseIfOwnConsole(){
+	DWORD ids[2];
+	if (GetConsoleProcessList(ids, 2) == 1){
+		cout << endl << "Press Enter to close this window." << flush;
+		cin.clear();
+		string line;
+		getline(cin, line);
+	}
+}
 }  // namespace
+
+void holdConsoleOnExit(){ atexit(pauseIfOwnConsole); }
+#else
+void holdConsoleOnExit(){}
+#endif
 
 fs::path configDir(){
 #if defined(_WIN32)
@@ -138,7 +169,7 @@ string resolveConfig(const string& name){
 	else if (fs::is_regular_file(user, ec))
 		chosen = user.string();
 	else {
-		fs::path tmpl = findTemplate(name);
+		fs::path tmpl = installedFile(name);
 		if (tmpl.empty()){
 			cout << "No " << name << " in the working directory or " << configDir().string()
 				<< ", and no installed template to copy.  Pass --config PATH." << endl;
@@ -148,7 +179,7 @@ string resolveConfig(const string& name){
 			cout << "Couldn't create " << user.string() << " from " << tmpl.string() << endl;
 			return "";
 		}
-		makeDataDirs();
+		makeDataDirs(dataDir());
 		cout << "Created " << user.string() << " from the installed template; edit it for your camera." << endl
 			<< "Data folders (IPCam, HiLites, Stats, Trace) are in " << dataDir().string() << endl;
 		chosen = user.string();

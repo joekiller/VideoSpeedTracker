@@ -178,6 +178,8 @@ int main(int argc, char** argv){
 		else { cout << "Unknown or incomplete option: " << a << endl; printUsage(); return -1; }
 	}
 
+	userpaths::holdConsoleOnExit();  // Windows: a double-clicked exe keeps its window open to show why it stopped
+
 // Get data path prefix and crop corner from ProcessHiLites.cfg
 	if (configPath.empty()) configPath = userpaths::resolveConfig("ProcessHiLites.cfg");
 	if (configPath.empty() || !readConfig(configPath)) return -1;
@@ -188,7 +190,7 @@ int main(int argc, char** argv){
 		fileName = fs::path(inputPath).filename().string();
 	}
 	else {
-		dirPath = fs::path(dataPathPrefix) / "HiLites";
+		dirPath = userpaths::dataPath(dataPathPrefix) / "HiLites";  // blank dataPathPrefix = per-user data folder
 		vector<string> files = listVideos(dirPath);
 		if (files.empty()){
 			cout << "No .avi or .mp4 files in " << dirPath.string() << endl;
