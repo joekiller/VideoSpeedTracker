@@ -6,10 +6,10 @@
 # Skip once:                git commit --no-verify     (or VST_HOOK_SKIP=1 git commit ...)
 #
 # What runs depends on what is staged:
-#   companion/**                                    node --test on the phone companion's tests (needs Node 20+)
-#   src/** tests/** bin/** cmake/** sampleData/** CMakeLists.txtincremental build of $VST_BUILD_DIR (default: build) and ctest,
-#                                                   configuring it first if it doesn't exist (needs OpenCV, see
-#                                                   README "Building from source")
+#   companion/**      node --test on the phone companion's tests (needs Node 20+)
+#   src/** tests/** bin/** cmake/** sampleData/** CMakeLists.txt
+#                     incremental build of $VST_BUILD_DIR (default: build) and ctest, configuring it first if it
+#                     doesn't exist (needs OpenCV, see README "Building from source")
 # The two slow wall-clock tests, live_stream_reconnect (~45 s) and companion_api_smoke (VST Studio under Xvfb), are
 # left to CI unless VST_HOOK_FULL=1. The hook tests the working tree, so unstaged edits are included.
 set -euo pipefail
@@ -25,7 +25,7 @@ if touches '^companion/'; then
   node --test companion/test/*.test.mjs
 fi
 
-if touches '^(src/|tests/|bin/|cmake/|CMakeLists\.txt$)'; then
+if touches '^(src/|tests/|bin/|cmake/|sampleData/|CMakeLists\.txt$)'; then
   build="${VST_BUILD_DIR:-build}"
   jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
   if [[ ! -f "$build/CMakeCache.txt" ]]; then
