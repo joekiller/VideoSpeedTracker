@@ -14,6 +14,16 @@ Video example:
 
 [![Video example](http://img.youtube.com/vi/1HVkKysDvGA/0.jpg)](http://www.youtube.com/watch?v=1HVkKysDvGA "Video Speed Tracker on a 25 MPH Residential Street")
 
+## VST Studio
+
+Every release includes **VST Studio**, a desktop app that walks you through the whole job: what camera to get,
+whether your window gives enough view (a site planner), drawing the zones on the picture instead of editing
+`VST.cfg`, calibrating with one drive past, watching vehicles get measured live, and reviewing speeders and
+wrong-way drivers on one-way streets. A phone can pair with it to check the camera and see recent speeders.
+See [docs/vst-studio.md](docs/vst-studio.md).
+
+![VST Studio live tracking](docs/images/studio/05-live-tracking.jpg)
+
 ## Set-up Checklist
 
 1. You really want 100 feet or more of open view (a maple tree trunk in the foreground is OK) of
@@ -160,8 +170,10 @@ VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. The Linux a
 (Linux). FFmpeg and GTK on Linux, and OpenCV on macOS, come from apt or Homebrew with their own licenses.
 
 The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
-still in the git history before the release workflow was added. Every package contains both `VideoSpeedTracker` and
-the highlights editor `ProcessHiLites`, with their sample configs.
+still in the git history before the release workflow was added. Every package contains `VideoSpeedTracker`, the
+highlights editor `ProcessHiLites` and the desktop app `VSTStudio`, with their sample configs. VST Studio's own
+libraries and fonts (GLFW, Dear ImGui, cpp-httplib, nlohmann/json, QR Code generator, Inter, Font Awesome Free) are
+linked in; their licenses are installed next to OpenCV's.
 
 ## Building from source
 

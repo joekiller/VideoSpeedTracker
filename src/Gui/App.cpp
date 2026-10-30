@@ -597,7 +597,7 @@ void App::pageSource() {
 		ImGui::SameLine(0, px(16));
 		sourceCard("srccam", ICON_CAMERA, c::ok, "USB camera or phone", "A webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
 			ImGui::SetNextItemWidth(px(110));
-			char camLabel[24];
+			char camLabel[48];
 			snprintf(camLabel, sizeof camLabel, ICON_CAMERA "  %d", cameraIndex_);
 			if (ImGui::BeginCombo("##cam", camLabel)) {
 				for (int i = 0; i < 6; i++) {
@@ -1556,7 +1556,7 @@ void App::pageResults() {
 		kv("In the zone", std::to_string(r.frames) + " frames (" + std::to_string(r.frames / r.fps).substr(0, 4) + " s)");
 		kv("Size", std::to_string(r.area) + (r.large ? "  (truck or bus)" : ""));
 		kv("Frame", std::to_string(r.frame));
-		if (!r.time.empty()) kv("Logged", r.time);
+		if (!r.time.empty()) kv("Passed at", r.time);
 		kv("Source", r.source);
 		ImGui::Dummy(ImVec2(0, px(4)));
 		Vehicle v;
