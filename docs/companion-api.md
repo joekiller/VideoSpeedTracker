@@ -206,13 +206,20 @@ companion-facing settings:
   "CalibrationFramesL2R": 35, "CalibrationFramesR2L": 40, "CalibrationSpeed": 25, "CalibrationFPS": 30,
   "legalDirection": "R2L",
   "speedLimit": 25, "egregious": 40, "siteName": "7½ St SW",
-  "minLoggedSpeed": 18
+  "minLoggedSpeed": 18,
+  "subFrameTiming": 1, "maxL2RDistOnEntry": 440, "maxR2LDistOnEntry": 440, "entryLookBack": 1000
 }
 ```
 
 `minLoggedSpeed` (mph, `VST.cfg`'s key of the same name) is the slowest timed vehicle written to the
 stats csv; slower ones are only counted in the run manifest. 0 logs every timed vehicle; negative values
 are refused.
+
+`subFrameTiming` (0 or 1) turns on short-view timing for a view of about 20 ft of street, where a car
+fills most of the frame. `maxL2RDistOnEntry` and `maxR2LDistOnEntry` are the tracker's look-ahead, the
+pixels a car moves in two frames at the fastest speed it tracks, and `entryLookBack` is how far back it
+looks for a car entering the box. A short view needs several hundred pixels for each; Studio's site
+planner works them out from the camera and street. See `VST.cfg`'s keys of the same names.
 
 As in `VST.cfg`, `speedLineLeft`, `speedLineRight` and `obstruction` are x offsets from
 `AnalysisBoxLeft`; `R2LStreetY` and `L2RStreetY` are y offsets from `AnalysisBoxTop`. `obstruction`

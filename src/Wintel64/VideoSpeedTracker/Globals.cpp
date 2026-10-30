@@ -133,6 +133,7 @@ bool Globals::readConfig(const string& path){
 		{ "L2RStreetY", intKey(L2RStreetY) },
 		{ "nextHeight", intKey(nextHeight) },
 		{ "minLoggedSpeed", intKey(minLoggedSpeed) },
+		{ "subFrameTiming", intKey(subFrameTiming) },
 	};
 	map<string, size_t> byName;  // lower-cased key -> index into keys
 	for (size_t i = 0; i < keys.size(); i++) byName[lower(keys[i].first)] = i;
@@ -204,6 +205,10 @@ vector<string> Globals::problems(){
 		bad("BLUR_SIZE must be > 0");
 	if (minLoggedSpeed < 0)
 		bad("minLoggedSpeed must be >= 0 (MPH; 0 logs every timed vehicle), got " + to_string(minLoggedSpeed));
+	if (subFrameTiming != 0 && subFrameTiming != 1)
+		bad("subFrameTiming must be 0 (whole frames) or 1 (short view: sub-frame timing), got " + to_string(subFrameTiming));
+	else if (subFrameTiming && (maxL2RDistOnEntry <= 0 || maxR2LDistOnEntry <= 0))
+		bad("subFrameTiming = 1 scales its pixel margins by maxL2RDistOnEntry and maxR2LDistOnEntry, so both must be > 0");
 	// LegalDirection: Both, L2R, R2L, or the compass name given for one of the two directions.
 	string legal = lower(trim(LegalDirection));
 	if (legal == "both" || legal.empty()) LegalDirection = "Both";

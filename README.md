@@ -314,7 +314,7 @@ calibration:
     "CalibrationFramesL2R": 35, "CalibrationFramesR2L": 40,
     "LegalDirection": "Both", "L2RDirection": "SE", "R2LDirection": "NW",
     "speedLineLeft": 350, "speedLineRight": 909,
-    "minLoggedSpeed": 18
+    "minLoggedSpeed": 18, "subFrameTiming": 0
   },
   "counts": { "logged": 61, "belowMinSpeed": 0, "untimed": 5 }
 }
@@ -327,7 +327,7 @@ calibration:
 | complete | `false` while a camera or stream run is still going |
 | frames, fps | frames analyzed, and the video's frame rate |
 | outages | for a camera or stream, each gap in the picture: `from` the last frame before it, `to` when frames came back (or when the run was stopped during it) |
-| config | the calibration, directions, speed lines and `minLoggedSpeed` that every speed in the csv rests on |
+| config | the calibration, directions, speed lines, `minLoggedSpeed` and `subFrameTiming` that every speed in the csv rests on |
 | counts | `logged`: rows in the csv. `belowMinSpeed`: timed, but slower than `minLoggedSpeed`. `untimed`: tracked from outside the speed zone into it, but never given a usable speed. The usual reasons are that the track was lost there, or that the vehicle was hidden by oncoming traffic. |
 
 `logged + belowMinSpeed` is every vehicle that was timed, whatever `minLoggedSpeed` is. The file is replaced whole each

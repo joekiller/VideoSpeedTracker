@@ -11,6 +11,12 @@
 // view, limited by the clear stretch, minus a car length and a lock-in run-up gives the timing zone; frames in
 // the zone give the one-frame timing error, the distance error over the zone gives the calibration error, and
 // speed x shutter time gives motion blur.
+// A short view (an old-city street seen across 20 ft or so) uses the engine's short-view timing (subFrameTiming = 1)
+// instead.  That times the front bumper with a line fitted through its positions, so a whole car never has to fit
+// in the zone: the zone is the view less about a foot at each end, the limit is how many bumper positions the fit
+// gets (one per frame pair, at least kMinSamples), and the timing error comes from the bumper's pixel jitter
+// spread over the zone rather than from a whole frame.  Both numbers are from the 20 ft simulation in
+// tests/short_view.cmake (p90 error 1 mph at 30 fps, fits rejected below 3 points).
 #include "App.h"
 #include "Canvas.h"
 #include "Icons.h"
@@ -31,23 +37,40 @@ const Preset kPresets[] = {
 	{ "PoE IP camera, 2.8 mm lens (1080p, 30 fps)", 100, 1920, 30, 250 },
 	{ "PoE IP camera, 4 mm lens (1080p, 30 fps)", 80, 1920, 30, 250 },
 	{ "Raspberry Pi Global Shutter + 6 mm lens (60 fps)", 45, 1440, 60, 500 },
+	{ "720p camera at 60 fps, fixed shutter (short views)", 66, 1280, 60, 500 },
 	{ "Original VST camera: Foscam 720p, 30 fps", 70, 1280, 30, 250 },
 	{ "Custom", 0, 0, 0, 0 },
 };
 
 constexpr double kMph = 0.44704;    // m/s per mph
 constexpr double kLockTime = 0.2;   // s of full visibility the tracker needs before timing starts
+// Short-view timing (see the top of the file).
+constexpr double kEdgeM = 0.3;       // m kept clear inside each end of the view: speed lines about 5-10% in
+constexpr double kJitterPx = 12;     // front-bumper jitter in 1280-wide tracker pixels (fits on the 20 ft clip)
+constexpr double kMinSamples = 4;    // bumper positions the fit needs to be trusted; the engine refuses fewer than 3
+constexpr double kShortFrames = 15;  // below this many whole frames in the zone, recommend short-view timing
+constexpr double kMaxTrackMph = 70;  // fastest car the tracker's margins are set for (maxDistOnEntry)
 
-struct Eval { double cover, visible, zone, frames, quant, calib, total, pxPerM, blurCm, blurPx; };
+struct Eval { double cover, visible, zone, frames, quant, calib, total, pxPerM, blurCm, blurPx, samples; bool shortView; };
 
-Eval evaluate(const AppPrefs& p, double mph) {
+Eval evaluate(const AppPrefs& p, double mph, bool shortView) {
 	Eval e{};
 	double v = mph * kMph;
+	e.shortView = shortView;
 	e.cover = 2 * p.planDist * std::tan(p.planHfov * IM_PI / 180 / 2);
 	e.visible = std::min(e.cover, p.planClear);
-	e.zone = std::max(0.0, e.visible - p.planCarLen - v * kLockTime);
+	e.zone = shortView ? std::max(0.0, e.visible - 2 * kEdgeM) : std::max(0.0, e.visible - p.planCarLen - v * kLockTime);
 	e.frames = e.zone / v * p.planFps;
-	e.quant = e.frames > 0 ? mph / e.frames : INFINITY;
+	// The engine looks at frames in pairs: one bumper position per pair, plus the one beyond the far line.
+	e.samples = e.zone > 0 ? e.frames / 2 + 1 : 0;
+	if (!shortView) e.quant = e.frames > 0 ? mph / e.frames : INFINITY;
+	else if (e.samples < kMinSamples) e.quant = INFINITY;
+	else {
+		// Slope error of a least-squares line through n evenly spaced points with position noise s over a run of
+		// length L: s * sqrt(12 / n) / L, as a fraction of the speed.
+		double jitterM = kJitterPx * e.cover / 1280;
+		e.quant = mph * jitterM * std::sqrt(12 / e.samples) / e.zone;
+	}
 	e.calib = e.zone > 0 ? mph * (p.planCalib / 100) / e.zone : INFINITY;
 	e.total = std::hypot(e.quant, e.calib);
 	e.pxPerM = p.planWidth / std::max(e.cover, .01);
@@ -178,6 +201,52 @@ void planDiagram(const AppPrefs& pr, const Eval& r, const Globals& g, ImVec2 siz
 
 }  // namespace
 
+// Under the planner's verdict on a short view: what short-view timing is, a button that sets it up from the planner's
+// numbers, and the things that go wrong on a narrow street with parked cars.
+void App::shortViewNote(double coverM, bool on) {
+	ImGui::PushTextWrapPos(0);
+	if (on) dimText(ICON_CHECK "  Short-view timing is on: VST times each car's front bumper to a fraction of a frame, so it doesn't need a whole car in view.");
+	else {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+		ImGui::TextWrapped(ICON_INFO "  This is a short view. It needs short-view timing, which times each car's front bumper to a fraction of a frame instead of whole frames.");
+		ImGui::PopStyleColor();
+	}
+	ImGui::PopTextWrapPos();
+	if (ghostButton(on ? ICON_SLIDERS "  Re-fit the short-view settings to this plan" : ICON_SLIDERS "  Use short-view timing")) {
+		// The tracker works in a 1280-wide frame: pixels a car moves in two frames at the fastest speed it tracks
+		// sets its look-ahead (and the margins scaled from it), and a car length sets how far back it looks on entry.
+		Globals& g = cfg.g;
+		double pxPerM = 1280 / std::max(coverM, .5);
+		int step = int(std::ceil(pxPerM * kMaxTrackMph * kMph * 2 / std::max(prefs.planFps, 1.0)));
+		g.subFrameTiming = 1;
+		g.maxL2RDistOnEntry = g.maxR2LDistOnEntry = std::clamp(step, 75, 1280);
+		g.entryLookBack = std::clamp(int(pxPerM * prefs.planCarLen), 250, g.AnalysisBoxWidth);
+		// Speed lines about 7% in from each side of the analysis box, so the bumper is seen before and after the zone.
+		g.speedLineLeft = int(g.AnalysisBoxWidth * .07);
+		g.speedLineRight = g.AnalysisBoxWidth - g.speedLineLeft;
+		toast("Short-view timing is on. Check the speed lines on the Zones page, then calibrate.", c::ok, ICON_CHECK);
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Turns on subFrameTiming and sets, from this plan:\n  the look-ahead (max step) for cars up to %.0f mph at %.0f fps\n  the entry look-back to a car length\n  the speed lines 7%% in from each side of the analysis box", kMaxTrackMph, prefs.planFps);
+	if (ImGui::TreeNode("Narrow streets: parked cars, shadows and wrong-way drivers")) {
+		ImGui::PushTextWrapPos(0);
+		bullet(ICON_CAR, c::accent, "Keep parked cars out of the box",
+			"Draw the analysis box on the moving lane only: from just above the moving cars' roofs to just below their wheels. A parked car "
+			"behind them doesn't move, so it isn't tracked, but a box that takes in the parking lane catches doors, people and parking moves.");
+		bullet(ICON_WAVE, c::warn, "Tree shadows",
+			"Shadows moving in the wind look like motion. Keep them out of the box where you can, or raise Sensitivity a little on sunny days. "
+			"A fixed shutter (not auto) stops the picture brightening and dimming as cars pass.");
+		bullet(ICON_BAN, c::wrong, "Wrong-way drivers",
+			"On a one-way street set the legal direction on the Zones page. Every car going the other way is logged and flagged as wrong-way, "
+			"timed like any other.");
+		bullet(ICON_CAMERA, c::ok, "Through a window",
+			"Take out any insect screen, and put the lens against the glass with a rubber hood so the room doesn't reflect. "
+			"60 fps lets VST time cars up to about 100 mph in a 20 ft view; 30 fps tops out at about 50-60 mph.");
+		ImGui::PopTextWrapPos();
+		ImGui::TreePop();
+	}
+}
+
 void App::sitePlanner() {
 	float avail = ImGui::GetContentRegionAvail().x;
 	float inW = px(360);
@@ -214,9 +283,16 @@ void App::sitePlanner() {
 	num("Shutter (1/x s)", &prefs.planShutter, 10, "%.0f", "Faster shutters freeze motion. Phones choose this themselves and can drop to 1/60 in shade.", true);
 	sectionLabel("STREET");
 	num("Camera to lane (m)", &prefs.planDist, .5, "%.1f", "Straight-line distance from the lens to the middle of the nearer lane. Pace it out or use a map.", false);
-	num("Clear stretch (m)", &prefs.planClear, .5, "%.1f", "The longest stretch of lane where a whole car is visible: no trees, poles or parked trucks in the way.", false);
+	num("Clear stretch (m)", &prefs.planClear, .5, "%.1f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 5-7 m (15-25 ft); that works with short-view timing.", false);
 	num("Distance error (cm)", &prefs.planCalib, 5, "%.0f", "How well you know the zone's length. Tape over 10 m: 10-20 cm. Guessed from a photo: 100 cm or more. A drive-through calibration avoids this.", false);
 	num("Car length (m)", &prefs.planCarLen, .1, "%.1f", nullptr, false);
+	if (ghostButton(ICON_LOCATE "  Narrow street from a front window")) {
+		// An old-city one-way with parking, about 13 ft (4 m) curb to curb, seen from across the sidewalk: about 20 ft
+		// (6 m) of it between the trees and porches.  The camera distance is to the middle of the moving lane.
+		prefs.planDist = 6;
+		prefs.planClear = 6.1;
+	}
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fills in a typical narrow one-way street: 6 m from the camera to the moving lane, 6 m (20 ft) of it clear.\nChange either to match yours.");
 	formLabel("Speed limit (mph)", col);
 	ImGui::InputInt("##lim", &prefs.speedLimit, 5);
 	prefs.planHfov = std::clamp(prefs.planHfov, 5.0, 170.0);
@@ -231,25 +307,39 @@ void App::sitePlanner() {
 	ImGui::SameLine(0, px(20));
 	ImGui::BeginGroup();
 	int check = prefs.speedLimit + 10;
-	Eval r = evaluate(prefs, check);
-	int verdict = r.zone <= 0 ? 2 : grade(r.total, 1.5, 3);
+	// A view too short for whole-frame timing is planned with short-view timing, whether or not it's on yet.
+	Eval whole = evaluate(prefs, check, false);
+	bool shortOn = cfg.g.subFrameTiming != 0;
+	bool shortView = shortOn || whole.zone <= 0 || whole.frames < kShortFrames;
+	Eval r = shortView ? evaluate(prefs, check, true) : whole;
+	bool tooFew = shortView && r.samples < kMinSamples;
+	int verdict = r.zone <= 0 || tooFew ? 2 : grade(r.total, 1.5, 3);
 	beginCard("planout", nullptr, nullptr, ImVec2(outW, 0));
 	const char* vtext[] = { "Workable", "Marginal", "Not enough room" };
 	pill(vtext[verdict], c::bg0, gradeColor(verdict), fonts.strong);
 	ImGui::SameLine();
 	ImGui::AlignTextToFramePadding();
-	if (r.zone <= 0) ImGui::TextUnformatted("A whole car never stays in view long enough to time it. Move back, or use a wider lens.");
+	if (r.zone <= 0) ImGui::TextUnformatted("Less than a couple of feet of street is in view. Move back, or use a wider lens.");
+	else if (tooFew) ImGui::Text("At %d mph a car crosses the %.0f ft zone in %.0f frames, too few to time. Use a 60 fps camera, or see more of the street.", check, r.zone * 3.281, r.frames);
 	else ImGui::Text("About ±%.1f mph at %d mph, over a %.1f m (%.0f ft) zone.", r.total, check, r.zone, r.zone * 3.281);
+	if (shortView) shortViewNote(r.cover, shortOn);
 	planDiagram(prefs, r, cfg.g, ImVec2(ImGui::GetContentRegionAvail().x, px(230)));
 	ImGui::Dummy(ImVec2(0, px(4)));
 	float tw = (ImGui::GetContentRegionAvail().x - px(30)) / 4, th = px(96);
 	char v[48], sub[64];
-	snprintf(v, sizeof v, "%.0f", r.frames);
-	snprintf(sub, sizeof sub, "at %d mph · VST likes 30+", check);
-	statTile(ICON_FILM, "Frames in zone", v, sub, gradeColor(grade(-r.frames, -30, -15)), ImVec2(tw, th));
+	if (shortView) {
+		snprintf(v, sizeof v, "%.0f", r.samples);
+		snprintf(sub, sizeof sub, "at %d mph · needs %.0f+, 6+ is comfortable", check, kMinSamples);
+		statTile(ICON_FILM, "Bumper positions", v, sub, gradeColor(grade(-r.samples, -6, -kMinSamples)), ImVec2(tw, th));
+	}
+	else {
+		snprintf(v, sizeof v, "%.0f", r.frames);
+		snprintf(sub, sizeof sub, "at %d mph · VST likes 30+", check);
+		statTile(ICON_FILM, "Frames in zone", v, sub, gradeColor(grade(-r.frames, -30, -15)), ImVec2(tw, th));
+	}
 	ImGui::SameLine(0, px(10));
 	snprintf(v, sizeof v, "±%.1f", r.quant);
-	statTile(ICON_STOPWATCH, "Timing error", v, "mph, one-frame slip", gradeColor(grade(r.quant, 1, 2)), ImVec2(tw, th));
+	statTile(ICON_STOPWATCH, "Timing error", v, shortView ? "mph, fitted bumper track" : "mph, one-frame slip", gradeColor(grade(r.quant, 1, 2)), ImVec2(tw, th));
 	ImGui::SameLine(0, px(10));
 	snprintf(v, sizeof v, "%.0f px", r.blurPx);
 	snprintf(sub, sizeof sub, "%.0f cm at 1/%.0f s", r.blurCm, prefs.planShutter);
@@ -263,13 +353,19 @@ void App::sitePlanner() {
 	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("plantable", ICON_TABLE, "Worst-case error by speed", ImVec2(outW, 0));
 	if (ImGui::BeginTable("errs", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
-		for (const char* h : { "Speed", "Frames", "Timing ±", "Distance ±", "Combined ±", "Blur" }) ImGui::TableSetupColumn(h);
+		for (const char* h : { "Speed", shortView ? "Positions" : "Frames", "Timing ±", "Distance ±", "Combined ±", "Blur" }) ImGui::TableSetupColumn(h);
 		ImGui::TableHeadersRow();
 		for (int mph : { prefs.speedLimit, prefs.speedLimit + 5, prefs.speedLimit + 10, prefs.speedLimit + 20, prefs.speedLimit + 30 }) {
-			Eval e = evaluate(prefs, mph);
+			Eval e = evaluate(prefs, mph, shortView);
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn(); ImGui::TextColored(v4(speedColor(mph, prefs.speedLimit, prefs.egregious)), "%d mph", mph);
-			ImGui::TableNextColumn(); ImGui::Text("%.0f", e.frames);
+			ImGui::TableNextColumn(); ImGui::Text("%.0f", shortView ? e.samples : e.frames);
+			if (!std::isfinite(e.total)) {
+				ImGui::TableNextColumn(); ImGui::TextColored(v4(c::bad), "too fast");
+				ImGui::TableNextColumn(); ImGui::TableNextColumn();
+				ImGui::TableNextColumn(); ImGui::Text("%.0f px", e.blurPx);
+				continue;
+			}
 			ImGui::TableNextColumn(); ImGui::Text("%.1f mph", e.quant);
 			ImGui::TableNextColumn(); ImGui::Text("%.1f mph", e.calib);
 			ImGui::TableNextColumn(); ImGui::TextColored(v4(gradeColor(grade(e.total, 1.5, 3))), "%.1f mph", e.total);

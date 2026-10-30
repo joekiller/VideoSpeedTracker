@@ -79,6 +79,7 @@ const std::vector<std::pair<std::string, std::function<std::string(const Globals
 		{ "L2RStreetY", [](const Globals& g) { return std::to_string(g.L2RStreetY); } },
 		{ "nextHeight", [](const Globals& g) { return std::to_string(g.nextHeight); } },
 		{ "minLoggedSpeed", [](const Globals& g) { return std::to_string(g.minLoggedSpeed); } },
+		{ "subFrameTiming", [](const Globals& g) { return std::to_string(g.subFrameTiming); } },
 	};
 	return t;
 }

@@ -118,7 +118,8 @@ json configJson(App& app) {
 		{ "CalibrationFramesL2R", g.CalibrationFramesL2R }, { "CalibrationFramesR2L", g.CalibrationFramesR2L },
 		{ "CalibrationSpeed", g.CalibrationSpeed }, { "CalibrationFPS", g.CalibrationFPS },
 		{ "SENSITIVITY_VALUE", g.SENSITIVITY_VALUE }, { "BLUR_SIZE", g.BLUR_SIZE }, { "largeVehicleArea", g.largeVehicleArea },
-		{ "minLoggedSpeed", g.minLoggedSpeed },
+		{ "minLoggedSpeed", g.minLoggedSpeed }, { "subFrameTiming", g.subFrameTiming },
+		{ "maxL2RDistOnEntry", g.maxL2RDistOnEntry }, { "maxR2LDistOnEntry", g.maxR2LDistOnEntry }, { "entryLookBack", g.entryLookBack },
 		{ "speedLimit", app.prefs.speedLimit }, { "egregious", app.prefs.egregious }, { "siteName", app.prefs.siteName },
 		{ "frameWidth", 1280 }, { "frameHeight", 720 },
 	};
@@ -193,7 +194,8 @@ std::vector<std::string> applyConfig(App& app, const json& in) {
 	setInt("CalibrationFramesL2R", g.CalibrationFramesL2R); setInt("CalibrationFramesR2L", g.CalibrationFramesR2L);
 	setDbl("CalibrationSpeed", g.CalibrationSpeed); setDbl("CalibrationFPS", g.CalibrationFPS);
 	setInt("SENSITIVITY_VALUE", g.SENSITIVITY_VALUE); setInt("BLUR_SIZE", g.BLUR_SIZE); setInt("largeVehicleArea", g.largeVehicleArea);
-	setInt("minLoggedSpeed", g.minLoggedSpeed);
+	setInt("minLoggedSpeed", g.minLoggedSpeed); setInt("subFrameTiming", g.subFrameTiming);
+	setInt("maxL2RDistOnEntry", g.maxL2RDistOnEntry); setInt("maxR2LDistOnEntry", g.maxR2LDistOnEntry); setInt("entryLookBack", g.entryLookBack);
 	setStr("L2RDirection", g.L2RDirection); setStr("R2LDirection", g.R2LDirection);
 	if (in.contains("obstruction")) {
 		if (in["obstruction"].is_array() && in["obstruction"].size() == 2 && in["obstruction"][0].is_number() && in["obstruction"][1].is_number()) {

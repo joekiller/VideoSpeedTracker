@@ -93,6 +93,7 @@ public:
 private:
 
 	void assembleStats(int frameNumber, direction dir);
+	int subFrameSpeed(Globals& g, direction dir);
 	statusTypes estimateNextVehicleData(Globals& g, int FrameNum);
 
 
@@ -124,6 +125,8 @@ private:
 	double RBIntcpt = 0.0;  // x intercept of rear bumper pixel data over time
 	double nextFrontBumper = 0.0; // Always contains the latest projected front bumper value
 	double nextRearBumper = 0.0;  // Always contains the latest projected rear bumper value
+	vector<double> seenFBFrame;  // Every front bumper actually seen (not coasted, occluded or projected) and its frame, for subFrameSpeed()
+	vector<double> seenFBPixel;
 
 	OverlapType overlapStatus = none;  //Initially assume vehicle overlaps no others;
 

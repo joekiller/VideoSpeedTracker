@@ -36,7 +36,7 @@ function(read_manifest path prefix)
     set(${prefix}_source_${f} "${v}" PARENT_SCOPE)
   endforeach()
   foreach(f CalibrationSpeed CalibrationFPS CalibrationFramesL2R CalibrationFramesR2L LegalDirection L2RDirection
-            R2LDirection speedLineLeft speedLineRight minLoggedSpeed)
+            R2LDirection speedLineLeft speedLineRight minLoggedSpeed subFrameTiming)
     string(JSON v GET "${json}" config ${f})
     set(${prefix}_config_${f} "${v}" PARENT_SCOPE)
   endforeach()

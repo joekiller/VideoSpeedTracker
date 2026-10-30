@@ -195,6 +195,22 @@ if(FFMPEG_EXECUTABLE AND BASH_EXECUTABLE AND NOT WIN32)
   set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
 endif()
 
+# Short view (subFrameTiming): the sample cropped by ffmpeg to 20 ft of street, timed against the full view's speeds
+# (tests/short_view.cmake). About 90 s: cutting the clip, then a full pass over it at 1280x720. Without ffmpeg the
+# script prints SHORT_VIEW_SKIPPED and ctest reports the test as skipped. Run on its own: under ctest -j it loads every core
+# for a minute or more, which can push companion_api_smoke past its time limits.
+if(NOT FFMPEG_EXECUTABLE)
+  set(FFMPEG_EXECUTABLE "")
+endif()
+add_test(NAME short_view
+  COMMAND ${CMAKE_COMMAND}
+    -DVST=$<TARGET_FILE:VideoSpeedTracker>
+    -DSRC=${CMAKE_SOURCE_DIR}
+    -DOUT=${CMAKE_BINARY_DIR}/test-short-view
+    -DFFMPEG=${FFMPEG_EXECUTABLE}
+    -P ${CMAKE_SOURCE_DIR}/tests/short_view.cmake)
+set_tests_properties(short_view PROPERTIES SKIP_REGULAR_EXPRESSION "SHORT_VIEW_SKIPPED" TIMEOUT 400 RUN_SERIAL TRUE)
+
 # VST Studio's companion API (docs/companion-api.md), end to end: the real app under a virtual display, driven with
 # curl, run on the sample video and checked against the same baseline as sample_video_baseline. Needs bash, xvfb-run
 # and curl; where any of them or the GUI build is missing the script prints API_SMOKE_SKIPPED and ctest reports the
