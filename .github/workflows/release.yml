@@ -151,7 +151,7 @@ jobs:
       id-token: write      # OIDC login to Azure for Artifact Signing
     env:
       # Authenticode signing runs on tag builds once the Azure Artifact Signing secrets/variables are set
-      # (see "Code signing" in README.md); without them the zip ships unsigned as before. PR and master
+      # (see docs/code-signing.md); without them the zip ships unsigned as before. PR and master
       # builds are never published, and their OIDC subjects don't match the tag-scoped federated credential.
       SIGN_WINDOWS: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
     defaults:
@@ -242,7 +242,7 @@ jobs:
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: 1
       # Developer ID signing + notarization runs on tag builds once the Apple secrets are set (see
-      # "Code signing" in README.md); without them the binaries keep the linker's ad-hoc signature.
+      # docs/code-signing.md); without them the binaries keep the linker's ad-hoc signature.
       # Unpublished PR/master builds skip it rather than wait on Apple's notary service.
       SIGN_MACOS: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
