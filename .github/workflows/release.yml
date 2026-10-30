@@ -137,6 +137,10 @@ jobs:
   windows:
     needs: meta
     runs-on: windows-2022
+    # Tag builds run in the `release` environment, so their OIDC subject is
+    # repo:<owner>/<repo>:environment:release, the one subject Azure's federated credential has to match
+    # (a Tag credential would need one per tag name). Other builds use no environment and don't sign.
+    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
     permissions:
       contents: read
       id-token: write      # OIDC login to Azure for Artifact Signing

@@ -118,8 +118,8 @@ signed; PR and master builds stay unsigned.
 **Windows — Azure Artifact Signing (~$9.99/month).** Individuals in the US/Canada qualify.
 1. Create an Azure subscription, then an Artifact Signing account and an identity validation (Public Trust,
    individual; takes a few days) and a certificate profile.
-2. Create an app registration with a federated credential for this repo (GitHub OIDC) whose subject
-   matches a release tag build, and give it the
+2. Create an app registration with a federated credential for this repo (GitHub OIDC, entity type
+   *Environment*, environment `release`; tag builds sign from that environment), and give it the
    *Artifact Signing Certificate Profile Signer* role on the account.
 3. Secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`. Variables: `AZURE_SIGNING_ENDPOINT`
    (for example `https://eus.codesigning.azure.net/`), `AZURE_SIGNING_ACCOUNT`, `AZURE_CERT_PROFILE`.
