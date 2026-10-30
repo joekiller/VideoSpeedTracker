@@ -143,7 +143,8 @@ function mark({ vst, body, cfg, n }) {
     const keys = ['AnalysisBoxLeft', 'AnalysisBoxTop', 'AnalysisBoxWidth', 'AnalysisBoxHeight', 'speedLineLeft', 'speedLineRight', 'obstruction', 'R2LStreetY', 'L2RStreetY'];
     const r = await vst.putConfig(Object.fromEntries(keys.map((key) => [key, draft[key]])));
     $('#problems').textContent = r.ok ? '' : r.problems.join('. ');
-    if (r.ok) { Object.assign(cfg, r.config); setDirty(false); toast('Saved. VST is using the new zones.'); }
+    // VST saves at once, but a run in progress keeps the zones it started with (docs/companion-api.md).
+    if (r.ok) { Object.assign(cfg, r.config); setDirty(false); toast(vst.lastStatus?.running ? 'Saved. VST uses the new zones from the next start.' : 'Saved. VST will use the new zones.'); }
   };
   $('#next').addEventListener('click', async (e) => {
     if (!dirty) return;

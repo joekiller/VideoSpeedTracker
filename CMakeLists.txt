@@ -88,7 +88,7 @@ install(TARGETS VideoSpeedTracker ProcessHiLites RUNTIME DESTINATION ${VST_BIN_D
 # per-user config folder (src/Wintel64/Common/UserPaths.h), so installs never need a writable program folder.
 # The phone companion (companion/README.md) is static files; VST Studio serves them when Remote companion is on.
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/companion/ DESTINATION ${VST_DATA_DIR}/companion
-  PATTERN dev EXCLUDE PATTERN README.md EXCLUDE)
+  PATTERN dev EXCLUDE PATTERN test EXCLUDE PATTERN README.md EXCLUDE)
 install(FILES ${CMAKE_SOURCE_DIR}/bin/VST.cfg ${CMAKE_SOURCE_DIR}/bin/ProcessHiLites.cfg ${CMAKE_SOURCE_DIR}/README.md DESTINATION ${VST_DATA_DIR})
 install(FILES ${CMAKE_SOURCE_DIR}/docs/getting-started.md DESTINATION ${VST_DATA_DIR} RENAME GETTING-STARTED.md)
 # The 2016 sample clip (~80 MB) that the VST.cfg template is calibrated for, so `VideoSpeedTracker --demo` (or a
@@ -129,6 +129,41 @@ endif()
 option(VST_BUILD_GUI "Build VST Studio, the desktop app (fetches Dear ImGui, GLFW and fonts at configure time)" ON)
 if(VST_BUILD_GUI)
   add_subdirectory(src/Gui)
+endif()
+
+# Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back
+# (tests/stream_reconnect.sh). Only where ffmpeg and bash are available; about 45 s. With VST Studio
+# built, it also checks that Stop ends an embedded run promptly while it is waiting to reconnect.
+find_program(FFMPEG_EXECUTABLE ffmpeg)
+find_program(BASH_EXECUTABLE bash)
+if(FFMPEG_EXECUTABLE AND BASH_EXECUTABLE AND NOT WIN32)
+  set(engine_test "")
+  if(VST_BUILD_GUI)
+    add_executable(engine_reconnect_test tests/engine_reconnect_test.cpp)
+    target_link_libraries(engine_reconnect_test PRIVATE vst_engine)
+    set(engine_test $<TARGET_FILE:engine_reconnect_test>)
+  endif()
+  add_test(NAME live_stream_reconnect
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stream_reconnect.sh
+      $<TARGET_FILE:VideoSpeedTracker> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-reconnect
+      ${FFMPEG_EXECUTABLE} ${engine_test})
+  set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180)
+endif()
+
+# VST Studio's companion API (docs/companion-api.md), end to end: the real app under a virtual display, driven with
+# curl, run on the sample video and checked against the same baseline as sample_video_baseline. Needs bash, xvfb-run
+# and curl; where any of them or the GUI build is missing the script prints API_SMOKE_SKIPPED and ctest reports the
+# test as skipped rather than passed. Not on Windows, which has neither bash nor Xvfb.
+if(NOT WIN32)
+  if(TARGET VSTStudio)
+    set(VST_STUDIO_EXE $<TARGET_FILE:VSTStudio>)
+  else()
+    set(VST_STUDIO_EXE "")
+  endif()
+  add_test(NAME companion_api_smoke
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/api_smoke.sh "${VST_STUDIO_EXE}" ${CMAKE_SOURCE_DIR}
+      ${CMAKE_BINARY_DIR}/api-smoke ${CMAKE_COMMAND})
+  set_tests_properties(companion_api_smoke PROPERTIES SKIP_REGULAR_EXPRESSION "API_SMOKE_SKIPPED" TIMEOUT 300)
 endif()
 
 set(CPACK_PACKAGE_NAME videospeedtracker)

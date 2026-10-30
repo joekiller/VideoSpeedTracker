@@ -247,6 +247,50 @@ the interactive prompt) only colors the results (green at or under, yellow over,
 and the csv marks a speed with `*****` when it is more than 20 MPH over the egregious bound. Neither changes the
 measured speeds. If a video doesn't report a frame rate, VST assumes `CalibrationFPS`.
 
+## The stats csv
+
+Each vehicle VST measures is one row of `stats_<name>.csv`:
+
+```
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp
+20160130, 172251, 348, NW, 290, 320, 30, 878, 317, 561, 63, , 33, , 2016-01-30T17:23:02-05:00
+```
+
+| Column | Meaning |
+|---|---|
+| Date, Time | `yyyymmdd`, `hhmmss`. For Foscam recordings (`manual_yyyymmddhhmmss.avi`), when the recording started, the same on every row, as in 2016. For every other source, when this vehicle passed, the same moment as Timestamp. Blank when unknown. |
+| Frame | frame number when the vehicle was logged, just after it left the speed zone |
+| Direction | `L2RDirection` or `R2LDirection` from `VST.cfg` |
+| StartFrame, EndFrame, # Frames | frames at which the front bumper crossed the two speed lines, and the difference (the measurement) |
+| StartPix, EndPix, DeltaPix | front bumper x at the two speed lines, and the distance between them (analysis-box pixels) |
+| VehicleArea | profile area / 300; at `largeVehicleArea` and above it's probably a bus or truck |
+| *(blank)* | always empty (kept from 2016) |
+| estSpeed | estimated speed, MPH |
+| Flag | `*****` when the speed is implausible (more than 20 MPH over the egregious bound): check it by eye. Otherwise empty. |
+| Timestamp | when the vehicle passed, ISO 8601 local time with the UTC offset, e.g. `2026-10-30T14:03:22-04:00`. Empty when unknown. |
+
+Where the time comes from depends on the source, and VST says which in its log when it starts each video:
+
+- **Camera or stream:** this computer's clock when the vehicle was logged. Keep the clock right (network time).
+- **Foscam recording:** the start time in the file name plus the vehicle's offset into the video (Frame / fps), read as
+  this computer's time zone.
+- **Any other recording:** the file's modified time (when the camera finished writing it) minus the video's length,
+  plus the offset. Copying a file resets its modified time, so check one vehicle against the clock in the picture. If
+  the modified time is in the future or before 2000, or the video doesn't report its length and frame rate, the time
+  is left blank.
+
+Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open csv**
+reads both versions. Spreadsheets that read columns by position are unaffected: the first 13 are unchanged.
+
+## Unattended runs on a camera or stream
+
+A camera (`--input 0`) or a stream URL (`--input rtsp://...`) runs until it's stopped (Esc, Stop in VST Studio, or
+ending the process). If the picture drops out (a Wi-Fi blip, a camera reboot) VST doesn't end the job: it reopens the
+source after 1, 2, 4, 8 and 16 s, then every 30 s for as long as it takes, and logs each attempt and the reconnect.
+Vehicles being tracked when the picture stopped are dropped, so no speed is ever measured across a gap; frame numbers
+keep counting, so `Frame` never goes backwards. A URL that reports a length (an `http://` link to a recorded file) is
+treated as a file and ends at its end, as files always do.
+
 ## Troubleshooting
 
 These come from the [issues filed against the original project](docs/upstream-issues.md).
@@ -257,6 +301,8 @@ These come from the [issues filed against the original project](docs/upstream-is
 | `dataPathPrefix = g:\locustdata` and "No video folders found" on a first run | v1.0.0 shipped the 2016 author's data path in `VST.cfg`. Later releases leave it blank (the per-user data folder). In v1.0.0, set it to a folder of your own, or use `--input`. |
 | Exits right after reading the config, or "Frame width is not 1280" / "Frame rate is not 30" | The 2016 code accepted only exactly 1280x720 at exactly 30.000 fps, so 1080p, 29.97 fps and phone video all quit. Any size and rate now work. |
 | "Can't open video" | The file is missing or this OpenCV can't decode it. Convert it with `ffmpeg -i in.ext -c:v libx264 out.mp4`. |
+| Date, Time and Timestamp are blank | The video isn't a Foscam `manual_yyyymmddhhmmss` file and its modified time can't be trusted (see [The stats csv](#the-stats-csv)). Rename it `manual_<when it started>.<ext>` and run it again. |
+| A camera or stream job keeps logging "Reconnecting" | The source stopped sending pictures. VST keeps retrying every 30 s; check the camera's power, network and URL. Vehicles resume when it's back. |
 | Crash partway through an H.264 file | Likely cause: the 2016 loop trusted the container's frame count and read past the last real frame. VST now reads until the video ends. |
 | "unknown setting" or "can't read a value" | Typo in VST.cfg. The message gives the file and line number. |
 | Speeds look scaled by a constant factor | Check `CalibrationSpeed`, `CalibrationFPS` and the two `CalibrationFrames` values (see above). |
@@ -267,7 +313,7 @@ VideoSpeedTracker prints every error to stderr and exits with status 1 on any er
 
 [`companion/`](companion/README.md) is a phone app (PWA) for watching the camera live, browsing recent speeders and
 wrong-way drivers with clips, calibrating from the street, and sharing a pass or a traffic report card if you choose to.
-The desktop app serves it on your local network when **Remote companion** is turned on; scan its QR code to pair.
+The desktop app serves it on your local network when the companion is turned on (**Companion app** in the sidebar); scan its QR code to pair.
 Its local API is specified in [docs/companion-api.md](docs/companion-api.md), and `node companion/dev/mock-vst.mjs`
 runs it against simulated traffic with no camera.
 

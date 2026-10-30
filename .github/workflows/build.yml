@@ -18,6 +18,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      # The phone companion's unit and contract tests (against the mock server). Plain `node --test`, no npm
+      # install: the runner image's preinstalled Node is enough as long as it is 20 or newer.
+      - name: Companion tests
+        run: |
+          node --version
+          node -e 'process.exit(+process.versions.node.split(".")[0] >= 20 ? 0 : 1)' || { echo "::error::Node 20+ needed"; exit 1; }
+          node --test companion/test/*.test.mjs
       - name: Install OpenCV and the X11/OpenGL headers VST Studio needs
         run: |
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
@@ -25,13 +32,29 @@ jobs:
           sudo apt-get install -y libopencv-dev libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev xvfb
       - name: Build
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
-      - name: Sample video regression test
+      # Sample video regression, config parsing, first run, and the companion API smoke test, which drives VST
+      # Studio under Xvfb (xvfb installed above; curl and Node come with the runner). VST_REQUIRE_API_SMOKE makes
+      # that test fail rather than skip if anything it needs goes missing.
+      - name: Tests
+        env:
+          VST_REQUIRE_API_SMOKE: 1
         run: ctest --test-dir build --output-on-failure
+      - name: Upload the API smoke test's logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-smoke-logs
+          path: |
+            build/api-smoke/*.log
+            build/api-smoke/*.txt
+          if-no-files-found: ignore
       # Drives every page of the desktop app on the sample video under a virtual display and saves a screenshot
       # of each, so a broken page shows up here and the README images can be refreshed from the artifact.
       - name: VST Studio screenshot tour
         run: xvfb-run -a -s "-screen 0 1600x980x24" build/src/Gui/VSTStudio --config bin/VST.cfg --shots shots
+      # The tour exits non-zero when a step times out or nothing was tracked; keep its screenshots either way.
       - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
         with:
           name: vst-studio-screenshots
           path: shots/*.png

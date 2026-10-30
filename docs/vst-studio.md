@@ -8,10 +8,19 @@ the Linux applications menu).
 
 ![Live tracking](images/studio/05-live-tracking.jpg)
 
+The screenshots use the bundled 2016 Locust Avenue sample, which is a two-way street. To show the wrong-way
+callouts, the screenshot tour treats it as one-way (right to left), so the "wrong-way" vehicles in these images
+are legal drivers going the other way.
+
 ## Pages
 
 The side rail follows the order a first-time user works in. Every page reads and writes the same `VST.cfg` the
 command line uses, so a setup made here works for headless and cron runs too.
+
+Setup steps get a check mark once they're done for the source and settings in use: Zones once you've checked
+them on the current source with nothing for the tracker to reject, and Calibrate once a calibration was applied
+to this `VST.cfg` (the bundled sample comes calibrated). Until a run can work, the header's main button leads to
+the next step instead of **Start tracking**, and a **Not calibrated** chip opens the Calibrate page.
 
 ### Get started
 
@@ -47,8 +56,12 @@ The command line takes the same sources: `--input 0` opens the first camera and 
 
 Drag everything on the picture: the analysis box (edges, corners, or the tab to move it), the two white speed
 lines, the lane lines at hubcap height, and the obstruction band for a tree or pole. The inspector shows the
-same values as numbers, explains each one, and lists anything the tracker would reject. Unsaved edits are used
-by the next run (from a scratch copy, `last-run.cfg` in the config folder), so you can try before you save.
+same values as numbers, explains each one, and lists anything the tracker would reject.
+
+Settings save themselves: a change is written to `VST.cfg` a moment after you let go of a handle or field, and
+never while the tracker would reject it. The first save of a session keeps the file as it was in `VST.cfg.bak`,
+and **Undo changes since opening** (or **Undo** on the Source page) puts it back. Saves go to a temporary file
+that replaces `VST.cfg` in one step, so a crash or power cut can't leave it half written.
 
 **Your street** sets the compass direction of each lane and whether the street is one-way. On a one-way street
 VST flags every vehicle going the other way: the lane on the picture turns red, the run shows an alert, and the
@@ -80,14 +93,20 @@ frame difference the tracker works from. Files play in real time or as fast as t
 lands in the filmstrip with a snapshot, and the side panel keeps counts and the fastest vehicles.
 
 Each run writes the usual outputs under the data folder: `Stats/stats_<name>.csv`, a highlights video in
-`HiLites/` (if enabled), and a short clip per vehicle in `Clips/`.
+`HiLites/` (if enabled), and a short clip per vehicle in `Clips/`. Every csv row has a Timestamp: when the vehicle
+passed, from this computer's clock for a camera or stream (see [the stats csv](../README.md#the-stats-csv)).
+
+A camera or stream runs until you press Stop. If the picture drops out, the badge turns to **RECONNECTING…** and the
+tracker reopens the source after 1, 2, 4, 8 and 16 s, then every 30 s until it's back; Stop works during the wait.
+Vehicles in the speed zone when the picture stopped are dropped rather than measured across the gap.
 
 ### Results
 
 Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
 time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows its snapshot, details and clip.
-**Open csv** loads any stats file from an earlier run or from the command line. For recordings named by
-Foscam cameras (`manual_yyyymmddhhmmss`), the time each vehicle passed is worked out from the file name.
+**Open csv** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
+time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
+recordings (`manual_yyyymmddhhmmss`) is when the recording started.
 
 ![Results](images/studio/06-results.jpg)
 

@@ -94,6 +94,7 @@ json statusJson(App& app) {
 	return json{
 		{ "version", VST_VERSION }, { "siteName", app.prefs.siteName },
 		{ "running", app.tracker.running() }, { "paused", app.tracker.paused() },
+		{ "reconnecting", app.tracker.running() && prog.reconnecting },
 		{ "source", src }, { "frame", app.tracker.running() ? prog.frame : std::max(app.player.position(), 0) },
 		{ "totalFrames", app.tracker.running() ? prog.totalFrames : in.frames }, { "procFps", prog.procFps },
 		{ "batch", { { "index", prog.job }, { "count", prog.jobs } } },
@@ -205,6 +206,12 @@ void Server::routes() {
 		res.status = status;
 		res.set_content(j.dump(), "application/json");
 	};
+	// Sends a JSON body produced by App::post(), which returns "" when the GUI thread didn't get to it within 5 s.
+	auto sendPosted = [sendJson](Response& res, const std::string& out) {
+		json j = json::parse(out, nullptr, false);
+		if (j.is_discarded()) sendJson(res, { { "error", "VST Studio is busy; try again" } }, 503);
+		else sendJson(res, j);
+	};
 	// Token from the header or the query string; compared without early exit.
 	auto authed = [&app](const Request& req) {
 		std::string t;
@@ -231,13 +238,22 @@ void Server::routes() {
 	http_->set_default_headers({ { "Access-Control-Allow-Origin", "*" }, { "Access-Control-Allow-Headers", "Authorization, Content-Type" },
 		{ "Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS" }, { "Cache-Control", "no-store" } });
 	http_->Options(R"(/api/.*)", [](const Request&, Response& res) { res.status = 204; });
+	// Every error is JSON {"error": "..."} (docs/companion-api.md).  httplib calls this for any response with a
+	// status of 400 or more, including ones a handler already filled in (401, 404 for a vehicle...), so only empty
+	// bodies are replaced: unmatched routes, and paths the static mount point refuses (such as "/../").
+	http_->set_error_handler([](const Request&, Response& res) {
+		if (!res.body.empty()) return httplib::Server::HandlerResponse::Unhandled;
+		const char* msg = res.status == 404 ? "not found" : res.status == 400 ? "bad request" : "request failed";
+		res.set_content(json{ { "error", msg } }.dump(), "application/json");
+		return httplib::Server::HandlerResponse::Handled;
+	});
 
 	http_->Get("/api/hello", [sendJson](const Request&, Response& res) {
 		sendJson(res, { { "app", "VST" }, { "version", VST_VERSION }, { "auth", true } });
 	});
 
-	http_->Get("/api/status", guard([&app, sendJson](const Request&, Response& res) {
-		sendJson(res, json::parse(app.post([&app] { return statusJson(app).dump(); }), nullptr, false));
+	http_->Get("/api/status", guard([&app, sendPosted](const Request&, Response& res) {
+		sendPosted(res, app.post([&app] { return statusJson(app).dump(); }));
 	}));
 
 	http_->Get("/api/vehicles", guard([&app, sendJson](const Request& req, Response& res) {
@@ -261,17 +277,21 @@ void Server::routes() {
 		sendJson(res, vehicleJson(v));
 	}));
 
-	http_->Get(R"(/api/vehicles/(\d+)/snapshot\.jpg)", guard([&app](const Request& req, Response& res) {
+	http_->Get(R"(/api/vehicles/(\d+)/snapshot\.jpg)", guard([&app, sendJson](const Request& req, Response& res) {
 		Vehicle v;
 		std::vector<uchar> jpg;
-		if (!app.tracker.vehicle(std::atoi(req.matches[1].str().c_str()), v) || v.snapshot.empty() || !cv::imencode(".jpg", v.snapshot, jpg)) { res.status = 404; return; }
+		if (!app.tracker.vehicle(std::atoi(req.matches[1].str().c_str()), v) || v.snapshot.empty() || !cv::imencode(".jpg", v.snapshot, jpg)) {
+			sendJson(res, { { "error", "no snapshot for this vehicle" } }, 404);
+			return;
+		}
 		res.set_content(std::string(jpg.begin(), jpg.end()), "image/jpeg");
 	}));
 
-	http_->Get(R"(/api/vehicles/(\d+)/clip\.mp4)", guard([&app](const Request& req, Response& res) {
+	http_->Get(R"(/api/vehicles/(\d+)/clip\.mp4)", guard([&app, sendJson](const Request& req, Response& res) {
 		Vehicle v;
-		if (!app.tracker.vehicle(std::atoi(req.matches[1].str().c_str()), v) || v.clipPath.empty()) { res.status = 404; return; }
+		if (!app.tracker.vehicle(std::atoi(req.matches[1].str().c_str()), v) || v.clipPath.empty()) { sendJson(res, { { "error", "no clip kept for this vehicle" } }, 404); return; }
 		std::ifstream in(v.clipPath, std::ios::binary);
+		if (!in) { sendJson(res, { { "error", "the clip file is gone" } }, 404); return; }
 		std::ostringstream buf;
 		buf << in.rdbuf();
 		res.set_content(buf.str(), "video/mp4");
@@ -293,10 +313,10 @@ void Server::routes() {
 		return f;
 	};
 
-	http_->Get("/api/frame.jpg", guard([grab](const Request& req, Response& res) {
+	http_->Get("/api/frame.jpg", guard([grab, sendJson](const Request& req, Response& res) {
 		cv::Mat f = grab(req.has_param("overlay") && req.get_param_value("overlay") != "0");
 		std::vector<uchar> jpg;
-		if (f.empty() || !cv::imencode(".jpg", f, jpg, { cv::IMWRITE_JPEG_QUALITY, 80 })) { res.status = 404; return; }
+		if (f.empty() || !cv::imencode(".jpg", f, jpg, { cv::IMWRITE_JPEG_QUALITY, 80 })) { sendJson(res, { { "error", "no picture yet; open a source in VST Studio" } }, 404); return; }
 		res.set_content(std::string(jpg.begin(), jpg.end()), "image/jpeg");
 	}));
 
@@ -316,21 +336,38 @@ void Server::routes() {
 		});
 	}));
 
-	// Server-sent events: status about once a second, each vehicle as it's logged, live boxes ~5 times a second.
+	// Server-sent events: status about once a second, each vehicle as it's logged, live boxes ~5 times a second,
+	// and the config when the stream opens and again whenever it changes.
 	http_->Get("/api/live", guard([&app](const Request& req, Response& res) {
-		int last = req.has_param("since") ? std::atoi(req.get_param_value("since").c_str()) : app.tracker.lastVehicleId();
-		auto state = std::make_shared<std::pair<int, int>>(last, 0);
+		struct LiveState {
+			int lastVehicle = 0;    // newest vehicle id already sent
+			int tick = 0;           // provider calls so far; every 5th (~1 s) sends status and checks the config
+			std::string config;     // the config JSON last sent, "" before the first
+		};
+		auto state = std::make_shared<LiveState>();
+		state->lastVehicle = req.has_param("since") ? std::atoi(req.get_param_value("since").c_str()) : app.tracker.lastVehicleId();
 		res.set_chunked_content_provider("text/event-stream", [&app, state](size_t, httplib::DataSink& sink) {
 			auto send = [&](const char* ev, const json& data) {
 				std::string msg = std::string("event: ") + ev + "\ndata: " + data.dump() + "\n\n";
 				return sink.write(msg.data(), msg.size());
 			};
-			if (state->second++ % 5 == 0) {
-				std::string s = app.post([&app] { return statusJson(app).dump(); });
-				if (!s.empty() && !send("status", json::parse(s, nullptr, false))) return false;
+			if (state->tick++ % 5 == 0) {
+				// One trip to the GUI thread for both bodies.  The config can change from anywhere (the desktop's
+				// own editors, PUT /api/config or a calibration from any phone), so rather than hooking every
+				// writer, each stream compares the config with what it last sent: a change reaches every client
+				// within about a second, and the first tick always sends it.
+				json both = json::parse(app.post([&app] { return json::array({ statusJson(app), configJson(app) }).dump(); }), nullptr, false);
+				if (both.is_array() && both.size() == 2) {
+					if (!send("status", both[0])) return false;
+					std::string cfg = both[1].dump();
+					if (cfg != state->config) {
+						if (!send("config", both[1])) return false;
+						state->config = cfg;
+					}
+				}
 			}
-			for (const Vehicle& v : app.tracker.vehiclesSince(state->first)) {
-				state->first = v.id;
+			for (const Vehicle& v : app.tracker.vehiclesSince(state->lastVehicle)) {
+				state->lastVehicle = v.id;
 				if (!send("vehicle", vehicleJson(v))) return false;
 			}
 			Tracker::Live live;
@@ -347,24 +384,25 @@ void Server::routes() {
 		});
 	}));
 
-	http_->Get("/api/config", guard([&app, sendJson](const Request&, Response& res) {
-		sendJson(res, json::parse(app.post([&app] { return configJson(app).dump(); }), nullptr, false));
+	http_->Get("/api/config", guard([&app, sendPosted](const Request&, Response& res) {
+		sendPosted(res, app.post([&app] { return configJson(app).dump(); }));
 	}));
 
-	http_->Put("/api/config", guard([&app, sendJson, parseBody](const Request& req, Response& res) {
+	http_->Put("/api/config", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
 		json in;
-		if (!parseBody(req, in)) { sendJson(res, { { "ok", false }, { "problems", { "body must be a JSON object" } } }, 400); return; }
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
 		std::string out = app.post([&app, in] {
 			auto problems = applyConfig(app, in);
 			return json{ { "ok", problems.empty() }, { "problems", problems }, { "config", configJson(app) } }.dump();
 		});
-		json j = json::parse(out, nullptr, false);
-		sendJson(res, j, j.value("ok", false) ? 200 : 422);
+		// Rejected settings are a normal answer (200, ok false, the problems in plain words), not an HTTP error: the
+		// companion shows the problems next to the fields, and its client treats any non-2xx as a failed request.
+		sendPosted(res, out);
 	}));
 
 	http_->Post("/api/calibration/mark", guard([&app, sendJson, parseBody](const Request& req, Response& res) {
 		json in;
-		if (!parseBody(req, in)) { sendJson(res, { { "ok", false } }, 400); return; }
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
 		int dir = in.value("dir", "L2R") == "R2L" ? 1 : 0;
 		int edge = in.value("edge", "start") == "end" ? 1 : 0;
 		sendJson(res, json::parse(app.post([&app, dir, edge] {
@@ -374,9 +412,9 @@ void Server::routes() {
 		}), nullptr, false));
 	}));
 
-	http_->Post("/api/calibration/apply", guard([&app, sendJson, parseBody](const Request& req, Response& res) {
+	http_->Post("/api/calibration/apply", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
 		json in;
-		if (!parseBody(req, in)) { sendJson(res, { { "ok", false } }, 400); return; }
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
 		std::string out = app.post([&app, in] {
 			double speed = in.value("speed", 0.0);
 			int vid = in.value("vehicleId", 0);
@@ -396,29 +434,33 @@ void Server::routes() {
 			if (err.empty() && !app.cfg.save()) err = app.cfg.error;
 			return json{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) }, { "config", configJson(app) } }.dump();
 		});
-		json j = json::parse(out, nullptr, false);
-		sendJson(res, j, j.value("ok", false) ? 200 : 422);
+		sendPosted(res, out);   // 200 either way, as for PUT /api/config
 	}));
 
-	http_->Post("/api/run", guard([&app, sendJson, parseBody](const Request& req, Response& res) {
+	http_->Post("/api/run", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
 		json in;
-		if (!parseBody(req, in)) { sendJson(res, { { "ok", false } }, 400); return; }
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
 		std::string action = in.value("action", "");
+		if (action != "start" && action != "stop" && action != "pause" && action != "resume") {
+			sendJson(res, { { "error", "action must be start, stop, pause or resume" } }, 400);
+			return;
+		}
 		std::string out = app.post([&app, action] {
 			if (action == "start") app.startTracking();
 			else if (action == "stop") app.stopTracking();
 			else if (action == "pause") app.tracker.setPaused(true);
-			else if (action == "resume") app.tracker.setPaused(false);
-			else return json{ { "ok", false }, { "error", "action must be start, stop, pause or resume" } }.dump();
-			return json{ { "ok", true }, { "running", app.tracker.running() }, { "paused", app.tracker.paused() } }.dump();
+			else app.tracker.setPaused(false);
+			// The status after the action, so the caller needn't ask again.  "start" can be refused (no source,
+			// invalid zones); ok is still true then and status.running stays false, while the desktop shows why.
+			return json{ { "ok", true }, { "status", statusJson(app) } }.dump();
 		});
-		sendJson(res, json::parse(out, nullptr, false));
+		sendPosted(res, out);
 	}));
 
-	http_->Get("/api/stats.csv", guard([&app](const Request&, Response& res) {
+	http_->Get("/api/stats.csv", guard([&app, sendJson](const Request&, Response& res) {
 		std::string p = app.tracker.lastStatsPath();
 		std::ifstream in(p);
-		if (p.empty() || !in) { res.status = 404; return; }
+		if (p.empty() || !in) { sendJson(res, { { "error", "no stats yet; run the tracker first" } }, 404); return; }
 		std::ostringstream buf;
 		buf << in.rdbuf();
 		res.set_header("Content-Disposition", "attachment; filename=\"" + fs::path(p).filename().string() + "\"");

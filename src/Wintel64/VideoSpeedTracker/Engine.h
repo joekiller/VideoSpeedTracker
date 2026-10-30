@@ -41,6 +41,16 @@ struct VehicleEvent {
 	int startFrame, endFrame;        // frames at the two speed lines
 	int startPixel, endPixel;        // front bumper x at the two speed lines, analysis-box coordinates
 	int area;
+	std::string timestamp;           // csv Timestamp: ISO 8601 local time with UTC offset when it passed, or "" if unknown
+};
+
+// A live source (camera or stream) stopped delivering frames and is being reopened, or has come back.  Files never
+// report this: they end at their first failed read.
+struct SourceStatus {
+	bool reconnecting;               // true from the dropout until frames arrive again
+	int attempt;                     // reopen attempt about to be made (1, 2, ...); 0 once reconnected
+	int waitSeconds;                 // wait before that attempt: 1, 2, 4, 8, 16, then 30 for as long as it takes
+	std::string message;             // the line also written to the log
 };
 
 struct Hooks {
@@ -50,11 +60,15 @@ struct Hooks {
 	// frame pair; the host can block here to pause.
 	std::function<int()> pollKey;
 	std::function<void(const std::string& line)> onLog;   // stdout / stderr of the engine, one line per call
+	// Called on the engine thread.  While reconnecting the engine also calls pollKey about every 100 ms, so returning 27
+	// stops the run promptly even in the middle of a 30 s wait.
+	std::function<void(const SourceStatus&)> onSourceStatus;
 };
 
 // Runs the tracker as if from the command line, e.g. {"--input", "a.mp4", "--config", "VST.cfg", "--stats", "s.csv"}.
 // --headless is implied.  An --input of all digits opens that camera index; URLs (rtsp://, http://) work as
-// files do.  Returns the process exit status the CLI would have returned.
+// files do, except that a camera, or a URL that reports no length, is reopened after a dropout instead of ending the
+// run (see SourceStatus).  Returns the process exit status the CLI would have returned.
 int run(const std::vector<std::string>& args, const Hooks& hooks);
 
 }  // namespace vst

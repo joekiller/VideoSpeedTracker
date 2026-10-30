@@ -3,7 +3,8 @@
 //   VSTStudio                       normal start
 //   VSTStudio --config FILE         use this VST.cfg instead of the remembered/per-user one
 //   VSTStudio --shots DIR           documentation mode: fresh preferences, the bundled sample video, a scripted
-//                                   tour of every page, a PNG of each in DIR, then exit (works under Xvfb)
+//                                   tour of every page, a PNG of each in DIR, then exit (works under Xvfb); exits
+//                                   non-zero if a step timed out or no vehicles were tracked
 //   VSTStudio --write-icon FILE     write the app icon as a 256x256 PNG (packaging/vst-studio.png)
 #include "App.h"
 #include "Icons.h"
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -74,8 +76,10 @@ struct DemoScript {
 	int step = 0, frames = 0;
 	bool done = false;
 	std::string pendingShot;
+	std::vector<std::string> failures;   // steps that gave up; any of these makes --shots exit non-zero
 
 	void shot(const char* name) { pendingShot = (fs::path(dir) / name).string(); }
+	void fail(const std::string& why) { std::fprintf(stderr, "--shots: %s\n", why.c_str()); failures.push_back(why); }
 	void next() { step++; frames = 0; }
 
 	void tick() {
@@ -109,7 +113,20 @@ struct DemoScript {
 				app.tracker.setPaused(true);
 				next();
 			}
-			if (frames > 6000 || (frames > 30 && !app.tracker.running())) next();
+			// Give up on the live screenshot rather than hang, but record it: the tour skips step 5 (whose retry would
+			// only bring it back here) and carries on so the other pages still get captured, and main() turns any
+			// failure into a non-zero exit for CI.
+			else if (frames > 6000) {
+				fail("timed out waiting for a measured vehicle on the Live page");
+				app.stopTracking();
+				step = 6;
+				frames = 0;
+			}
+			else if (frames > 30 && !app.tracker.running()) {
+				fail("tracking stopped after " + std::to_string(app.tracker.counts().vehicles) + " vehicles, before the Live screenshot");
+				step = 6;
+				frames = 0;
+			}
 			break;
 		case 5:
 			// The frame on screen can be a few frames newer than the one that triggered the pause; retry if it
@@ -131,7 +148,7 @@ struct DemoScript {
 				// Select the fastest vehicle for the detail panel.
 				int best = 0;
 				for (size_t i = 0; i < app.rows.size(); i++) if (app.rows[i].speed > app.rows[best].speed) best = int(i);
-				app.selectedRow_ = best;
+				app.selectedRow_ = app.rows.empty() ? -1 : best;   // nothing to select when a failed run logged nothing
 				next();
 			}
 			break;
@@ -241,11 +258,17 @@ int main(int argc, char** argv) {
 		if (shots && (script.done || ImGui::GetFrameCount() > 60000)) break;   // never hang a CI job
 	}
 
+	// A documentation run doubles as a CI smoke test of the whole app, so it must fail loudly: a tour that hit the
+	// frame cap, a step that timed out, or a run that tracked nothing all exit non-zero.
+	if (shots) {
+		if (!script.done) script.fail("the tour stopped at step " + std::to_string(script.step) + " (frame cap or window closed)");
+		if (app.tracker.counts().vehicles == 0) script.fail("no vehicles were tracked");
+	}
 	app.shutdown();
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplGlfw_Shutdown();
 	ImGui::DestroyContext();
 	glfwDestroyWindow(window);
 	glfwTerminate();
-	return 0;
+	return script.failures.empty() ? 0 : 1;
 }

@@ -23,6 +23,26 @@ std::string trim(const std::string& s) {
 	return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
 }
 
+// Replaces `path` with `text` without ever leaving a half-written file: write a sibling temp file, then rename
+// it over the target (rename replaces atomically on POSIX; on Windows std::filesystem uses MoveFileEx with
+// REPLACE_EXISTING).  A crash or power cut mid-save leaves either the old file or the new one, never neither.
+bool writeAtomic(const fs::path& path, const std::string& text) {
+	std::error_code ec;
+	fs::create_directories(path.parent_path(), ec);
+	fs::path tmp = path;
+	tmp += ".tmp";
+	{
+		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+		if (!out) return false;
+		out << text;
+		out.flush();
+		if (!out) { out.close(); fs::remove(tmp, ec); return false; }
+	}
+	fs::rename(tmp, path, ec);
+	if (ec) { fs::remove(tmp, ec); return false; }
+	return true;
+}
+
 std::string num(double v) {
 	std::ostringstream o;
 	o << v;
@@ -159,16 +179,37 @@ bool ConfigDoc::save() {
 	std::error_code ec;
 	fs::create_directories(fs::path(path_).parent_path(), ec);
 	std::string text = render();
-	std::ofstream outFile(path_, std::ios::binary);
-	if (!outFile) { error = "Can't write " + path_; return false; }
-	outFile << text;
-	outFile.close();
+	// The first save of a file in this session copies the original to <file>.bak, so "Undo changes" can get
+	// back to how things were when Studio opened it, however many autosaves happened since.
+	if (backedUp_ != path_ && fs::exists(path_, ec)) {
+		fs::copy_file(path_, backupPath(), fs::copy_options::overwrite_existing, ec);
+		if (!ec) backedUp_ = path_;
+	}
+	if (!writeAtomic(path_, text)) { error = "Can't write " + path_; return false; }
 	// Re-read the lines so a second save is relative to what's on disk now.
 	lines_.clear();
 	std::istringstream in(text);
 	for (std::string l; std::getline(in, l);) lines_.push_back(l);
 	markClean();
 	return true;
+}
+
+std::string ConfigDoc::backupPath() const { return path_.empty() ? std::string() : path_ + ".bak"; }
+
+bool ConfigDoc::hasBackup() const {
+	std::error_code ec;
+	return backedUp_ == path_ && !path_.empty() && fs::exists(backupPath(), ec);
+}
+
+bool ConfigDoc::restoreBackup() {
+	// Put the session's original back on disk and reload it; the .bak stays, so this can be repeated.
+	if (!hasBackup()) { error = "Nothing to undo yet"; return false; }
+	std::ifstream in(backupPath(), std::ios::binary);
+	std::stringstream text;
+	text << in.rdbuf();
+	if (!writeAtomic(path_, text.str())) { error = "Can't write " + path_; return false; }
+	std::string keep = path_;
+	return load(keep);
 }
 
 bool ConfigDoc::saveAs(const std::string& path) {
@@ -215,6 +256,7 @@ void AppPrefs::load() {
 	auto d = [&](const char* k, double& f) { try { if (kv.count(k)) f = std::stod(kv[k]); } catch (...) {} };
 	auto b = [&](const char* k, bool& f) { if (kv.count(k)) f = kv[k] == "1" || kv[k] == "true"; };
 	str("config", configPath); str("source", lastSource); str("site", siteName); str("remoteToken", remoteToken);
+	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor);
 	i("speedLimit", speedLimit); i("egregious", egregious); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
 	i("remotePort", remotePort); i("planPreset", planPreset);
 	b("realtime", realtime); b("highlights", highlights); b("trace", trace); b("showMotion", showMotion);
@@ -233,9 +275,7 @@ std::string AppPrefs::newToken() {
 }
 
 void AppPrefs::save() const {
-	std::error_code ec;
-	fs::create_directories(userpaths::configDir(), ec);
-	std::ofstream out(file());
+	std::ostringstream out;
 	out << "# VST Studio preferences\n"
 		<< "config = " << configPath << "\nsource = " << lastSource << "\nsite = " << siteName << "\n"
 		<< "speedLimit = " << speedLimit << "\negregious = " << egregious << "\n"
@@ -244,8 +284,10 @@ void AppPrefs::save() const {
 		<< "\nremote = " << remoteEnabled << "\nremotePort = " << remotePort << "\nremoteToken = " << remoteToken
 		<< "\nplanPreset = " << planPreset << "\nplanHfov = " << planHfov << "\nplanWidth = " << planWidth << "\nplanFps = " << planFps
 		<< "\nplanShutter = " << planShutter << "\nplanDist = " << planDist << "\nplanClear = " << planClear
-		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\n";
+		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nzonesFor = " << zonesFor
+		<< "\ncalibratedFor = " << calibratedFor << "\n";
 	for (auto& r : recent) out << "recent = " << r << "\n";
+	writeAtomic(file(), out.str());   // holds the pairing token: never leave it truncated
 }
 
 void AppPrefs::addRecent(const std::string& path) {

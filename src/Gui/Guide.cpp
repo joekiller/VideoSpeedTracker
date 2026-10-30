@@ -405,7 +405,6 @@ void App::pageGuide() {
 		};
 		combo("Cars going → head", cfg.g.L2RDirection, c::l2r);
 		combo("Cars going ← head", cfg.g.R2LDirection, c::r2l);
-		if (cfg.dirty() && primaryButton(ICON_SAVE "  Save", ImVec2(-FLT_MIN, 0))) saveConfig();
 		endCard();
 		ImGui::SameLine(0, px(20));
 		beginCard("zonesx", ICON_VECTOR, "Then draw the zones", ImVec2(half, 0));

@@ -103,7 +103,8 @@ or longer the zone looks in that lane.
 - Batch or scripted: run `VideoSpeedTracker --headless --input clip.mp4 --stats out.csv --speed-limit 25`.
   `--highlights hl.mp4` saves a video of the offenders. See `VideoSpeedTracker --help` for every option.
 
-Each csv row is one vehicle, with its direction, frame range, pixel distance, size and estimated speed.
+Each csv row is one vehicle, with its direction, frame range, pixel distance, size, estimated speed and the date and
+time it passed (the columns are described in the [README](../README.md#the-stats-csv)).
 
 ## Example: a narrow view of a one-way street
 

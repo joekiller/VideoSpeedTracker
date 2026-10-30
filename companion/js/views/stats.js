@@ -13,7 +13,7 @@ const PERIODS = { day: ['24 hours', 1], week: ['7 days', 7], month: ['30 days', 
 let period = 'week';
 
 /** Nearest-rank percentile of a sorted array. */
-const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(p / 100 * sorted.length) - 1)] : 0);
+export const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(p / 100 * sorted.length) - 1)] : 0);
 
 export function summarize(vs, limit, egregiousAt, oneWay) {
   const speeds = vs.map((v) => v.speed).sort((a, b) => a - b);

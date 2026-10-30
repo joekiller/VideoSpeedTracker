@@ -59,6 +59,9 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     CalibrationFramesL2R: 35, CalibrationFramesR2L: 40, CalibrationSpeed: 25, CalibrationFPS: 30,
     legalDirection: 'R2L',
     speedLimit: 25, egregious: 40, siteName: 'Demo Street',
+    // Reported by VST Studio too (docs: "VST Studio also reports"); the companion doesn't edit them.
+    obstruction_extent: 30, SENSITIVITY_VALUE: 30, BLUR_SIZE: 20, largeVehicleArea: 100,
+    frameWidth: 1280, frameHeight: 720,
   };
   const state = { running: true, paused: false, frame: 0, marks: {} };
   const vehicles = [];   // oldest first; ids ascend
@@ -115,8 +118,11 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       egregious: s.filter((v) => v.egregious).length,
       wrongWay: s.filter((v) => v.wrongWay).length,
       topSpeed: s.reduce((m, v) => Math.max(m, v.speed), 0),
+      avgSpeed: s.length ? s.reduce((t, v) => t + v.speed, 0) / s.length : 0,
     };
   };
+  /** Hand-marked calibration frames as VST Studio reports them: [start, end] per direction, -1 = not marked. */
+  const marks = (dir) => [state.marks[dir]?.start ?? -1, state.marks[dir]?.end ?? -1];
 
   const status = () => ({
     version: '1.1.0-demo',
@@ -128,6 +134,8 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     counts: counts(),
     speedLimit: config.speedLimit, egregious: config.egregious,
     legalDirection: config.legalDirection, siteName: config.siteName,
+    batch: { index: 0, count: 1 },
+    calibrationMarks: { L2R: marks('L2R'), R2L: marks('R2L') },
   });
 
   const emit = (event, data) => { for (const fn of listeners) fn(event, data); };
@@ -222,7 +230,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       case 'POST /api/calibration/mark': {
         if (!['L2R', 'R2L'].includes(body?.dir) || !['start', 'end'].includes(body?.edge)) return err(400, 'dir and edge required');
         (state.marks[body.dir] ||= {})[body.edge] = status().frame;
-        return ok({ ok: true, frame: state.marks[body.dir][body.edge] });
+        return ok({ ok: true, frame: state.marks[body.dir][body.edge], marks: marks(body.dir) });
       }
       case 'POST /api/calibration/apply': {
         const { dir, speed, vehicleId } = body || {};
@@ -237,12 +245,15 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
           frames = mk.end - mk.start;
           if (!(frames > 0)) return ok({ ok: false, problems: ['Mark the start and then the end of the pass first'] });
         }
-        return ok(setConfig({ [`CalibrationFrames${dir}`]: frames, CalibrationSpeed: Number(speed), CalibrationFPS: fps }));
+        // Like VST Studio's App::applyCalibration: keep CalibrationSpeed/CalibrationFPS (the other direction is
+        // expressed against them) and rescale this direction's frames so the pass reads `speed` mph.
+        const cal = Math.max(1, Math.round(frames * Number(speed) / config.CalibrationSpeed * config.CalibrationFPS / fps));
+        return ok(setConfig({ [`CalibrationFrames${dir}`]: cal }));
       }
       case 'GET /api/stats.csv': {
         const rows = vehicles.map((v) => [v.time.slice(0, 10).replace(/-/g, ''), v.time.slice(11, 19).replace(/:/g, ''),
-          v.frame, v.compass, v.startFrame, v.endFrame, v.frames, '', '', '', v.area, '', v.speed].join(', '));
-        return { status: 200, text: `Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed\n${rows.join('\n')}\n`, type: 'text/csv' };
+          v.frame, v.compass, v.startFrame, v.endFrame, v.frames, '', '', '', v.area, '', v.speed, '', v.time].join(', '));
+        return { status: 200, text: `Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp\n${rows.join('\n')}\n`, type: 'text/csv' };
       }
       default: return err(404, `No route for ${method} ${path}`);
     }

@@ -27,6 +27,11 @@ passing traffic. VST outputs:
     separating buses and large trucks from other vehicles. Estimated
     speed entries support speed data analysis of any sort imaginable.
 
+    *Note:* in the current build each entry also ends with a
+    Timestamp, the date and time the vehicle passed, with its UTC
+    offset. The columns are described in the
+    [README](../README.md#the-stats-csv).
+
 2.  A trace (debug) file, if you request it. This file contains copious
     information for determining how the tracker derived a final speed
     for a given vehicle.

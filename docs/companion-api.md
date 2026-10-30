@@ -7,7 +7,7 @@ implements it with simulated data so either side can be tested alone.
 
 ## Transport and pairing
 
-* Off by default. The user turns on **Remote companion** in VST Studio, which then listens on
+* Off by default. The user turns on the companion on VST Studio's **Companion app** page, which then listens on
   `http://<lan-ip>:8787/` and shows that URL as a QR code with a pairing token in the fragment:
   `http://192.168.1.20:8787/#token=Zx8…`. The fragment never reaches the server or any log; the
   companion stores the token on the phone and strips it from the address bar.
@@ -15,7 +15,13 @@ implements it with simulated data so either side can be tested alone.
   executable, so the phone loads the companion from the same origin as the API.
 * Every `/api/*` call except `/api/hello` needs the token, either as `Authorization: Bearer <token>`
   or, for `<img>`/`<video>` sources and `EventSource` (which cannot set headers), as `?token=<token>`.
-* A bad or missing token gets `401` with `{"error": "…"}`. Every error is JSON `{"error": "message"}`.
+* A bad or missing token gets `401` with `{"error": "…"}`. Every HTTP error (4xx, 5xx) is JSON
+  `{"error": "message"}`: `400` for a body that isn't a JSON object or an unknown action, `404` for
+  anything that isn't there (an unknown route, a vehicle or its media that is gone, a path outside
+  the `companion` folder), `503` when VST Studio didn't get to the request within 5 s.
+* Requests that are understood but refused (settings that don't validate, a calibration that can't
+  be applied) are not HTTP errors: they answer `200` with `{"ok": false, "problems": ["…"]}`, so the
+  companion can show the problems in place.
 * JSON bodies are UTF-8 `application/json`. CORS is allowed (`Access-Control-Allow-Origin: *`,
   `Authorization` and `Content-Type` headers, `GET, PUT, POST, OPTIONS`), so a companion served from
   elsewhere (a dev server, `localhost`) can reach it.
@@ -41,6 +47,7 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
   "version": "1.1.0",
   "running": true,
   "paused": false,
+  "reconnecting": false,
   "source": { "kind": "camera", "name": "Front window", "fps": 30, "width": 1280, "height": 720 },
   "frame": 81234,
   "totalFrames": 0,
@@ -53,9 +60,15 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
 }
 ```
 
-* `source.kind` is `file`, `camera` or `stream`; `totalFrames` is 0 for live sources.
+* `source` is `null` when nothing is open. `source.kind` is `file`, `camera`, `stream` or `image`
+  (a still opened for planning zones; it can't be tracked); `totalFrames` is 0 for live sources.
+* `reconnecting` is true while a camera or stream has stopped sending pictures and the tracker is reopening it
+  (after 1, 2, 4, 8, 16, then every 30 s). Passes resume when it's back.
 * `counts` cover the current session (since VST Studio started).
 * `legalDirection` is `L2R`, `R2L` or `both` (two-way street, nobody is ever wrong-way).
+* VST Studio also reports `counts.avgSpeed` (mph, not rounded), `batch` (`{"index", "count"}`: which
+  of the queued videos is being processed) and `calibrationMarks` (`{"L2R": [start, end], "R2L": […]}`,
+  the hand-marked frames, `-1` when unmarked). The companion doesn't need them; the mock reports them too.
 
 ### `GET /api/vehicles?since=<id>&from=<iso>&to=<iso>&limit=<n>`
 
@@ -121,7 +134,7 @@ The live view as `multipart/x-mixed-replace` JPEG frames (about 10 fps is plenty
 | `status` | same body as `/api/status` | about once a second |
 | `vehicle` | one `/api/vehicles` item | each time a pass is logged |
 | `tracks` | `[{"id", "dir", "x", "y", "w", "h", "speed"}]` | optional, ~5/s, vehicles currently being tracked (frame coords; `speed` 0 until known) |
-| `config` | same body as `GET /api/config` | after any config change, from any client |
+| `config` | same body as `GET /api/config` | when the stream opens, then within about a second of any config change, from any client (the desktop included) |
 
 Without `/api/live` the companion falls back to polling `/api/status` every 2 s and
 `/api/vehicles?since=` every 5 s.
@@ -148,19 +161,29 @@ As in `VST.cfg`, `speedLineLeft`, `speedLineRight` and `obstruction` are x offse
 `AnalysisBoxLeft`; `R2LStreetY` and `L2RStreetY` are y offsets from `AnalysisBoxTop`. `obstruction`
 of `[0, 0]` means none.
 
-`PUT` takes any subset of these keys, validates the whole result, and applies it live if valid. It
-persists `legalDirection` to `VST.cfg` as `LegalDirection` along with the tracker keys, and
-`speedLimit`, `egregious` and `siteName` to the desktop app's own settings.
+`GET` also returns, read-only, `obstruction_extent`, `SENSITIVITY_VALUE`, `BLUR_SIZE` and
+`largeVehicleArea` (the `VST.cfg` values) and `frameWidth`/`frameHeight` (always 1280 and 720).
+`PUT` ignores keys it doesn't know, so a client may send back a whole `GET` body.
+
+`PUT` takes any subset of these keys and validates the whole result. If it is valid, VST saves it
+at once: `legalDirection` to `VST.cfg` as `LegalDirection` along with the tracker keys, and
+`speedLimit`, `egregious` and `siteName` to the desktop app's own settings. A run already in
+progress keeps the settings it started with; the new ones take effect the next time tracking
+starts. If it isn't valid nothing changes, and the answer is still `200`:
 
 ```json
 { "ok": false, "problems": ["speedLineRight must be greater than speedLineLeft"], "config": { … } }
 ```
 
-`config` is always the configuration now in effect (unchanged when `ok` is false).
+`config` is always the configuration now saved (unchanged when `ok` is false), and `problems` is
+`[]` when `ok` is true.
 
 ### `POST /api/run`
 
-`{"action": "start" | "stop" | "pause" | "resume"}` → `{"ok": true, "status": { … }}`.
+`{"action": "start" | "stop" | "pause" | "resume"}` → `{"ok": true, "status": { … }}`, where `status`
+is the `/api/status` body after the action. An unknown action is `400` `{"error"}`. VST Studio can
+decline to start (no source chosen, zones that don't validate); `ok` is still true and
+`status.running` stays `false`, while the desktop shows why.
 
 ### Calibration
 
@@ -169,14 +192,41 @@ speed. Two ways to record it:
 
 * **From a logged pass (preferred).** Drive through at a known speed, find the pass, then
   `POST /api/calibration/apply {"dir": "L2R"|"R2L", "speed": 25, "vehicleId": 1042}`. VST sets
-  `CalibrationFrames<dir>` to that vehicle's `frames`, `CalibrationSpeed` to `speed`, and
-  `CalibrationFPS` to its `fps`.
+  `CalibrationFrames<dir>` so that a pass like that one (its `frames` at its `fps`) reads `speed`
+  mph. `CalibrationSpeed` and `CalibrationFPS` stay as they are, since the other direction's
+  calibration is expressed against them: `CalibrationFrames<dir> = frames × speed / CalibrationSpeed
+  × CalibrationFPS / fps`, rounded.
 * **By hand.** `POST /api/calibration/mark {"dir", "edge": "start"|"end"}` records the current frame
-  as the calibration vehicle's front bumper crosses the first and then the second speed line;
+  as the calibration vehicle's front bumper crosses the first and then the second speed line, and
+  answers `{"ok": true, "frame": 2161, "marks": [start, end]}` (`-1` for an edge not marked yet);
   `POST /api/calibration/apply {"dir", "speed"}` (no `vehicleId`) then uses the marked span.
 
-Both return `{"ok": true, "config": { … }}`, or `{"ok": false, "problems": [ … ]}`.
+Both ways of applying return `{"ok": true, "problems": [], "config": { … }}`, or `200`
+`{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked or `speed` isn't
+positive.
 
 ### `GET /api/stats.csv`
 
-The session's stats csv, same columns as the command-line `stats_*.csv`.
+The session's stats csv, same columns as the command-line `stats_*.csv`. `404` `{"error"}` before the
+first run.
+
+```
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp
+```
+
+`Flag` is `*****` for an implausible speed, else empty. `Timestamp` is when the vehicle passed, ISO 8601 with the
+UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The columns are described
+in the [README](../README.md#the-stats-csv).
+
+## Checking an implementation
+
+`companion/test/contract.test.mjs` checks this document over HTTP (Node 20+, no dependencies):
+
+```sh
+node --test companion/test/*.test.mjs                                   # against the mock
+BASE=http://127.0.0.1:8787 TOKEN=<pairing code> node --test companion/test/*.test.mjs   # a running VST Studio
+```
+
+Against a real VST Studio it only reads and sends requests that must be refused; `MUTATE=1` adds the
+ones that change settings (and put them back). `tests/api_smoke.sh`, run by `ctest`, starts VST
+Studio under Xvfb, tracks the sample video through this API, and runs the suite against it.
