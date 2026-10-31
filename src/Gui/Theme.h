@@ -65,6 +65,8 @@ void endCard();
 // Small rounded label, e.g. a "WRONG WAY" badge.  Returns its size.
 ImVec2 pill(const char* text, ImU32 fg, ImU32 bg, ImFont* font = nullptr);
 ImVec2 pillSize(const char* text, ImFont* font = nullptr);
+// The same pill centred on a frame-height line, for rows that mix pills with buttons, inputs or aligned text.
+ImVec2 linePill(const char* text, ImU32 fg, ImU32 bg, ImFont* font = nullptr);
 // Primary (filled accent) and ghost (outlined) buttons with a leading icon.
 bool primaryButton(const char* label, ImVec2 size = ImVec2(0, 0), ImU32 color = c::accent);
 bool ghostButton(const char* label, ImVec2 size = ImVec2(0, 0));

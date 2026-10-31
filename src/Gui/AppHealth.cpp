@@ -179,7 +179,7 @@ void App::healthCard() {
 		ImGui::SameLine();
 		if (ghostButton(ICON_CHECK "  It's fine, use this view")) useCurrentViewAsReference();
 	}
-	else if (health.viewCheckedAt.empty()) dimText(ICON_CAMERA "  Camera position: checked every 2 minutes on a live camera");
+	else if (health.viewCheckedAt.empty()) dimText(ICON_CAMERA "  Camera position: checked every 2 min on a live camera");
 	else if (health.view.result == health::ViewCheck::Unclear) dimText(ICON_CAMERA "  Camera position: too dark to tell (%s)", health.viewCheckedAt.substr(11, 5).c_str());
 	else dimText(ICON_CAMERA "  Camera position: unchanged (%s)", health.viewCheckedAt.substr(11, 5).c_str());
 	// Today.
@@ -189,7 +189,9 @@ void App::healthCard() {
 			mins ? (" (" + std::to_string(mins) + " min)").c_str() : "");
 	}
 	// Disk.
-	dimText(ICON_FOLDER "  Clips and highlights: %s of %s", gb(health.video.bytes).c_str(), health.budgetBytes ? gb(health.budgetBytes).c_str() : "no limit");
+	// The budget from the setting itself: health.budgetBytes is only filled in at the first prune.
+	if (prefs.keepVideoGB > 0) dimText(ICON_FOLDER "  Clips and highlights: %s of %s", gb(health.video.bytes).c_str(), gb(std::uintmax_t(prefs.keepVideoGB) << 30).c_str());
+	else dimText(ICON_FOLDER "  Clips and highlights: %s, no limit", gb(health.video.bytes).c_str());
 	ImGui::PushStyleColor(ImGuiCol_Text, v4(health.lowDisk ? c::warn : c::dim));
 	ImGui::TextUnformatted(health.freeBytes ? (ICON_SAVE "  Disk: " + gb(health.freeBytes) + " free" + (health.lowDisk ? ", nearly full" : "")).c_str()
 		: ICON_SAVE "  Disk: free space not known yet");

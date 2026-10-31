@@ -116,8 +116,9 @@ bool Player::open(const std::string& path) {
 	}
 	bool ok = info_.kind == SourceInfo::Camera ? cap_.open(std::stoi(path)) : cap_.open(path);
 	if (!ok || !cap_.isOpened()) {
-		error = info_.kind == SourceInfo::Camera ? "No camera at index " + path
-			: "Can't open " + info_.label + ". Try converting it: ffmpeg -i in.ext -c:v libx264 out.mp4";
+		error = info_.kind == SourceInfo::Camera ? "Can't open " + info_.label + ". Check it's plugged in and not in use by another app, or pick another number."
+			: info_.kind == SourceInfo::Stream ? "Can't connect to " + info_.label + ". Check the address, user name and password, and that the camera is on this network."
+			: "Can't open " + info_.label + ". It may be damaged or in a format VST can't read; converting it to MP4 usually helps (ffmpeg -i in.ext -c:v libx264 out.mp4).";
 		return false;
 	}
 	opened_ = true;

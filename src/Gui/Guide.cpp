@@ -84,10 +84,14 @@ int grade(double x, double good, double warn) { return x <= good ? 0 : x <= warn
 ImU32 gradeColor(int g) { return g == 0 ? c::ok : g == 1 ? c::warn : c::bad; }
 
 void bullet(const char* icon, ImU32 col, const char* head, const char* text) {
+	// The text column is measured from where the bullet starts (SameLine(x) would be from the window's edge, which
+	// put the text on top of the icon in cards that aren't inside a group).
+	float x0 = ImGui::GetCursorScreenPos().x;
 	ImGui::PushStyleColor(ImGuiCol_Text, v4(col));
 	ImGui::TextUnformatted(icon);
 	ImGui::PopStyleColor();
-	ImGui::SameLine(px(34));
+	ImGui::SameLine();
+	ImGui::SetCursorScreenPos(ImVec2(x0 + px(34), ImGui::GetCursorScreenPos().y));
 	ImGui::BeginGroup();
 	ImGui::PushFont(fonts.strong);
 	ImGui::TextUnformatted(head);
@@ -286,15 +290,17 @@ void App::sitePlanner() {
 	num("Clear stretch (m)", &prefs.planClear, .5, "%.1f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 5-7 m (15-25 ft); that works with short-view timing.", false);
 	num("Distance error (cm)", &prefs.planCalib, 5, "%.0f", "How well you know the zone's length. Tape over 10 m: 10-20 cm. Guessed from a photo: 100 cm or more. A drive-through calibration avoids this.", false);
 	num("Car length (m)", &prefs.planCarLen, .1, "%.1f", nullptr, false);
-	if (ghostButton(ICON_LOCATE "  Narrow street from a front window")) {
+	formLabel("Speed limit (mph)", col);
+	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // lines up with the inputs above
+	ImGui::InputInt("##lim", &prefs.speedLimit, 5);
+	ImGui::Dummy(ImVec2(0, px(2)));
+	if (ghostButton(ICON_LOCATE "  Narrow street from a front window", ImVec2(-FLT_MIN, 0))) {
 		// An old-city one-way with parking, about 13 ft (4 m) curb to curb, seen from across the sidewalk: about 20 ft
 		// (6 m) of it between the trees and porches.  The camera distance is to the middle of the moving lane.
 		prefs.planDist = 6;
 		prefs.planClear = 6.1;
 	}
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fills in a typical narrow one-way street: 6 m from the camera to the moving lane, 6 m (20 ft) of it clear.\nChange either to match yours.");
-	formLabel("Speed limit (mph)", col);
-	ImGui::InputInt("##lim", &prefs.speedLimit, 5);
 	prefs.planHfov = std::clamp(prefs.planHfov, 5.0, 170.0);
 	prefs.planFps = std::clamp(prefs.planFps, 5.0, 240.0);
 	prefs.planShutter = std::max(prefs.planShutter, 15.0);
@@ -316,7 +322,7 @@ void App::sitePlanner() {
 	int verdict = r.zone <= 0 || tooFew ? 2 : grade(r.total, 1.5, 3);
 	beginCard("planout", nullptr, nullptr, ImVec2(outW, 0));
 	const char* vtext[] = { "Workable", "Marginal", "Not enough room" };
-	pill(vtext[verdict], c::bg0, gradeColor(verdict), fonts.strong);
+	linePill(vtext[verdict], c::bg0, gradeColor(verdict), fonts.strong);
 	ImGui::SameLine();
 	ImGui::AlignTextToFramePadding();
 	if (r.zone <= 0) ImGui::TextUnformatted("Less than a couple of feet of street is in view. Move back, or use a wider lens.");
@@ -329,7 +335,7 @@ void App::sitePlanner() {
 	char v[48], sub[64];
 	if (shortView) {
 		snprintf(v, sizeof v, "%.0f", r.samples);
-		snprintf(sub, sizeof sub, "at %d mph · needs %.0f+, 6+ is comfortable", check, kMinSamples);
+		snprintf(sub, sizeof sub, "at %d mph · %.0f+ needed, 6+ good", check, kMinSamples);
 		statTile(ICON_FILM, "Bumper positions", v, sub, gradeColor(grade(-r.samples, -6, -kMinSamples)), ImVec2(tw, th));
 	}
 	else {
@@ -447,7 +453,7 @@ void App::pageGuide() {
 		ImGui::BeginGroup();
 		bullet(ICON_EYE, c::accent2, "Fixed focus and exposure", "Turn off auto-zoom and digital stabilisation; lock focus if the camera allows it.");
 		bullet(ICON_BOLT, c::accent2, "Daylight first", "Start with daytime video. Night needs streetlights or an infrared camera.");
-		bullet(ICON_FOLDER, c::accent2, "Your data stays yours", "Results are csv files and videos in a folder on this computer.");
+		bullet(ICON_FOLDER, c::accent2, "Your data stays yours", "Results are CSV files and videos in a folder on this computer.");
 		ImGui::EndGroup();
 		endCard();
 		break;
@@ -488,7 +494,7 @@ void App::pageGuide() {
 		static const char* const legalLabels[] = { "Two-way", "One-way →", "One-way ←" };
 		if (segmented("glegal", &legal, legalLabels, 3)) cfg.g.LegalDirection = legal == 1 ? "L2R" : legal == 2 ? "R2L" : "Both";
 		ImGui::Dummy(ImVec2(0, px(6)));
-		dimText("Compass directions label the csv, e.g. a street running NE-SW:");
+		dimText("Compass directions name each direction in your results, e.g. on a street running NE-SW:");
 		static const char* compass[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
 		auto combo = [&](const char* label, std::string& v, ImU32 cc) {
 			formLabel(label, px(170));
@@ -517,15 +523,15 @@ void App::pageGuide() {
 			"VST doesn't know how many feet are between the lines. Instead it learns how many frames a car at a known speed takes to "
 			"cross them. Every other speed is worked out from that.");
 		float third = (avail - px(40)) / 3;
-		beginCard("c1", nullptr, nullptr, ImVec2(third, px(200)));
+		beginCard("c1", nullptr, nullptr, ImVec2(third, px(112)));
 		bullet(ICON_PLAY, c::accent, "1. Start tracking", "Live from the camera, or record a video and track that later.");
 		endCard();
 		ImGui::SameLine(0, px(20));
-		beginCard("c2", nullptr, nullptr, ImVec2(third, px(200)));
+		beginCard("c2", nullptr, nullptr, ImVec2(third, px(112)));
 		bullet(ICON_CAR, c::accent, "2. Drive past steadily", "Use cruise control at, say, 25 mph, through the whole zone. Both ways on a two-way street.");
 		endCard();
 		ImGui::SameLine(0, px(20));
-		beginCard("c3", nullptr, nullptr, ImVec2(third, px(200)));
+		beginCard("c3", nullptr, nullptr, ImVec2(third, px(112)));
 		bullet(ICON_CHECK_CIRCLE, c::accent, "3. Tell VST which car was you", "Pick your pass on the Calibrate page and enter your speed. Done.");
 		endCard();
 		ImGui::Dummy(ImVec2(0, px(4)));
@@ -541,11 +547,11 @@ void App::pageGuide() {
 			"Press Start tracking. Each vehicle that crosses the zone shows up with its speed, direction and a snapshot; wrong-way drivers "
 			"and big speeders pop up as alerts. Everything is saved as you go.");
 		float third = (avail - px(40)) / 3;
-		gearCard("s1", ICON_GAUGE, c::ok, "Live tracking", "real time or batch", "Watch it work, or run a folder of recorded video as fast as the computer allows.", ImVec2(third, px(210)));
+		gearCard("s1", ICON_GAUGE, c::ok, "Live tracking", "real time or batch", "Watch it work, or run a folder of recorded video as fast as the computer allows.", ImVec2(third, px(180)));
 		ImGui::SameLine(0, px(20));
-		gearCard("s2", ICON_CHART, c::warn, "Results", "csv, charts, highlights", "Speed histogram, 85th percentile, speeders and wrong-way drivers with snapshots.", ImVec2(third, px(210)));
+		gearCard("s2", ICON_CHART, c::warn, "Results", "CSV, charts, highlights", "Speed histogram, 85th percentile, speeders and wrong-way drivers with snapshots.", ImVec2(third, px(180)));
 		ImGui::SameLine(0, px(20));
-		gearCard("s3", ICON_BROADCAST, c::accent2, "Companion app", "on your phone", "Pair a phone to check the camera, calibrate from the curb and see speeders as they happen.", ImVec2(third, px(210)));
+		gearCard("s3", ICON_BROADCAST, c::accent2, "Companion app", "on your phone", "Pair a phone to check the camera, calibrate from the curb and see speeders as they happen.", ImVec2(third, px(180)));
 		ImGui::Dummy(ImVec2(0, px(8)));
 		if (primaryButton(ICON_PLAY "  Start tracking", ImVec2(px(240), px(48)))) { prefs.guideDone = true; startTracking(); }
 		ImGui::SameLine(0, px(12));
@@ -561,7 +567,8 @@ void App::pageGuide() {
 		ImGui::SameLine();
 	}
 	if (guideStep_ < n - 1) {
-		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.f, avail - ImGui::GetCursorPosX() - px(130)));
+		// Flush with the right edge of the cards above (the content starts at the window padding, not at 0).
+		ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetCursorStartPos().x + avail - px(130)));
 		if (primaryButton("Next  " ICON_ARROW_RIGHT, ImVec2(px(130), 0))) guideStep_++;
 	}
 }

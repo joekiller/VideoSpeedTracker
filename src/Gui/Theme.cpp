@@ -1,6 +1,7 @@
 #include "Theme.h"
 #include "Icons.h"
 #include <imgui_internal.h>
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 
@@ -203,6 +204,11 @@ ImVec2 pill(const char* text, ImU32 fg, ImU32 bg, ImFont* font) {
 	return size;
 }
 
+ImVec2 linePill(const char* text, ImU32 fg, ImU32 bg, ImFont* font) {
+	ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::max(0.f, (ImGui::GetFrameHeight() - pillSize(text, font).y) * .5f));
+	return pill(text, fg, bg, font);
+}
+
 static bool colouredButton(const char* label, ImVec2 size, ImU32 base, ImU32 textCol, bool outline) {
 	ImGui::PushStyleColor(ImGuiCol_Button, outline ? v4(c::bg2) : v4(base));
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, outline ? v4(c::bg3) : v4(alpha(base, .88f)));
@@ -272,12 +278,14 @@ void statTile(const char* icon, const char* caption, const std::string& value, c
 	// A soft glow of the tile's colour in the corner gives each metric its identity without shouting.
 	dl->AddRectFilledMultiColor(p + ImVec2(1, 1), p + ImVec2(size.x * .6f, size.y - 1), alpha(color, .10f), alpha(color, 0), alpha(color, 0), alpha(color, .04f));
 	float pad = px(14);
+	dl->PushClipRect(p, p + ImVec2(size.x - px(4), size.y), true);   // a long caption stops at the tile's edge
 	ImFont* sf = fonts.caption;
 	std::string head = std::string(icon) + "  " + caption;
 	dl->AddText(sf, fsz(sf), p + ImVec2(pad, pad), alpha(color, .95f), head.c_str());
 	ImFont* nf = fonts.stat;
 	dl->AddText(nf, fsz(nf), p + ImVec2(pad, pad + fsz(sf) + px(4)), c::text, value.c_str());
 	if (sub) dl->AddText(sf, fsz(sf), p + ImVec2(pad, size.y - pad - fsz(sf)), c::dim, sub);
+	dl->PopClipRect();
 	ImGui::Dummy(size);
 	ImGui::PopID();
 }
