@@ -42,7 +42,8 @@ while (($#)); do
 	case $1 in --width) w=$2; shift ;; --height) h=$2; shift ;; esac
 	shift
 done
+# ${re[@]+"${re[@]}"} rather than "${re[@]}": macOS's bash 3.2 calls an empty array unbound under set -u.
 re=()
 [[ ${FAKE_RPICAM_REALTIME:-} == 1 ]] && re=(-re)
-exec "${FAKE_RPICAM_FFMPEG:-ffmpeg}" -nostdin -hide_banner -loglevel error "${re[@]}" -t "${FAKE_RPICAM_SECONDS:-10}" -i "$FAKE_RPICAM_VIDEO" -an \
+exec "${FAKE_RPICAM_FFMPEG:-ffmpeg}" -nostdin -hide_banner -loglevel error ${re[@]+"${re[@]}"} -t "${FAKE_RPICAM_SECONDS:-10}" -i "$FAKE_RPICAM_VIDEO" -an \
 	-vf "scale=$w:$h" -pix_fmt yuv420p -f rawvideo -
