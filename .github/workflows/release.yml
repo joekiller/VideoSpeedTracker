@@ -28,8 +28,13 @@
 #   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   the same files; both need `brew install opencv` (Homebrew's 5.x)
 # Linux and Windows build OpenCV from source with packaging/build-opencv.sh; the install is
 # cached per platform, so only the first run (or a change to that script) pays for the build.
-#   SHA256SUMS
-# Each package also gets a GitHub artifact attestation (Sigstore-signed build provenance).
+#   SHA256SUMS                                   sha256 of every package above
+#   SHA256SUMS.sigstore.json                     Sigstore bundle signing SHA256SUMS (offline verification)
+# Chain of custody (README "Verifying a download"): each package gets a GitHub artifact attestation, i.e.
+# Sigstore-signed SLSA build provenance binding its sha256 to this workflow, commit and tag. The release stays
+# a draft until every platform is uploaded; the checksums job then hashes what the release actually holds,
+# attests SHA256SUMS too and only then publishes, so a release is never public half-filled or with unsigned
+# checksums, and it works with GitHub's immutable releases (assets locked once published).
 name: release
 
 on:
@@ -486,13 +491,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.meta.outputs.tag }}
+        # A new release starts as a draft; the checksums job publishes it once macOS is in and SHA256SUMS is
+        # signed. A release that already exists (made in the UI, or a re-run) just gets the files replaced;
+        # if it is already published under immutable releases that upload is refused, so make UI releases
+        # as drafts.
         run: |
-          sha256sum * > SHA256SUMS
-          cat SHA256SUMS
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" * --clobber
           else
-            gh release create "$TAG" * --verify-tag --generate-notes --title "$TAG"
+            gh release create "$TAG" * --draft --verify-tag --generate-notes --title "$TAG"
           fi
 
   macos-release:
@@ -517,10 +524,46 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.meta.outputs.tag }}
+        run: gh release upload "$TAG" *.dmg *.tar.gz --clobber
+
+  # Last step of a tag build: sign the checksum list and make the release public. It needs every platform, so a
+  # failed macOS build leaves the release a draft; "Re-run failed jobs" finishes it, or publish it by hand.
+  checksums:
+    needs: [meta, publish, macos-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write      # Sigstore signing for the SHA256SUMS attestation
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      # GitHub records a sha256 for each stored release asset, so this hashes exactly what users will download
+      # (stale files from an earlier run included) without fetching ~1 GB. The releases list, unlike
+      # releases/tags/<tag>, also returns drafts. Our own SHA256SUMS* from a re-run are left out; an asset
+      # without a digest fails the job rather than going unlisted.
+      - name: Write SHA256SUMS from the release's asset digests
         run: |
-          gh release upload "$TAG" *.dmg *.tar.gz --clobber
-          gh release download "$TAG" --pattern SHA256SUMS
-          grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
-          sha256sum *.dmg *.tar.gz >> SHA256SUMS.new
-          mv SHA256SUMS.new SHA256SUMS
-          gh release upload "$TAG" SHA256SUMS --clobber
+          gh api "repos/$GH_REPO/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .assets[] | select(.name | startswith(\"SHA256SUMS\") | not)
+                  | \"\\(.digest // \"MISSING\")  \\(.name)\"" |
+            sed 's/^sha256://' | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+          test -s SHA256SUMS
+          if grep -q '^MISSING ' SHA256SUMS; then echo "::error::asset without a digest"; exit 1; fi
+      - name: Attest SHA256SUMS
+        id: attest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: SHA256SUMS
+      # The attestation also lives in GitHub's attestation store; the bundle copy lets anyone verify the
+      # checksums later, or somewhere GitHub's API isn't reachable (gh attestation verify --bundle, or cosign).
+      - name: Upload SHA256SUMS and its signature, then publish
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" SHA256SUMS.sigstore.json
+          gh release upload "$TAG" SHA256SUMS SHA256SUMS.sigstore.json --clobber
+          gh release edit "$TAG" --draft=false
