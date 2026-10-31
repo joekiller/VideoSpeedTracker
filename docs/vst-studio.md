@@ -71,6 +71,12 @@ preview lists resolution, frame rate, length and codec, with plain-language chec
 needs. Without a camera, **Use the sample** opens the 2016 Locust Avenue clip. **Aim it like this** shows where
 to point the camera and how to keep it still.
 
+Cameras and streams connect in the background, so the window never waits on one: the preview says
+**Connecting to …** with a **Cancel** button, and a camera that can't be opened, a stream that doesn't answer
+(5 s), or a picture that stops says why and clears. Once connected, **Disconnect** (or **Close** for a video) under
+the preview, or on the camera card for the camera in use, lets go of it. The header and preview always name what
+is showing, and the bundled clip is labelled **Sample video (Locust Ave, 2016)**.
+
 ![Connect the camera](images/studio/03-source.jpg)
 
 The command line takes the same sources: `--input 0` opens the first camera and `--input rtsp://...` a stream.

@@ -84,6 +84,8 @@ public:
 
 	// --- shared actions (also used by the companion API and the screenshot script) ---
 	bool openSource(const std::string& path);
+	// Closes the preview and forgets the source (and any batch), so nothing is connected: the Disconnect buttons.
+	void disconnectSource();
 	void addToBatch(const std::vector<std::string>& paths);
 	void startTracking();
 	void stopTracking();

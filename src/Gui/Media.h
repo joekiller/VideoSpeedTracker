@@ -3,6 +3,8 @@
 #pragma once
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
+#include <cstdint>
+#include <memory>
 #include <string>
 
 // An RGBA OpenGL texture that follows a BGR/BGRA/gray Mat; reallocated only when the size changes.
@@ -38,15 +40,38 @@ struct SourceInfo {
 
 SourceInfo::Kind classifySource(const std::string& path);
 std::string displayName(const std::string& path);
+// displayName for the UI: the same, except that the bundled 2016 sample says so ("Sample video (Locust Ave, 2016)"),
+// so a preview of it is never mistaken for the user's own camera.
+std::string friendlySourceName(const std::string& path);
+// The same, cut to about `max` characters with an ellipsis in the middle, for headers and buttons (long URLs).
+std::string shortSourceName(const std::string& path, size_t max = 44);
 bool isVideoPath(const std::string& path);
 bool isImagePath(const std::string& path);
 
 // Frames are delivered at VST's 1280x720 working size so overlays use config coordinates directly.
+//
+// Nothing that can be slow runs on the GUI thread.  A camera can take seconds to open (or never answer), each read
+// waits for the camera's next frame, and OpenCV serialises some backend work, so a file opened while a camera is
+// still opening would wait for it.  A reader thread (LiveReader in Media.cpp) therefore does every open: for a camera
+// or stream it then reads continuously and keeps only the newest frame, which tick() picks up without waiting; for a
+// file it hands the opened capture back, and the GUI thread steps through it (reads and seeks are quick).  Photos
+// load directly.  While an open is pending, opening() is true and the UI can show "Connecting…" with a Cancel.  close() (and Cancel, and opening something else) abandons the reader at
+// once: it stops after its current call returns and releases the device itself, so a hung driver costs a thread,
+// never the window.
 class Player {
 public:
+	~Player();
+	// Returns false only when a photo can't be read or the opener thread can't start.  A video, camera or stream's
+	// failure arrives later through tick() as error, with opening() going false and isOpen() staying false.
 	bool open(const std::string& path);
 	void close();
 	bool isOpen() const { return opened_; }
+	bool opening() const { return live_ && !opened_ && error.empty(); }
+	double openingSeconds(double now) const;   // how long the current live open has been going
+	// close(), then wait up to maxS for an abandoned reader to let go of its device, for when something else is about
+	// to open it (the tracker).  Usually one frame's wait; a hung driver is given up on after maxS.
+	void closeAndWait(double maxS);
+	struct LiveReader;                   // a camera or stream's reader thread state (Media.cpp)
 	const SourceInfo& info() const { return info_; }
 	bool seekable() const { return info_.kind == SourceInfo::File && info_.frames > 0; }
 	// Reads the frame at index (files) or the next frame (cameras, streams).  Returns false at end or on error.
@@ -61,7 +86,10 @@ public:
 	std::string error;
 private:
 	bool readInto();
-	cv::VideoCapture cap_;
+	bool tickLive();
+	std::shared_ptr<LiveReader> live_;   // the reader thread's shared state, for cameras and streams
+	std::uint64_t liveSeq_ = 0;          // the newest live frame already taken
+	std::unique_ptr<cv::VideoCapture> cap_;   // files, once the reader has opened them
 	SourceInfo info_;
 	bool opened_ = false;
 	cv::Mat frame_;
