@@ -1318,13 +1318,24 @@ void App::zoneInspector() {
 
 	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("zone", ICON_STOPWATCH, "Speed zone");
-	dimText("Timing starts when a front bumper crosses one white line and stops at the other. Wider is more accurate: aim for at least a second at the speed limit.");
+	dimText("Timing starts when a front bumper crosses one white line and stops at the other. Put them as far apart as the lane stays clear; "
+		"with short-view timing (step 2) even a short stretch works.");
 	intRow("Left line", &g.speedLineLeft, 0, g.AnalysisBoxWidth);
 	intRow("Right line", &g.speedLineRight, 0, g.AnalysisBoxWidth);
-	double secs = g.CalibrationFramesL2R / g.CalibrationFPS * g.CalibrationSpeed / std::max(prefs.speedLimit, 1);
-	ImGui::PushStyleColor(ImGuiCol_Text, v4(secs >= 1 ? c::ok : c::warn));
-	ImGui::TextWrapped("%s  About %.1f s for a car at %d mph (from the calibration)", secs >= 1 ? ICON_CHECK_CIRCLE : ICON_WARN, secs, prefs.speedLimit);
-	ImGui::PopStyleColor();
+	// How long a car at the limit spends between the lines, from the calibration (the legal direction's lane on a
+	// one-way street).  Before calibrating, the numbers in VST.cfg belong to some other street, so it says nothing
+	// yet; with short-view timing a short time is expected, not a problem.
+	if (!calibrationDone()) dimText(ICON_INFO "  After you calibrate (step 5) this says how long a car spends between the lines.");
+	else {
+		double frames = g.LegalDirection == "R2L" ? g.CalibrationFramesR2L : g.CalibrationFramesL2R;
+		double secs = frames / g.CalibrationFPS * g.CalibrationSpeed / std::max(prefs.speedLimit, 1);
+		bool fine = secs >= 1 || g.subFrameTiming;
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(fine ? c::ok : c::warn));
+		if (secs >= 1) ImGui::TextWrapped(ICON_CHECK_CIRCLE "  About %.1f s for a car at %d mph (from the calibration)", secs, prefs.speedLimit);
+		else if (g.subFrameTiming) ImGui::TextWrapped(ICON_CHECK_CIRCLE "  About %.1f s for a car at %d mph: short, and fine with short-view timing on", secs, prefs.speedLimit);
+		else ImGui::TextWrapped(ICON_WARN "  About %.1f s for a car at %d mph. Spread the lines wider, or turn on short-view timing in step 2", secs, prefs.speedLimit);
+		ImGui::PopStyleColor();
+	}
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
