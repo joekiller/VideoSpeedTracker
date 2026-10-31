@@ -144,6 +144,9 @@ or longer the zone looks in that lane.
   folder.
 - Batch or scripted: run `VideoSpeedTracker --headless --input clip.mp4 --stats out.csv --speed-limit 25`.
   `--highlights hl.mp4` saves a video of the offenders. See `VideoSpeedTracker --help` for every option.
+- Live: `--input 0` tracks a USB camera, `--input rtsp://...` a network camera, and on a Raspberry Pi `--input picam`
+  its ribbon-cable camera at 60 fps with a 1/1000 s shutter (`--list-pi-cameras` shows what's attached; settings are in
+  the README's [Raspberry Pi camera](../README.md#raspberry-pi-camera) section). Live runs keep going until stopped.
 
 Each csv row is one vehicle, with its direction, frame range, pixel distance, size, estimated speed and the date and
 time it passed (the columns are described in the [README](../README.md#the-stats-csv)).

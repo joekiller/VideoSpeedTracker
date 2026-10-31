@@ -73,6 +73,7 @@ bool isImagePath(const std::string& path) {
 
 SourceInfo::Kind classifySource(const std::string& path) {
 	if (path.empty()) return SourceInfo::None;
+	if (picam::isName(path)) return SourceInfo::Camera;
 	if (path.size() < 4 && std::all_of(path.begin(), path.end(), [](char c) { return isdigit((unsigned char)c) != 0; }))
 		return SourceInfo::Camera;
 	if (path.find("://") != std::string::npos) return SourceInfo::Stream;
@@ -82,7 +83,7 @@ SourceInfo::Kind classifySource(const std::string& path) {
 
 std::string displayName(const std::string& path) {
 	switch (classifySource(path)) {
-	case SourceInfo::Camera: return "Camera " + path;
+	case SourceInfo::Camera: return picam::isName(path) ? picam::label(path) : "Camera " + path;
 	case SourceInfo::Stream: {
 		// Hide credentials in rtsp://user:pass@host/... when showing a URL.
 		std::string s = path;
@@ -127,7 +128,7 @@ struct Player::LiveReader {
 	cv::Mat latest;                // the newest frame at working size
 	std::uint64_t seq = 0;         // counts frames, so the GUI can tell a new one
 	double startedAt = 0;          // glfwGetTime() when the open began
-	std::unique_ptr<cv::VideoCapture> handoff;   // files: the opened capture, for the GUI thread to step through
+	std::unique_ptr<FrameSource> handoff;        // files: the opened capture, for the GUI thread to step through
 	std::string path;              // what it opens, so reconnecting the same device can wait for the old reader
 };
 
@@ -137,7 +138,8 @@ constexpr int kStreamTimeoutMs = 5000;    // FFmpeg's open and read timeouts for
 constexpr double kFirstFrameS = 15;       // an opened camera that sends nothing for this long is reported, not waited on
 constexpr int kLostAfterFailures = 50;    // consecutive failed reads (about 5 s) before a live picture counts as lost
 
-std::string openError(const SourceInfo& in) {
+std::string openError(const SourceInfo& in, const FrameSource& cap) {
+	if (picam::isName(in.path)) return cap.pi.error();
 	switch (in.kind) {
 	case SourceInfo::Camera:
 		return "Can't open " + in.label + " yet. Check it's plugged in (for a phone, that its webcam app is running) and that no other app, like a video call, is using it. Or try another number.";
@@ -151,15 +153,18 @@ std::string openError(const SourceInfo& in) {
 // Opens a camera index, a stream URL or a file.  Streams get FFmpeg timeouts so a dead address fails in seconds; a
 // camera open can't be timed out, which is one reason this never runs on the GUI thread.  (The other: OpenCV
 // serialises some backend work, so a file opened on the GUI thread while a camera is still opening waits for it.)
-bool openCapture(cv::VideoCapture& cap, const SourceInfo& in) {
-	if (in.kind == SourceInfo::Camera) return cap.open(std::stoi(in.path));
+// A Raspberry Pi camera (PiCamera.h) goes through rpicam-vid, which takes a couple of seconds to list the cameras and
+// time a second of frames.
+bool openCapture(FrameSource& cap, const SourceInfo& in) {
+	if (picam::isName(in.path)) return cap.openPiCamera(in.path);
+	if (in.kind == SourceInfo::Camera) return cap.cap.open(std::stoi(in.path));
 	if (in.kind == SourceInfo::Stream)
-		return cap.open(in.path, cv::CAP_ANY, { cv::CAP_PROP_OPEN_TIMEOUT_MSEC, kStreamTimeoutMs, cv::CAP_PROP_READ_TIMEOUT_MSEC, kStreamTimeoutMs });
-	return cap.open(in.path);
+		return cap.cap.open(in.path, cv::CAP_ANY, { cv::CAP_PROP_OPEN_TIMEOUT_MSEC, kStreamTimeoutMs, cv::CAP_PROP_READ_TIMEOUT_MSEC, kStreamTimeoutMs });
+	return cap.cap.open(in.path);
 }
 
 // Width, height, fps, codec and (files) frame count, as the capture reports them.
-void describe(cv::VideoCapture& cap, SourceInfo& in) {
+void describe(const FrameSource& cap, SourceInfo& in) {
 	in.width = int(cap.get(cv::CAP_PROP_FRAME_WIDTH));
 	in.height = int(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
 	in.fps = cap.get(cv::CAP_PROP_FPS);
@@ -185,11 +190,11 @@ static void runReader(std::shared_ptr<Player::LiveReader> r, SourceInfo in, std:
 	for (int i = 0; prev && !prev->finished && i < 300 && !r->stop; i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	prev.reset();
 	auto fail = [&](const std::string& why) { std::lock_guard<std::mutex> l(r->mu); if (r->error.empty()) r->error = why; };
-	auto cap = std::make_unique<cv::VideoCapture>();
+	auto cap = std::make_unique<FrameSource>();
 	bool ok = false;
 	try { ok = openCapture(*cap, in) && cap->isOpened(); } catch (const std::exception&) { ok = false; }
 	if (r->stop) return;
-	if (!ok) { fail(openError(in)); return; }
+	if (!ok) { fail(openError(in, *cap)); return; }
 	describe(*cap, in);
 	auto since = std::chrono::steady_clock::now();
 	int failures = 0;
@@ -200,7 +205,7 @@ static void runReader(std::shared_ptr<Player::LiveReader> r, SourceInfo in, std:
 		try { got = cap->read(f) && !f.empty(); } catch (const std::exception&) { got = false; }
 		if (r->stop) break;
 		if (!got) {
-			if (in.kind == SourceInfo::File) { fail(openError(in)); break; }
+			if (in.kind == SourceInfo::File) { fail(openError(in, *cap)); break; }
 			double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
 			if (!ready && waited > kFirstFrameS) { fail(in.label + " opened but sent no picture. Try unplugging it and plugging it back in, or another number."); break; }
 			if (ready && ++failures >= kLostAfterFailures) { fail("Lost the picture from " + in.label + ". Check its cable or network, then connect again."); break; }
@@ -259,7 +264,7 @@ bool Player::open(const std::string& path) {
 	live_->path = path;
 	liveSeq_ = 0;
 	try { std::thread(runReader, live_, info_, prev).detach(); }
-	catch (const std::exception&) { live_.reset(); error = openError(info_); return false; }
+	catch (const std::exception&) { live_.reset(); error = "Can't start opening " + info_.label + "."; return false; }
 	return true;
 }
 

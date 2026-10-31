@@ -5,6 +5,7 @@
 #include <opencv2/videoio.hpp>
 #include <cstdint>
 #include <memory>
+#include "PiCamera.h"
 #include <string>
 
 // An RGBA OpenGL texture that follows a BGR/BGRA/gray Mat; reallocated only when the size changes.
@@ -29,7 +30,7 @@ private:
 // What a source is, as the rest of the app talks about it.
 struct SourceInfo {
 	enum Kind { None, File, Camera, Stream, Image } kind = None;
-	std::string path;          // file path, camera index ("0") or URL
+	std::string path;          // file path, camera index ("0"), Pi camera ("picam:0?...", see PiCamera.h) or URL
 	std::string label;         // short name for the UI
 	int width = 0, height = 0;
 	double fps = 0;
@@ -38,6 +39,7 @@ struct SourceInfo {
 	double seconds() const { return fps > 0 && frames > 0 ? frames / fps : 0; }
 };
 
+// A Raspberry Pi camera ("picam...") is a Camera like a USB one: live, and shown with the camera icon.
 SourceInfo::Kind classifySource(const std::string& path);
 std::string displayName(const std::string& path);
 // displayName for the UI: the same, except that the bundled 2016 sample says so ("Sample video (Locust Ave, 2016)"),
@@ -87,9 +89,9 @@ public:
 private:
 	bool readInto();
 	bool tickLive();
-	std::shared_ptr<LiveReader> live_;   // the reader thread's shared state, for cameras and streams
+	std::shared_ptr<LiveReader> live_;   // the reader thread's shared state, while opening and for cameras and streams
 	std::uint64_t liveSeq_ = 0;          // the newest live frame already taken
-	std::unique_ptr<cv::VideoCapture> cap_;   // files, once the reader has opened them
+	std::unique_ptr<FrameSource> cap_;   // files, once the reader has opened them (FrameSource: VideoCapture or a Pi camera)
 	SourceInfo info_;
 	bool opened_ = false;
 	cv::Mat frame_;

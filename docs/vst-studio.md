@@ -65,8 +65,11 @@ use 60 fps, a fixed shutter of 1/1000 s (1/500 at most), and a lens that frames 
 
 ### 3 Connect the camera
 
-Open recorded video (several files run as a batch), a USB camera or a phone in USB webcam mode, or a network
-camera's RTSP/HTTP URL. A photo of the view also works for planning zones before the camera is installed. The
+Open recorded video (several files run as a batch), a USB camera or a phone in USB webcam mode, a Raspberry Pi
+camera, or a network camera's RTSP/HTTP URL. On a Raspberry Pi with a ribbon-cable camera attached, the camera card's
+menu starts on it (for example "Pi camera 0: Global Shutter Camera"), and the sliders button beside it sets the frame
+rate (60 fps by default), the shutter (1/1000 s, so cars don't smear), Camera Module 3's locked focus distance, and
+upside-down mounting. If the Pi finds no camera, the menu says to reseat the ribbon cable. A photo of the view also works for planning zones before the camera is installed. The
 preview lists resolution, frame rate, length and codec, with plain-language checks against what the tracker
 needs. Without a camera, **Use the sample** opens the 2016 Locust Avenue clip. **Aim it like this** shows where
 to point the camera and how to keep it still.
@@ -79,7 +82,8 @@ is showing, and the bundled clip is labelled **Sample video (Locust Ave, 2016)**
 
 ![Connect the camera](images/studio/03-source.jpg)
 
-The command line takes the same sources: `--input 0` opens the first camera and `--input rtsp://...` a stream.
+The command line takes the same sources: `--input 0` opens the first camera, `--input picam` the Raspberry Pi camera
+(README, [Raspberry Pi camera](../README.md#raspberry-pi-camera)), and `--input rtsp://...` a stream.
 
 ### 4 Mark your street
 
@@ -102,7 +106,7 @@ compass label of one direction, such as `NE`); the command line prints a `WRONG 
 ### 5 Calibrate
 
 VST counts frames rather than measuring distance, so it needs one pass at a known speed, or a measured distance it
-can turn into one.
+can turn into one: cones a taped distance apart, or a car whose length you know.
 
 - **Drive-through:** run tracking, drive past on cruise control, pick your pass from the list and enter the
   speed you drove. From the Results page, **This was me** on a selected vehicle does the same.
@@ -128,7 +132,27 @@ can turn into one.
 
 ![Cones or pole](images/studio/07d-calibrate-cones.jpg)
 
-All three keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
+- **Known car:** no tape and no trip outside. Any car of a known model in the picture is the measuring stick: find a
+  frame with it side-on in the zone, near the middle of the picture, click its front and rear bumpers at the corners
+  facing the camera, and pick the model (the list gives each generation's overall length) or type the length. The
+  arithmetic is the cones' with the bumpers as the two spots.
+
+  Where the car is matters. Things look smaller the farther they are from the camera, and VST times bumpers in the
+  lane traffic drives in, so a car parked beyond that lane looks shorter than it would driving by and every speed
+  would read high (7 ft beyond a lane 30 ft away is +23%). Choose **Parked beyond traffic** and enter the camera's
+  distance to the lane (the same number as step 2's *Window to the lane*) and how much farther the car is; VST scales
+  the bumper marks to the lane's depth (`marks × (lane + farther) ÷ lane`). Each foot that guess is off moves speeds
+  about 100 ÷ (lane + farther) percent, and the page shows that figure. A car driving by needs no correction: step
+  through a recording to a sharp frame of it. Off to one side, the camera also sees part of the car's nose or tail,
+  which looks like extra length; marking the corners facing the camera with the car near the middle keeps it small.
+
+  How it compares with cones: a tape over 10 ft or more is good to well under 1%, and the cones stand right at the
+  white lines and the depth the bumpers run at. A model's length is good to about 0.5% once the generation is right,
+  but the car usually spans less than the zone, a parked car needs the depth guess, and clicking a bumper's corner
+  is fuzzier than clicking a pole. Expect a few percent (about 1 mph at 25 mph) from a passing car or a corrected
+  parked one, which makes it a good start; like the cones it is **Not checked** until a drive past checks it.
+
+All four keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
 `CalibrationFPS`. The page shows what crossing times read as which speeds.
 
 ![Calibrate](images/studio/07-calibrate.jpg)
@@ -207,7 +231,10 @@ Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, M
 Vehicles are drawn as they're tracked: a box per vehicle, a white bar on the front bumper the tracker times,
 and the speed once it crosses the second line, coloured green, amber (over the limit) or red (at or above the
 "way over" speed). Wrong-way vehicles are red with a warning. **Tint the motion the tracker sees** overlays the
-frame difference the tracker works from. Files play in real time or as fast as the computer allows; each vehicle
+frame difference the tracker works from. **Recordings play** at **Normal speed** (like watching the video) or
+**Full speed** (as fast as the computer can analyse them). Both give the same speeds, because VST counts frames
+rather than timing them; full speed only finishes a long recording sooner. A live camera or stream runs at its own
+pace, so the setting is greyed out while one is the source, whatever its frame rate. Each vehicle
 lands in the filmstrip with a snapshot, and the side panel keeps counts and the fastest vehicles.
 
 Each run writes the usual outputs under the data folder: `Stats/stats_<name>.csv`, a highlights video in

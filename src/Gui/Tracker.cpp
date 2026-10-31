@@ -37,10 +37,15 @@ static std::string stamp() {
 }
 
 // Output file stem for a job: the 2016 Foscam naming for manual_yyyymmddhhmmss files, the file stem otherwise,
-// and camera<N>_<time> / stream_<time> for live sources so repeated sessions don't overwrite each other.
+// and camera<N>_<time> / picam<N>_<time> / stream_<time> for live sources so repeated sessions don't overwrite each other.
 static std::string jobStem(const std::string& input) {
 	switch (classifySource(input)) {
-	case SourceInfo::Camera: return "camera" + input + "_" + stamp();
+	case SourceInfo::Camera: {
+		picam::Settings pi;
+		std::string error;
+		if (picam::isName(input)) return (picam::parse(input, pi, error) ? "picam" + std::to_string(pi.camera) : std::string("picam")) + "_" + stamp();
+		return "camera" + input + "_" + stamp();
+	}
 	case SourceInfo::Stream: return "stream_" + stamp();
 	default: {
 		std::string stem = fs::path(input).stem().string();

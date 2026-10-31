@@ -31,7 +31,7 @@ static ImTextureID tid(Texture& t) { return (ImTextureID)(intptr_t)t.imguiId(); 
 const FlowStep kFlow[kFlowSteps] = {
 	{ "What you need", ICON_FLAG, "Everything you need to measure traffic on your street, in the order you'll use it", Page::Guide, 0 },
 	{ "Pick your spot", ICON_LOCATE, "See what your window can measure, before you buy or mount anything", Page::Guide, 1 },
-	{ "Connect the camera", ICON_CAMERA, "A phone or USB camera, a network camera, or video you've already recorded", Page::Source, -1 },
+	{ "Connect the camera", ICON_CAMERA, "A phone, USB or Raspberry Pi camera, a network camera, or video you've already recorded", Page::Source, -1 },
 	{ "Mark your street", ICON_VECTOR, "Drag the lines on the picture; the tracker only looks inside the box", Page::Zones, -1 },
 	{ "Calibrate", ICON_RULER, "Teach VST how long a car at a known speed takes to cross the zone", Page::Calibrate, -1 },
 };
@@ -98,6 +98,10 @@ void App::init(bool fresh, const std::string& configPath) {
 		&& (classifySource(prefs.lastSource) == SourceInfo::Stream || fs::exists(prefs.lastSource)))
 		openSource(prefs.lastSource);
 	if (prefs.remoteEnabled) setRemote(true);
+#ifndef _WIN32
+	if (!picam::findTool().empty())
+		piListing_ = std::async(std::launch::async, [] { bool ok = false; std::string error; return picam::list(ok, error); });
+#endif
 }
 
 void App::shutdown() {
@@ -196,6 +200,13 @@ bool App::openSource(const std::string& path) {
 	if (tracker.running()) { toast("Stop tracking before changing the source", c::warn, ICON_WARN); return false; }
 	if (!player.open(path)) { toast(player.error, c::bad, ICON_WARN); source.clear(); return false; }
 	source = path;
+	// A Pi camera reopened from Recent brings its settings back into the camera card's settings popup.
+	picam::Settings pi;
+	std::string piError;
+	if (picam::isName(path) && picam::parse(path, pi, piError)) {
+		piSettings_ = pi;
+		for (int i = 0; i < int(piCams_.size()); i++) if (piCams_[i].index == pi.camera) piChoice_ = i;
+	}
 	prefs.lastSource = path;
 	prefs.addRecent(path);
 	return true;
@@ -330,7 +341,7 @@ void App::averageCalibration(const CalCheck& check) {
 		+ std::to_string(int(g.CalibrationSpeed)) + " mph. Check it once more.", c::ok, ICON_CHECK_CIRCLE);
 }
 
-void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD) {
+void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from) {
 	Globals& g = cfg.g;
 	int calFrames = std::max(1, int(std::lround(calFramesD)));
 	if (calFramesD <= 0 || (!l2r && !r2l)) return;
@@ -351,7 +362,7 @@ void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD) {
 	}
 	prefs.calibratedFor = cfg.path();
 	calibAppliedId_ = 0;
-	toast("Calibrated from the measured spots: " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
+	toast(std::string("Calibrated from ") + from + ": " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
 		+ " mph. Check it with one drive past.", c::ok, ICON_CHECK_CIRCLE);
 }
 
@@ -847,6 +858,67 @@ void App::drawToasts(float w, float h) {
 // Source
 // ======================================================================================================
 
+// The Pi camera settings popup on the camera card.  Defaults suit a street seen from the side (PiCamera.h): 60 fps, a
+// 1/1000 s shutter so cars don't smear, and Camera Module 3's focus locked so it never hunts as cars pass.
+void App::piCameraSettings() {
+	const picam::Camera& cam = piCams_[piChoice_];
+	ImGui::PushFont(fonts.strong);
+	ImGui::Text("%s  (%s)", cam.model.c_str(), cam.sensor.c_str());
+	ImGui::PopFont();
+	ImGui::PushTextWrapPos(px(340));
+
+	picam::Settings best = piSettings_;
+	best.fps = 0;
+	double top = picam::chooseFps(best, &cam);
+	char buf[96];
+	snprintf(buf, sizeof buf, "Best it can do (%.0f fps)", top);
+	ImGui::TextUnformatted("Frame rate");
+	if (ImGui::RadioButton(buf, piSettings_.fps == 0)) piSettings_.fps = 0;
+	if (top > 30) {
+		ImGui::SameLine();
+		if (ImGui::RadioButton("30 fps", piSettings_.fps == 30)) piSettings_.fps = 30;
+	}
+	dimText("More frames per second times fast cars better, especially on a short view.");
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::TextUnformatted("Shutter");
+	static const struct { int us; const char* label; } shutters[] = {
+		{ 500, "1/2000 s" }, { 1000, "1/1000 s (recommended)" }, { 2000, "1/500 s" }, { 4000, "1/250 s" }, { 0, "Automatic" },
+	};
+	const char* current = "Custom";
+	for (auto& sh : shutters) if (sh.us == piSettings_.shutterUs) current = sh.label;
+	ImGui::SetNextItemWidth(px(220));
+	if (ImGui::BeginCombo("##shutter", current)) {
+		for (auto& sh : shutters) if (ImGui::Selectable(sh.label, sh.us == piSettings_.shutterUs)) piSettings_.shutterUs = sh.us;
+		ImGui::EndCombo();
+	}
+	dimText("A short shutter keeps cars sharp; the camera turns its gain up to make up the light. At night, a longer one or "
+		"automatic still counts cars, with blurrier pictures.");
+
+	if (cam.autofocus) {
+		ImGui::Dummy(ImVec2(0, px(4)));
+		ImGui::TextUnformatted("Focus (locked, so it never hunts as cars pass)");
+		float feet = float(1 / (std::max(piSettings_.focus, 0.01) * 0.3048));
+		ImGui::SetNextItemWidth(px(220));
+		if (ImGui::SliderFloat("##focus", &feet, 5, 100, "%.0f ft to the lane", ImGuiSliderFlags_Logarithmic)) {
+			piSettings_.focus = 1 / (feet * 0.3048);
+			piSettings_.focusGiven = true;
+		}
+		dimText("The distance from the camera to the middle of the street. The default (13 ft) keeps about 7 ft to 100 ft sharp.");
+	}
+	else {
+		ImGui::Dummy(ImVec2(0, px(4)));
+		dimText("This camera focuses by hand: turn the lens until a parked car's number plate is crisp in the preview, then "
+			"tighten the lens's lock screw.");
+	}
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	bool flipped = piSettings_.rotation == 180;
+	if (ImGui::Checkbox("Mounted upside down", &flipped)) piSettings_.rotation = flipped ? 180 : 0;
+	ImGui::PopTextWrapPos();
+	dimText("Press Connect to start the camera with these settings.");
+}
+
 void App::pageSource() {
 	flowStepper();
 	float avail = ImGui::GetContentRegionAvail().x;
@@ -888,24 +960,59 @@ void App::pageSource() {
 			}
 		});
 		ImGui::SameLine(0, px(16));
-		sourceCard("srccam", ICON_CAMERA, c::ok, "USB camera or phone", "A webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
-			ImGui::SetNextItemWidth(px(110));
-			char camLabel[48];
-			snprintf(camLabel, sizeof camLabel, ICON_CAMERA "  %d", cameraIndex_);
-			if (ImGui::BeginCombo("##cam", camLabel)) {
+		if (piListing_.valid() && piListing_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+			piCams_ = piListing_.get();
+			piListed_ = true;
+			if (!piCams_.empty()) piChoice_ = 0;
+		}
+		sourceCard("srccam", ICON_CAMERA, c::ok, "USB, phone or Pi camera",
+			piCams_.empty() ? "A webcam, a phone in USB webcam mode, or a Raspberry Pi camera. Tracks live, in real time."
+				: "A Raspberry Pi camera, a webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
+			bool pi = piChoice_ >= 0 && piChoice_ < int(piCams_.size());
+			ImGui::SetNextItemWidth(px(pi ? 92 : 110));
+			char camLabel[96];
+			if (pi) snprintf(camLabel, sizeof camLabel, ICON_CAMERA " Pi %d", piCams_[piChoice_].index);
+			else snprintf(camLabel, sizeof camLabel, ICON_CAMERA "  %d", cameraIndex_);
+			if (ImGui::BeginCombo("##cam", camLabel, ImGuiComboFlags_HeightLarge)) {
+				for (int i = 0; i < int(piCams_.size()); i++) {
+					snprintf(camLabel, sizeof camLabel, "Pi camera %d: %s", piCams_[i].index, piCams_[i].model.c_str());
+					if (ImGui::Selectable(camLabel, piChoice_ == i)) piChoice_ = i;
+				}
+				// Never a dead end: on a Pi where none was found, say what usually fixes it.
+				if (piListed_ && piCams_.empty() && picam::onRaspberryPi()) {
+					ImGui::BeginDisabled();
+					ImGui::Selectable("No Pi camera found: reseat the ribbon cable, then restart");
+					ImGui::EndDisabled();
+				}
+				if (!piCams_.empty() || (piListed_ && picam::onRaspberryPi())) ImGui::Separator();
 				for (int i = 0; i < 6; i++) {
-					snprintf(camLabel, sizeof camLabel, "Camera %d%s", i, i == 0 ? " (usually built-in)" : "");
-					if (ImGui::Selectable(camLabel, cameraIndex_ == i)) cameraIndex_ = i;
+					snprintf(camLabel, sizeof camLabel, "USB camera %d%s", i, i == 0 ? " (usually built-in)" : "");
+					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == i)) { cameraIndex_ = i; piChoice_ = -1; }
 				}
 				ImGui::EndCombo();
 			}
-			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Which camera to use: 0 is usually the built-in or first one plugged in.");
-			ImGui::SameLine(0, px(8));
-			// The button follows the menu: Disconnect while that camera is the source (or connecting), Connect otherwise.
-			if (source == std::to_string(cameraIndex_)) {
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+				ImGui::SetTooltip("Which camera to use. USB camera 0 is usually the built-in or first one plugged in.");
+			if (pi) {
+				ImGui::SameLine(0, px(4));
+				if (iconButton(ICON_SLIDERS, "Pi camera settings: frame rate, shutter, focus")) ImGui::OpenPopup("##pisettings");
+				if (ImGui::BeginPopup("##pisettings")) { piCameraSettings(); ImGui::EndPopup(); }
+			}
+			ImGui::SameLine(0, px(pi ? 6 : 8));
+			// The button follows the menu: Disconnect while the camera it names is the source (or connecting), Connect
+			// otherwise.  A Pi camera's source name carries its settings, so any Pi camera source counts as "it".
+			bool inUse = pi ? picam::isName(source) : source == std::to_string(cameraIndex_);
+			if (inUse) {
 				if (ghostButton(ICON_XMARK " Disconnect", ImVec2(-FLT_MIN, 0))) disconnectSource();
 			}
-			else if (primaryButton(ICON_LINK " Connect", ImVec2(-FLT_MIN, 0), c::ok)) { batch.clear(); openSource(std::to_string(cameraIndex_)); }
+			else if (primaryButton(ICON_LINK " Connect", ImVec2(-FLT_MIN, 0), c::ok)) {
+				batch.clear();
+				if (pi) {
+					piSettings_.camera = piCams_[piChoice_].index;
+					openSource(picam::name(piSettings_));
+				}
+				else openSource(std::to_string(cameraIndex_));
+			}
 		});
 		ImGui::SameLine(0, px(16));
 		sourceCard("srcnet", ICON_BROADCAST, c::accent2, "Network camera", "An IP or PoE camera's RTSP or HTTP address, as its manual gives it.", [&] {
@@ -1481,20 +1588,25 @@ void App::pageCalibrate() {
 		dl->AddRectFilled(tp, tp + ts + ImVec2(px(16), px(10)), c::warn, px(6));
 		dl->AddText(fonts.strong, fsz(fonts.strong), tp + ImVec2(px(8), px(5)), c::bg0, t.c_str());
 	}
-	// Two-cone mode: the cones marked so far, and the click that places the next one.
-	if (calibMode_ == 2 && player.isOpen()) {
+	// Two-cone and known-car modes: the marks so far (cones' spots or the car's bumpers), and the click that places the
+	// next one.  Both measure a known distance between two left-right positions; only the names and arrays differ.
+	bool carMode = calibMode_ == 3;
+	float* markX = carMode ? carX_ : coneX_;
+	float* markY = carMode ? carY_ : coneY_;
+	auto markName = [&](int i) { return carMode ? std::string(i == 0 ? "Front bumper" : "Rear bumper") : "Spot " + std::to_string(i + 1); };
+	if ((calibMode_ == 2 || carMode) && player.isOpen()) {
 		ImDrawList* dl = ImGui::GetWindowDrawList();
 		float top = float(g.AnalysisBoxTop) - 30, bottom = float(g.AnalysisBoxTop + g.AnalysisBoxHeight) + 30;
 		for (int i = 0; i < 2; i++) {
-			if (coneX_[i] < 0) continue;
-			ImVec2 a = v.at(coneX_[i], top), b = v.at(coneX_[i], bottom), base = v.at(coneX_[i], coneY_[i]);
+			if (markX[i] < 0) continue;
+			ImVec2 a = v.at(markX[i], top), b = v.at(markX[i], bottom), base = v.at(markX[i], markY[i]);
 			dl->AddLine(a, b, alpha(c::warn, .8f), px(2));
 			dl->AddTriangleFilled(base + ImVec2(0, -px(16)), base + ImVec2(-px(8), 0), base + ImVec2(px(8), 0), c::warn);
-			std::string t = "Spot " + std::to_string(i + 1);
+			std::string t = markName(i);
 			dl->AddText(fonts.strong, fsz(fonts.strong), a + ImVec2(px(6), 0), c::warn, t.c_str());
 		}
-		if (coneX_[0] >= 0 && coneX_[1] >= 0) {
-			ImVec2 a = v.at(coneX_[0], coneY_[0]), b = v.at(coneX_[1], coneY_[0]);
+		if (markX[0] >= 0 && markX[1] >= 0) {
+			ImVec2 a = v.at(markX[0], markY[0]), b = v.at(markX[1], markY[0]);
 			dl->AddLine(a + ImVec2(0, px(8)), b + ImVec2(0, px(8)), c::warn, px(2));
 		}
 		if (coneTimerAt_ >= 0) {
@@ -1510,7 +1622,8 @@ void App::pageCalibrate() {
 		}
 		if (conePlacing_ >= 0) {
 			ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-			std::string t = "Click the cone or pole at spot " + std::to_string(conePlacing_ + 1);
+			std::string t = carMode ? "Click the " + std::string(conePlacing_ == 0 ? "front" : "rear") + " bumper, at the corner facing the camera"
+				: "Click the cone or pole at spot " + std::to_string(conePlacing_ + 1);
 			ImVec2 ts = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t.c_str());
 			ImVec2 tp = v.origin + ImVec2((v.size.x - ts.x) * .5f, px(12));
 			dl->AddRectFilled(tp - ImVec2(px(8), px(5)), tp + ts + ImVec2(px(8), px(5)), c::warn, px(6));
@@ -1519,10 +1632,10 @@ void App::pageCalibrate() {
 			bool inside = m.x >= v.origin.x && m.y >= v.origin.y && m.x < v.origin.x + v.size.x && m.y < v.origin.y + v.size.y;
 			if (inside && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
 				ImVec2 f = v.frame(m);
-				coneX_[conePlacing_] = f.x;
-				coneY_[conePlacing_] = f.y;
-				conePlacing_ = coneX_[1 - conePlacing_] < 0 ? 1 - conePlacing_ : -1;   // straight on to the other cone
-				if (coneShots && conePlacing_ >= 0) coneView_ = conePlacing_;          // on its own picture
+				markX[conePlacing_] = f.x;
+				markY[conePlacing_] = f.y;
+				conePlacing_ = markX[1 - conePlacing_] < 0 ? 1 - conePlacing_ : -1;    // straight on to the other mark
+				if (coneShots && conePlacing_ >= 0 && !carMode) coneView_ = conePlacing_;   // on its own picture
 			}
 		}
 	}
@@ -1578,10 +1691,9 @@ void App::pageCalibrate() {
 
 	ImGui::SameLine(0, px(20));
 	ImGui::BeginChild("cside", ImVec2(sideW, availH));
-	static const char* const modes[] = { "Drive-through", "Count frames", "Cones or pole" };
-	segmented("cmode", &calibMode_, modes, 3);
-	if (calibMode_ != 2) conePlacing_ = -1;
-	if (calibMode_ == 2) calibChecking_ = false;   // a check is always a pass, on the other two modes
+	static const char* const modes[] = { "Drive-through", "Count frames", "Cones/pole", "Known car" };
+	if (segmented("cmode", &calibMode_, modes, 4)) conePlacing_ = -1;   // a pending click belongs to the mode it was for
+	if (calibMode_ >= 2) calibChecking_ = false;   // a check is always a pass, on the first two modes
 	ImGui::Dummy(ImVec2(0, px(4)));
 
 	// The check pass reuses the calibration controls (the pass list or the frame marks, and the speed you drove):
@@ -1765,6 +1877,117 @@ void App::pageCalibrate() {
 		if (anyCalibrated) {
 			ImGui::Dummy(ImVec2(0, px(2)));
 			if (ghostButton(ICON_BULLSEYE "  Check it with a drive past", ImVec2(-FLT_MIN, 0))) {
+				calibMode_ = 0;
+				calibChecking_ = true;
+				calibPickId_ = 0;
+			}
+		}
+		endCard();
+	}
+	else if (calibMode_ == 3) {
+		// A car of known length as the measuring stick: the same arithmetic as the cones (calib::framesForDistance), with
+		// the bumpers as the two marks and the maker's overall length as the distance.  What it adds over the cones is
+		// convenience (no tape, no trip outside, and any car of a known model that shows up will do); what it costs is
+		// accuracy, from three places the copy below steers around:
+		//  - Depth.  A car parked beyond the traffic lane looks shorter than a moving one, so speeds read high unless
+		//    the "parked beyond" correction (calib::markPxAtLane) is set.  A passing car has no such error.
+		//  - Corners.  Off to one side the camera also sees the car's front or back, which looks like extra length.
+		//    Marking the corners facing the camera, with the car near the middle of the picture, keeps that small.
+		//  - The model's length: the picker names each generation's years, since generations differ by inches.
+		// The marks span the car, not the zone, so a camera not square to the street (the zone's ends at different
+		// depths) adds error the cones placed at the white lines don't have.
+		beginCard("car", ICON_CAR, "A car you know the length of");
+		stepLine(1, "Find a frame with the car side-on in the zone, near the middle of the picture. A parked car works, "
+			"or step through a recording to a sharp frame of one passing by.");
+		stepLine(2, "Click its front bumper, then its rear bumper, each at the corner facing the camera.");
+		stepLine(3, "Pick the model or type its length, say where it is, and apply. Then check it with one drive past.");
+		ImGui::Dummy(ImVec2(0, px(4)));
+		float bw = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
+		ImGui::BeginDisabled(!player.isOpen());
+		for (int i = 0; i < 2; i++) {
+			if (i) ImGui::SameLine(0, px(10));
+			std::string label = std::string(conePlacing_ == i ? ICON_CROSSHAIRS "  Click the picture" : i == 0 ? ICON_FLAG "  Front bumper" : ICON_FLAG "  Rear bumper")
+				+ "##car" + std::to_string(i);
+			if (conePlacing_ == i ? primaryButton(label.c_str(), ImVec2(bw, 0)) : ghostButton(label.c_str(), ImVec2(bw, 0)))
+				conePlacing_ = conePlacing_ == i ? -1 : i;
+		}
+		ImGui::EndDisabled();
+		auto carText = [&](int i) { return carX_[i] < 0 ? std::string("not marked") : "x " + std::to_string(int(std::lround(carX_[i]))); };
+		dimText("Front: %s    Rear: %s", carText(0).c_str(), carText(1).c_str());
+
+		// The model picker fills the length; typing a length switches the picker to "typed in".
+		formLabel("Model", px(130));
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		const char* shownModel = carModel_ >= 0 ? calib::kKnownCars[carModel_].name : "Other (type the length)";
+		if (ImGui::BeginCombo("##carmodel", shownModel, ImGuiComboFlags_HeightLarge)) {
+			for (int i = 0; i < int(IM_ARRAYSIZE(calib::kKnownCars)); i++) {
+				char item[96];
+				double in = calib::kKnownCars[i].inches;
+				snprintf(item, sizeof item, "%s   %d ft %d in", calib::kKnownCars[i].name, int(in) / 12, int(in) % 12);
+				if (ImGui::Selectable(item, carModel_ == i)) { carModel_ = i; carFt_ = in / 12; }
+			}
+			if (ImGui::Selectable("Other (type the length)", carModel_ < 0)) carModel_ = -1;
+			ImGui::EndCombo();
+		}
+		formLabel("Length (ft)", px(130));
+		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
+		if (ImGui::InputDouble("##carft", &carFt_, .1, 1, "%.2f")) carModel_ = -1;
+		carFt_ = std::clamp(carFt_, 0.0, 80.0);
+		helpMarker("Bumper to bumper. Search the year and model with \"overall length\"; makers list it in inches (divide by 12).\n"
+			"An inch either way is about half a percent, or 0.1 mph at 25 mph.");
+
+		// Where the car is, for the depth correction.  The camera-to-lane distance is the site planner's (step 2),
+		// kept in metres there; it's edited here in feet because that's what the "farther" box is in.
+		static const char* const where[] = { "Driving by", "Parked beyond traffic" };
+		int w = carParked_ ? 1 : 0;
+		if (segmented("carwhere", &w, where, 2)) carParked_ = w == 1;
+		double laneFt = prefs.planDist * 3.281;
+		if (carParked_) {
+			formLabel("Camera to lane (ft)", px(130));
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
+			if (ImGui::InputDouble("##carlane", &laneFt, 1, 5, "%.0f")) prefs.planDist = std::max(laneFt, 3.0) / 3.281;
+			helpMarker("From the camera to the middle of the lane traffic drives in. Step 2, Pick your spot, has the same number.");
+			formLabel("Car is farther (ft)", px(130));
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
+			ImGui::InputDouble("##carfar", &carFartherFt_, .5, 1, "%.1f");
+			carFartherFt_ = std::clamp(carFartherFt_, 0.0, 50.0);
+			helpMarker("From the middle of the traffic lane to the middle of the parked car. Across a lane and a parking lane\n"
+				"that's usually 6 to 9 ft. A car parked on the near side, between you and traffic, can't be corrected this way.");
+		}
+		else {
+			ImGui::PushTextWrapPos(0);
+			dimText(ICON_INFO "  A parked car? Choose \"Parked beyond traffic\". It sits farther from the camera than moving cars, "
+				"so it looks shorter, and speeds would read high.");
+			ImGui::PopTextWrapPos();
+		}
+		static const char* const carDirs[] = { "Both ways", "→ only", "← only" };
+		segmented("cardir", &coneDir_, carDirs, 3);
+
+		double rawPx = (carX_[0] >= 0 && carX_[1] >= 0) ? std::fabs(carX_[1] - carX_[0]) : 0;
+		double markPx = calib::markPxAtLane(rawPx, laneFt, carParked_ ? carFartherFt_ : 0);
+		double zonePx = g.speedLineRight - g.speedLineLeft;
+		double framesD = calib::framesForDistance(markPx, carFt_, zonePx, g.CalibrationSpeed, g.CalibrationFPS);
+		bool tooSmall = rawPx > 0 && rawPx < 60;
+		if (framesD > 0 && !tooSmall) {
+			double zoneFt = zonePx / markPx * carFt_;
+			int rounded = std::max(1, int(std::lround(framesD)));
+			ImGui::PushFont(fonts.stat);
+			ImGui::Text("%.1f ft zone", zoneFt);
+			ImGui::PopFont();
+			ImGui::PushTextWrapPos(0);
+			dimText("A car at %.0f mph crosses it in %.1f frames at %.0f fps, saved as %d.", g.CalibrationSpeed, framesD, g.CalibrationFPS, rounded);
+			if (carParked_ && laneFt > 0)
+				dimText("Each foot the \"farther\" guess is off moves speeds about %.0f%%.", 100 / (laneFt + carFartherFt_));
+			ImGui::PopTextWrapPos();
+		}
+		else if (tooSmall) dimText(ICON_WARN "  The car is too small on the picture to measure. Pick a nearer one.");
+		ImGui::BeginDisabled(framesD <= 0 || tooSmall);
+		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD, "the car's length");
+		ImGui::EndDisabled();
+		if (ImGui::SmallButton("Clear bumpers##car")) { carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1; conePlacing_ = -1; }
+		if (anyCalibrated) {
+			ImGui::Dummy(ImVec2(0, px(2)));
+			if (ghostButton(ICON_BULLSEYE "  Check it with a drive past##car", ImVec2(-FLT_MIN, 0))) {
 				calibMode_ = 0;
 				calibChecking_ = true;
 				calibPickId_ = 0;
@@ -2141,10 +2364,26 @@ void App::runOptions() {
 	formLabel("Way over from", px(130));
 	if (ImGui::InputInt("##egr", &prefs.egregious, 5, 5)) prefs.egregious = std::max(prefs.egregious, prefs.speedLimit);
 	ImGui::EndDisabled();
-	formLabel("Playback", px(130));
+	// How fast a video file is fed to the tracker.  Real time sleeps until each frame's moment (Tracker::onFrame), so a
+	// file plays like a camera; Fast reads frames as quickly as this computer can analyse them.  Speeds come from
+	// frame counts, not the clock, so both give the same results; Fast just finishes sooner.  A live camera or stream
+	// delivers frames as they happen, so the choice does nothing there: the control says so instead of offering it.
+	const std::string& next = batch.empty() ? source : batch.front();
+	bool live = run ? tracker.progress().live : (!next.empty() && classifySource(next) != SourceInfo::File);
+	formLabel("Recordings play", px(130));
 	int rt = prefs.realtime ? 0 : 1;
-	static const char* const pace[] = { "Real time", "Fast" };
+	static const char* const pace[] = { "Normal speed", "Full speed" };
+	ImGui::BeginDisabled(live);
 	if (segmented("pace", &rt, pace, 2)) { prefs.realtime = rt == 0; tracker.setRealtime(prefs.realtime); }
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("Only for recorded videos. Both give the same speeds, because VST counts frames rather than timing them.\n"
+			"Normal speed plays the video like watching it; full speed finishes a long recording sooner.");
+	if (live) {
+		ImGui::PushTextWrapPos(0);
+		dimText(ICON_INFO "  A live camera always runs at its own pace, so this only matters for recorded videos.");
+		ImGui::PopTextWrapPos();
+	}
 	ImGui::BeginDisabled(run);
 	ImGui::Checkbox("Save a highlights video of speeders", &prefs.highlights);
 	if (prefs.highlights) {

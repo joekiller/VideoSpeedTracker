@@ -43,7 +43,8 @@ add_executable(VideoSpeedTracker
   ${VST_DIR}/Globals.cpp
   ${VST_DIR}/VehicleDynamics.cpp
   ${VST_DIR}/Projection.cpp
-  ${VST_DIR}/Snapshot.cpp)
+  ${VST_DIR}/Snapshot.cpp
+  ${VST_DIR}/PiCamera.cpp)
 target_include_directories(VideoSpeedTracker PRIVATE ${VST_DIR})
 target_link_libraries(VideoSpeedTracker PRIVATE vst_common ${OpenCV_LIBS})
 # Keep a*b+c as two roundings everywhere. GCC on arm64 and Clang fuse them into FMA by default,
@@ -179,6 +180,12 @@ if(TARGET vst_report)
   target_link_libraries(dashcam_test PRIVATE vst_report)
   add_test(NAME dashcam_calibration
     COMMAND dashcam_test ${CMAKE_BINARY_DIR}/dashcam-test)
+
+  # Distance calibration (src/Gui/Calibration.h): cones/pole spacing and a known car's length, with the depth
+  # correction for a car parked beyond the traffic lane checked against a pinhole camera.  Header only.
+  add_executable(calibration_test tests/calibration_test.cpp)
+  target_include_directories(calibration_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Gui)
+  add_test(NAME distance_calibration COMMAND calibration_test)
 endif()
 
 # Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back
@@ -200,6 +207,14 @@ if(FFMPEG_EXECUTABLE AND BASH_EXECUTABLE AND NOT WIN32)
   # Real-time: ffmpeg gets half a second to bind before VST connects and the dropout waits are wall-clock, so with
   # other tests loading every core (ctest -j) it can miss its cues. It runs on its own, after the parallel ones.
   set_tests_properties(live_stream_reconnect PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+
+  # Raspberry Pi camera source (PiCamera.cpp) with tests/fake_rpicam_vid.sh playing the sample in place of rpicam-vid:
+  # listing, the recorder's arguments, tracking against the baseline, reconnecting, the frame rate check and the failure
+  # messages (tests/picam_source.sh). About 5 s. Serial because one step times frames against the wall clock.
+  add_test(NAME picam_source
+    COMMAND ${BASH_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/picam_source.sh
+      $<TARGET_FILE:VideoSpeedTracker> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-picam ${FFMPEG_EXECUTABLE})
+  set_tests_properties(picam_source PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE)
 endif()
 
 # Short view (subFrameTiming): the sample cropped by ffmpeg to 20 ft and to 15 ft of street (the shortest view VST Studio
