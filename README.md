@@ -93,7 +93,7 @@ built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`
 
 | Platform | File | Install |
 |---|---|---|
-| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
+| Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 / 26.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
 | Windows x64 | `VideoSpeedTracker-<ver>-windows-x64-setup.exe` | run it: installs for you (no admin prompt) or for everyone, adds **VST Studio** to the Start menu, and uninstalls from Settings › Apps. Your config and results stay put across upgrades and uninstalls |
 | Windows x64, portable | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
 | macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, then untar |
