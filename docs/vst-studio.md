@@ -99,8 +99,13 @@ record the car's speed in every dashcam frame. Drive past at any steady speed wi
 `-front.mp4` clip for that minute from the USB drive's `TeslaCam` folder, pick your pass, and press **Read my
 speed from a Tesla dashcam clip**. VST Studio matches the pass to the clip by time, averages the car's speed over
 the seconds around it, and fills in the speed to a tenth of a mph. It warns if the car sped up or slowed down
-there. Matching needs the computer's clock and the car's to agree within a second or two (both normally set
-themselves from the internet or GPS). The clip stays on your computer.
+there. The clip stays on your computer.
+
+The first match is by time, which needs the computer's clock and the car's to agree within a second or two (both
+normally set themselves from the internet or GPS). Once a pass is matched and steady, **Remember this spot for GPS
+matching** saves where the car was halfway through the zone; you can also paste the spot from a map app. After that,
+passes are matched by the moment the car's GPS went by that spot, so the clocks no longer matter: they only pick
+which drive-by it was when a clip holds more than one. The page says which way each pass was matched.
 
 #### Check it with a second drive
 

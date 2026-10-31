@@ -61,6 +61,8 @@ struct AppPrefs {
 	double planHfov = 66, planWidth = 1920, planFps = 30, planShutter = 120;
 	double planDist = 12, planClear = 18, planCalib = 30, planCarLen = 4.8;
 	int planPreset = 0;
+	// The camera zone's spot on the map (degrees; 0, 0 = not set), for matching Tesla dashcam clips by GPS.
+	double siteLat = 0, siteLon = 0;
 	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config
 	// a calibration was applied to.  A step counts as done only for the camera/config it was done for.
 	std::string zonesFor, calibratedFor;

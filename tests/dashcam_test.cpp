@@ -5,7 +5,9 @@
 // Builds TeslaCam-style MP4s byte by byte (ftyp, mdat of length-prefixed NAL units with one SEI SeiMetadata message
 // per frame between the pictures, moov/mvhd with the clip's duration) and checks that the reader finds every
 // message, undoes H.264's emulation-prevention bytes, skips fields it doesn't use, times the samples from the file
-// name and duration, and that a pass's speed is read from the right seconds.  Also the user-facing errors: not an
+// name and duration, and that a pass's speed is read from the right seconds.  GPS matching: a car driving along a
+// street, its pass found by when it came closest to the camera spot even when the computer's clock is 8 s off (a
+// clock match would land in the acceleration), the right drive-by of two, and the fall-back when the spot is far.  Also the user-facing errors: not an
 // MP4, no telemetry (older firmware), no TeslaCam timestamp in the name.
 #include "DashCam.h"
 #include <cmath>
@@ -16,6 +18,7 @@
 #include <fstream>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -67,11 +70,14 @@ static Bytes seiNal(const Bytes& msg) {
 
 // A clip of `frames` frames over `seconds`, the speed of frame i given by `speed(i)` (m/s).  Each frame is an SEI
 // unit followed by a stand-in picture NAL, as in a real clip.
-static void writeClip(const fs::path& p, int frames, double seconds, const std::function<float(int)>& speed, bool withSei = true) {
+using Pos = std::function<std::pair<double, double>(int)>;
+static void writeClip(const fs::path& p, int frames, double seconds, const std::function<float(int)>& speed, bool withSei = true,
+	const Pos& pos = nullptr) {
 	Bytes mdat;
 	for (int i = 0; i < frames; i++) {
 		if (withSei) {
-			Bytes nal = seiNal(message(1000 + i, speed(i), speed(i) > 0, 38.0302, -78.4836));
+			auto at = pos ? pos(i) : std::make_pair(38.0302, -78.4836);
+			Bytes nal = seiNal(message(1000 + i, speed(i), speed(i) > 0, at.first, at.second));
 			put32(mdat, uint32_t(nal.size()));
 			mdat.insert(mdat.end(), nal.begin(), nal.end());
 		}
@@ -165,6 +171,51 @@ int main(int argc, char** argv) {
 	std::ofstream(text) << "not a video";
 	CHECK(!dashcam::readClip(text.string(), clip, err) && err.find("isn't an MP4") != std::string::npos);
 	CHECK(!dashcam::readClip((out / "missing.mp4").string(), clip, err) && err.find("Can't open") != std::string::npos);
+
+	// GPS.  A street running east along 38.03 N; the car's position is its speed integrated, and the GPS updates
+	// every 4th frame (about 9 Hz), repeating in between as a real receiver does.
+	CHECK(std::fabs(dashcam::distanceM(38.03, -78.48, 38.031, -78.48) - 111.2) < .5);
+	const double lat0 = 38.03, lon0 = -78.49, mPerDegLon = 111195 * std::cos(lat0 * 3.14159265358979 / 180);
+	std::vector<double> east(n + 1, 0);
+	for (int i = 1; i <= n; i++) east[i] = east[i - 1] + speed(i - 1) / double(fps);
+	auto drivePos = [&](int i) { int g = i - i % 4; return std::make_pair(lat0, lon0 + east[g] / mPerDegLon); };
+	fs::path gpsPath = out / "2026-10-31_15-00-00-front.mp4";
+	writeClip(gpsPath, n, 60, speed, true, drivePos);
+	dashcam::Clip gclip;
+	CHECK(dashcam::readClip(gpsPath.string(), gclip, err));
+	double g0 = gclip.start;
+	std::vector<dashcam::Clip> gclips = { gclip };
+	// The spot: where the car was 20 s in (steady at 25 mph).
+	double spotLat = lat0, spotLon = lon0 + east[20 * fps] / mPerDegLon, lat, lon;
+	CHECK(dashcam::positionAt(gclips, g0 + 20, lat, lon) && dashcam::distanceM(lat, lon, spotLat, spotLon) < 2);
+	std::vector<double> near = dashcam::closestApproaches(gclips, spotLat, spotLon);
+	CHECK(near.size() == 1 && std::fabs(near[0] - (g0 + 20)) < .15);
+	// The pass crossed a 0.6 s zone centred on 20 s, so VST logged it at 20.3 s, truncated to 20; but the computer's
+	// clock is 8 s behind the car's, so it logged 12.  By clock that's the acceleration; by GPS it's 25 mph steady.
+	double logged = std::floor(20.3) - 8;
+	CHECK(!dashcam::speedDuring(gclips, g0 + logged, .6).steady());
+	dashcam::PassSpeed gp = dashcam::speedAtSpot(gclips, spotLat, spotLon, g0 + logged, .6);
+	std::printf("  GPS match: %.2f mph, clock offset %+.2f s\n", gp.mph, gp.clockOffset);
+	CHECK(gp.byGps && gp.found && gp.steady());
+	CHECK(std::fabs(gp.mph - 25) < .1);
+	CHECK(std::fabs(gp.clockOffset - 8) < .6);
+	// A spot a kilometre away: no drive-by, so it falls back to the clocks.
+	CHECK(!dashcam::speedAtSpot(gclips, lat0 + .01, spotLon, g0 + logged, .6).byGps);
+	// Back the other way in the next minute at 30 mph, past the spot at 90 s: the clock's guess picks this drive-by.
+	const double mps30 = 30 / 2.2369362920544;
+	double eastAtSpot = east[20 * fps];
+	fs::path backPath = out / "2026-10-31_15-01-00-front.mp4";
+	writeClip(backPath, n, 60, [&](int) { return float(mps30); }, true,
+		[&](int i) { int g = i - i % 4; return std::make_pair(lat0, lon0 + (eastAtSpot + mps30 * (30 - double(g) / fps)) / mPerDegLon); });
+	dashcam::Clip back;
+	CHECK(dashcam::readClip(backPath.string(), back, err));
+	gclips.push_back(back);
+	near = dashcam::closestApproaches(gclips, spotLat, spotLon);
+	CHECK(near.size() == 2);
+	gp = dashcam::speedAtSpot(gclips, spotLat, spotLon, g0 + 90 - 3, .6);
+	CHECK(gp.byGps && gp.steady() && std::fabs(gp.mph - 30) < .1);
+	gp = dashcam::speedAtSpot(gclips, spotLat, spotLon, g0 + 20 - 3, .6);
+	CHECK(gp.byGps && std::fabs(gp.mph - 25) < .1);
 
 	std::printf("%d checks, %d failed\n", checks, failures);
 	return failures ? 1 : 0;
