@@ -90,8 +90,13 @@ FAKE_RPICAM_REALTIME=1 FAKE_RPICAM_SECONDS=4 "$VST" --headless --input picam --c
 VPID=$!
 for ((i = 0; i < 100; i++)); do grep -q "Lost Pi camera 0" "$LOG" && break; sleep 0.2; done
 kill "$VPID"; wait "$VPID" 2>/dev/null; VPID=
-grep -qE "Global Shutter Camera is delivering (29|30|31)(\.[0-9])? fps, not the 60 asked for" "$LOG" || fail "no note about the slower frame rate"
-grep -qE "^Video is (29|30|31)(\.[0-9])? fps and calibration was counted at 30 fps|^Pi camera 0 \(Global Shutter Camera\): 1280x720 at (29|30|31)(\.[0-9])? fps" "$LOG" || fail "the measured rate isn't the one used"
+# The fake sends the clip at its own 30 fps, but what VST measures depends on the host: a busy macOS runner has
+# delivered 27.4 (v1.8.2's tag build).  So check the note is there with a rate well under the 60 asked for and
+# near the clip's 30, then that this same measured rate is the one the run uses.
+rate=$(sed -nE 's/^Global Shutter Camera is delivering ([0-9]+(\.[0-9])?) fps, not the 60 asked for.*/\1/p' "$LOG" | head -1)
+[[ -n $rate ]] || fail "no note about the slower frame rate"
+awk -v r="$rate" 'BEGIN { exit !(r >= 20 && r <= 40) }' || fail "the slower frame rate should be near the clip's 30 fps, got $rate"
+grep -qF "Pi camera 0 (Global Shutter Camera): 1280x720 at $rate fps" "$LOG" || fail "the measured rate ($rate fps) isn't the one used"
 echo "slower than asked: the measured frame rate is used, and the log says why"
 
 # ---- 5. failures ----
