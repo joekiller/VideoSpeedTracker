@@ -92,20 +92,28 @@ Both keep the other direction's calibration valid by expressing it against the s
 
 ![Calibrate](images/studio/07-calibrate.jpg)
 
-#### Calibrating with a Tesla dashcam
+#### Calibrating without cruise control: Tesla dashcam and phone ride-along
 
-If you drive a Tesla, you don't need cruise control. Teslas on software 2025.44.25 or later (HW3 and newer)
-record the car's speed in every dashcam frame. Drive past at any steady speed with TeslaCam recording, copy the
-`-front.mp4` clip for that minute from the USB drive's `TeslaCam` folder, pick your pass, and press **Read my
-speed from a Tesla dashcam clip**. VST Studio matches the pass to the clip by time, averages the car's speed over
-the seconds around it, and fills in the speed to a tenth of a mph. It warns if the car sped up or slowed down
-there. The clip stays on your computer.
+You can drive past at any steady speed and let a recording supply the speed, instead of holding cruise control:
 
-The first match is by time, which needs the computer's clock and the car's to agree within a second or two (both
-normally set themselves from the internet or GPS). Once a pass is matched and steady, **Remember this spot for GPS
-matching** saves where the car was halfway through the zone; you can also paste the spot from a map app. After that,
-passes are matched by the moment the car's GPS went by that spot, so the clocks no longer matter: they only pick
-which drive-by it was when a clip holds more than one. The page says which way each pass was matched.
+- **A Tesla's dashcam.** Teslas on software 2025.44.25 or later (HW3 and newer) record the car's speed in every
+  dashcam frame. Use the `-front.mp4` clip for that minute from the USB drive's `TeslaCam` folder.
+- **Any phone, with VST Ride-along.** Open [joekiller.github.io/VideoSpeedTracker](https://joekiller.github.io/VideoSpeedTracker/)
+  on the phone (add it to the home screen and it works with no signal), tap **Start recording** before you set off,
+  drive past, then **Stop** and save the `.csv` to the computer. It records the phone's GPS position and speed, which
+  is good to about half a mph at a steady speed. It sends nothing anywhere.
+
+Pick your pass and press **Read my speed from a dashcam clip or ride-along**; choose the files. Load both a Tesla
+clip and a ride-along for the same drive and VST Studio cross-checks them: two independent speedometers within
+1.5 mph of each other are averaged, and if they disagree it says so and uses the Tesla's wheel speed. Either way
+it fills in the speed to a tenth of a mph and warns if the car sped up or slowed down in the zone. The files stay
+on your computer.
+
+The first match is by time, which needs the computer's clock and the car's or phone's to agree within a second or
+two (all of them normally set themselves from the internet or GPS). Once a pass is matched and steady, **Remember
+this spot for GPS matching** saves where the car was halfway through the zone; you can also paste the spot from a
+map app. After that, passes are matched by the moment the GPS went by that spot, so the clocks no longer matter:
+they only pick which drive-by it was when a recording holds more than one. The page says how each was matched.
 
 #### Check it with a second drive
 

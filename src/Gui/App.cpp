@@ -1152,87 +1152,107 @@ double App::drivenMph(int vehicleId) const {
 	return dashFor_ == vehicleId && calibSpeed_ == int(std::lround(dashMph_)) ? dashMph_ : calibSpeed_;
 }
 
-// Under "I drove at" on the pass picker: load the car's dashcam clips and read its speed through the zone for the
-// picked pass, so the driver needn't hold a cruise-control speed.  The pass's log time (wall clock for a live
-// camera, or the recording's own time) is matched against the clips' times from their TeslaCam names; the two
-// clocks only need to agree to a second or two, and the speed must have held steady over that slack for the
-// reading to be used as is.
+// Under "I drove at" on the pass picker: load the drive past's speed records and read the car's speed through the
+// zone for the picked pass, so the driver needn't hold a cruise-control speed.  Two kinds of record, loaded together
+// or alone: a Tesla's dashcam clips (wheel speed in every frame) and the phone's VST Ride-along recordings (GPS
+// speed about once a second).  Each kind is matched to the pass by GPS at the camera spot when that's set, else by
+// the clocks (which must agree to a second or two), and dashcam::jointSpeed() cross-checks them when both are there.
 void App::dashcamSpeed(const Vehicle* picked) {
-	if (ghostButton(ICON_CAR "  Read my speed from a Tesla dashcam clip", ImVec2(-FLT_MIN, 0))) {
-		auto files = pfd::open_file("Tesla dashcam clips from the drive past (the -front.mp4 ones)", "",
-			{ "TeslaCam clips", "*.mp4", "All files", "*" }, pfd::opt::multiselect).result();
-		if (!files.empty()) {
-			std::vector<dashcam::Clip> clips;
-			std::string lastErr;
-			for (const std::string& f : files) {
-				dashcam::Clip c;
-				std::string err;
-				if (dashcam::readClip(f, c, err)) clips.push_back(std::move(c));
-				else lastErr = err;
-			}
-			if (clips.empty()) toast(lastErr, c::bad, ICON_WARN);
-			else {
-				dashClips_ = std::move(clips);
-				dashFor_ = 0;
-				if (!lastErr.empty()) toast("Skipped a clip: " + lastErr, c::warn, ICON_WARN);
-			}
+	if (ghostButton(ICON_CAR "  Read my speed from a dashcam clip or ride-along", ImVec2(-FLT_MIN, 0))) {
+		auto files = pfd::open_file("Tesla dashcam clips (-front.mp4) or VST Ride-along recordings (.csv) from the drive past", "",
+			{ "Drive records", "*.mp4 *.csv", "TeslaCam clips", "*.mp4", "Ride-along recordings", "*.csv", "All files", "*" },
+			pfd::opt::multiselect).result();
+		std::string lastErr;
+		int added = 0;
+		for (const std::string& f : files) {
+			if (std::any_of(dashClips_.begin(), dashClips_.end(), [&](const dashcam::Clip& c) { return c.path == f; })) continue;
+			dashcam::Clip c;
+			std::string err;
+			if (dashcam::readAny(f, c, err)) { dashClips_.push_back(std::move(c)); added++; }
+			else lastErr = err;
 		}
+		if (added) dashFor_ = 0;
+		if (!lastErr.empty()) toast(added ? "Skipped a file: " + lastErr : lastErr, added ? c::warn : c::bad, ICON_WARN);
 	}
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Drive past at any steady speed with TeslaCam recording, then pick the clips from the\n"
-			"USB drive's TeslaCam folder. Needs Tesla software 2025.44.25 or later (HW3 and newer).");
+		ImGui::SetTooltip("Drive past at any steady speed while recording, then pick the files. Load both to cross-check them.\n"
+			"  Tesla: the -front.mp4 clips from the USB drive's TeslaCam folder (software 2025.44.25 or later, HW3 and newer).\n"
+			"  Any phone: a recording from VST Ride-along, the GPS recorder at joekiller.github.io/VideoSpeedTracker.");
 	if (dashClips_.empty()) return;
 
-	ImGui::PushTextWrapPos(0);
-	if (!picked) { dimText(ICON_CAR "  %d dashcam clip%s loaded. Pick your pass above.", int(dashClips_.size()), dashClips_.size() == 1 ? "" : "s"); ImGui::PopTextWrapPos(); return; }
+	int teslas = 0, phones = 0;
+	for (const dashcam::Clip& c : dashClips_) (c.kind == dashcam::Clip::Tesla ? teslas : phones)++;
+	std::string loaded;
+	if (teslas) loaded += std::to_string(teslas) + " Tesla clip" + (teslas == 1 ? "" : "s");
+	if (phones) loaded += std::string(teslas ? ", " : "") + std::to_string(phones) + " ride-along" + (phones == 1 ? "" : "s");
+	dimText(ICON_FOLDER "  %s loaded", loaded.c_str());
+	ImGui::SameLine();
+	if (ImGui::SmallButton("Clear##drive")) { dashClips_.clear(); dashFor_ = 0; return; }
+	if (!picked) { dimText("Pick your pass above."); return; }
+
 	const std::string& when = !picked->live && !picked->recorded.empty() ? picked->recorded : picked->time;
 	double end = dashcam::parseIso(when), crossing = picked->frames() / std::max(picked->fps, 1.0);
 	bool haveSpot = prefs.siteLat != 0 || prefs.siteLon != 0;
-	dashcam::PassSpeed ps = haveSpot ? dashcam::speedAtSpot(dashClips_, prefs.siteLat, prefs.siteLon, end, crossing)
-		: dashcam::speedDuring(dashClips_, end, crossing);
-	if (ps.byGps) {
-		dimText(ICON_LOCATE "  Matched by GPS at your camera spot");
-		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("The car passed your camera's spot %.1f s %s this pass's time on the computer's clock.\n"
-				"GPS matching doesn't depend on the two clocks agreeing.", std::fabs(ps.clockOffset), ps.clockOffset >= 0 ? "after" : "before");
-	}
-	else if (haveSpot) dimText(ICON_INFO "  The car didn't pass your camera spot in these clips; matched by clock.");
-	if (!ps.found) {
+	dashcam::Joint j = dashcam::jointSpeed(dashClips_, prefs.siteLat, prefs.siteLon, end, crossing);
+	ImGui::PushTextWrapPos(0);
+	// One line per kind of record, then the verdict.
+	auto line = [&](const char* who, const dashcam::PassSpeed& ps, int count) {
+		if (!count) return;
+		if (!ps.found) { dimText(ICON_X_CIRCLE "  %s: doesn't cover %s", who, when.substr(11).c_str()); return; }
+		const char* how = ps.byGps ? "GPS match" : "clock match";
+		if (ps.steady()) dimText(ICON_CHECK "  %s: %.1f mph, steady (%s)", who, ps.mph, how);
+		else {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+			ImGui::TextWrapped(ICON_WARN "  %s: %.1f to %.1f mph, not steady (%s)", who, ps.minMph, ps.maxMph, how);
+			ImGui::PopStyleColor();
+		}
+		if (ps.byGps && ImGui::IsItemHovered())
+			ImGui::SetTooltip("Passed your camera spot %.1f s %s this pass's time on the computer's clock.\n"
+				"GPS matching doesn't depend on the clocks agreeing.", std::fabs(ps.clockOffset), ps.clockOffset >= 0 ? "after" : "before");
+	};
+	line("Tesla", j.tesla, teslas);
+	line("Phone", j.phone, phones);
+	if (!j.found) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
-		ImGui::TextWrapped(ICON_WARN "  The dashcam clips don't cover %s, when this pass was measured. Pick the clip from that minute, or check the computer's clock.",
-			when.substr(11).c_str());
+		ImGui::TextWrapped(ICON_WARN "  Nothing loaded covers %s, when this pass was measured. Pick the files from that minute%s.",
+			when.substr(11).c_str(), haveSpot ? "" : ", or check the clocks");
 		ImGui::PopStyleColor();
 	}
 	else {
 		if (dashFor_ != picked->id) {
 			dashFor_ = picked->id;
-			dashMph_ = std::round(ps.mph * 10) / 10;
+			dashMph_ = std::round(j.mph * 10) / 10;
 			calibSpeed_ = int(std::lround(dashMph_));
 		}
-		if (ps.steady()) {
-			// The stepper shows whole mph; the tenths are what's applied, so say so.
-			dimText(ICON_CHECK "  Dashcam: %.1f mph, steady", dashMph_);
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Your car read %.1f to %.1f mph through the zone. %.1f mph is used for this pass\nunless you change the speed above.", ps.minMph, ps.maxMph, dashMph_);
+		if (j.agree) {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
+			ImGui::TextWrapped(ICON_CHECK_CIRCLE "  They agree within %.1f mph. Using %.1f mph.", std::fabs(j.tesla.mph - j.phone.mph), dashMph_);
+			ImGui::PopStyleColor();
 		}
+		else if (j.both) {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+			ImGui::TextWrapped(ICON_WARN "  They differ by %.1f mph. Using the Tesla's %.1f mph; the phone may not have had a clear view of the sky.",
+				std::fabs(j.tesla.mph - j.phone.mph), dashMph_);
+			ImGui::PopStyleColor();
+		}
+		else if (j.steady) dimText("Using %.1f mph.", dashMph_);
 		else {
 			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
-			ImGui::TextWrapped(ICON_WARN "  Your car was speeding up or slowing down here (%.1f to %.1f mph), so %.1f mph is only roughly right. A steadier pass calibrates better.",
-				ps.minMph, ps.maxMph, ps.mph);
+			ImGui::TextWrapped(ICON_WARN "  The car sped up or slowed down here, so %.1f mph is only roughly right. A steadier pass calibrates better.", dashMph_);
 			ImGui::PopStyleColor();
 		}
 	}
 	ImGui::PopTextWrapPos();
 
-	// The camera spot for GPS matching: learnt from a clock-matched pass the car held steady through (its position
-	// mid-zone), or pasted from a map ("38.03021, -78.48362").
+	// The camera spot for GPS matching: learnt from a clock-matched pass held steady through the zone (the car's or
+	// phone's position mid-zone), or pasted from a map ("38.03021, -78.48362").
 	if (haveSpot) {
 		dimText(ICON_LOCATE "  Camera spot %.5f, %.5f", prefs.siteLat, prefs.siteLon);
 		ImGui::SameLine();
-		if (ImGui::SmallButton("Forget")) { prefs.siteLat = prefs.siteLon = 0; prefs.save(); dashFor_ = 0; }
+		if (ImGui::SmallButton("Forget##spot")) { prefs.siteLat = prefs.siteLon = 0; prefs.save(); dashFor_ = 0; }
 		return;
 	}
-	if (ps.found && ps.steady() && !ps.byGps) {
+	if (j.found && j.steady) {
 		if (ghostButton(ICON_LOCATE "  Remember this spot for GPS matching", ImVec2(-FLT_MIN, 0))) {
 			double lat, lon;
 			if (dashcam::positionAt(dashClips_, end + .5 - crossing / 2, lat, lon)) {
@@ -1242,11 +1262,11 @@ void App::dashcamSpeed(const Vehicle* picked) {
 				dashFor_ = 0;
 				toast("Camera spot saved. Later passes are matched by GPS, whatever the clocks say.", c::ok, ICON_CHECK);
 			}
-			else toast("The car had no GPS fix at this pass. Try another pass, or paste the spot from a map.", c::warn, ICON_WARN);
+			else toast("There was no GPS fix at this pass. Try another pass, or paste the spot from a map.", c::warn, ICON_WARN);
 		}
 		if (ImGui::IsItemHovered())
 			ImGui::SetTooltip("Saves where the car was halfway through the zone on this pass. From then on, passes are\n"
-				"matched to the clips by when the car went by that spot, so the clocks needn't agree.");
+				"matched by when the car went by that spot, so the clocks needn't agree.");
 	}
 	static char spot[64] = "";
 	ImGui::SetNextItemWidth(-FLT_MIN);
@@ -1397,8 +1417,8 @@ void App::pageCalibrate() {
 		}
 		else {
 			stepLine(1, "Start tracking (live, or record a video). The zones should already be set.");
-			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph, or at any steady speed with a Tesla's dashcam recording. Once each way on a two-way street.");
-			stepLine(3, "Pick your pass below, enter the speed you drove (or read it from the dashcam clip), and apply.");
+			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph, or at any steady speed while a Tesla dashcam or VST Ride-along on your phone records. Once each way on a two-way street.");
+			stepLine(3, "Pick your pass below, enter the speed you drove (or read it from those recordings), and apply.");
 		}
 		ImGui::Dummy(ImVec2(0, px(2)));
 		auto vs = tracker.vehiclesSince(0);

@@ -1,5 +1,6 @@
 #include "DashCam.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -302,6 +303,82 @@ PassSpeed speedAtSpot(const std::vector<Clip>& clips, double lat, double lon, do
 	r.byGps = true;
 	r.clockOffset = at - guess;
 	return r;
+}
+
+bool readRide(const std::string& path, Clip& clip, std::string& err) {
+	clip = Clip();
+	clip.kind = Clip::Phone;
+	clip.path = path;
+	std::string name = std::filesystem::u8path(path).filename().u8string();
+	std::ifstream in(std::filesystem::u8path(path));
+	if (!in) { err = "Can't open " + name + "."; return false; }
+	std::string line;
+	if (!std::getline(in, line) || line.rfind("# VST ride-along recording", 0) != 0) {
+		err = name + " isn't a VST Ride-along recording.";
+		return false;
+	}
+	std::getline(in, line);   // column names
+	struct Fix { double t, lat, lon, mps, acc; };
+	std::vector<Fix> fixes;
+	while (std::getline(in, line)) {
+		// Empty fields (no speed, accuracy or heading) are allowed, so parse by hand rather than with %lf runs.
+		double v[5] = { 0, 0, 0, -1, 0 };
+		size_t pos = 0;
+		for (int i = 0; i < 5 && pos <= line.size(); i++) {
+			size_t comma = line.find(',', pos);
+			std::string f = line.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+			if (!f.empty()) { try { v[i] = std::stod(f); } catch (...) { v[i] = i == 3 ? -1 : 0; } }
+			if (comma == std::string::npos) break;
+			pos = comma + 1;
+		}
+		if (v[0] <= 0 || (v[1] == 0 && v[2] == 0) || v[4] > kMaxAccuracyM) continue;
+		fixes.push_back({ v[0] / 1000, v[1], v[2], v[3], v[4] });
+	}
+	if (fixes.size() < 3) { err = name + " has too few good GPS fixes to use."; return false; }
+	std::sort(fixes.begin(), fixes.end(), [](const Fix& a, const Fix& b) { return a.t < b.t; });
+	for (size_t i = 0; i < fixes.size(); i++) {
+		Sample s;
+		s.t = fixes[i].t;
+		s.lat = fixes[i].lat;
+		s.lon = fixes[i].lon;
+		s.drive = true;
+		s.mps = fixes[i].mps;
+		if (s.mps < 0) {   // no GPS speed: distance over time between the neighbouring fixes
+			const Fix& a = fixes[i ? i - 1 : 0];
+			const Fix& b = fixes[std::min(i + 1, fixes.size() - 1)];
+			s.mps = b.t > a.t ? distanceM(a.lat, a.lon, b.lat, b.lon) / (b.t - a.t) : 0;
+		}
+		clip.samples.push_back(s);
+	}
+	clip.start = clip.samples.front().t;
+	clip.duration = clip.samples.back().t - clip.start;
+	return true;
+}
+
+bool readAny(const std::string& path, Clip& clip, std::string& err) {
+	std::string ext = std::filesystem::u8path(path).extension().u8string();
+	std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+	return ext == ".csv" ? readRide(path, clip, err) : readClip(path, clip, err);
+}
+
+Joint jointSpeed(const std::vector<Clip>& clips, double lat, double lon, double passEnd, double crossing) {
+	Joint j;
+	auto read = [&](Clip::Kind k) {
+		std::vector<Clip> some;
+		for (const Clip& c : clips) if (c.kind == k) some.push_back(c);
+		if (some.empty()) return PassSpeed();
+		return lat != 0 || lon != 0 ? speedAtSpot(some, lat, lon, passEnd, crossing) : speedDuring(some, passEnd, crossing);
+	};
+	j.tesla = read(Clip::Tesla);
+	j.phone = read(Clip::Phone);
+	j.found = j.tesla.found || j.phone.found;
+	j.both = j.tesla.steady() && j.phone.steady();
+	j.agree = j.both && std::fabs(j.tesla.mph - j.phone.mph) <= Joint::kAgreeMph;
+	if (j.agree) j.mph = (j.tesla.mph + j.phone.mph) / 2;
+	else if (j.tesla.steady() || (j.tesla.found && !j.phone.steady())) j.mph = j.tesla.mph;
+	else if (j.phone.found) j.mph = j.phone.mph;
+	j.steady = j.tesla.steady() || j.phone.steady();
+	return j;
 }
 
 }  // namespace dashcam
