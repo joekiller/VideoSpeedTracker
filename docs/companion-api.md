@@ -64,7 +64,9 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
   (a still opened for planning zones; it can't be tracked); `totalFrames` is 0 for live sources.
 * `reconnecting` is true while a camera or stream has stopped sending pictures and the tracker is reopening it
   (after 1, 2, 4, 8, 16, then every 30 s). Passes resume when it's back.
-* `counts` cover the current session (since VST Studio started).
+* `counts` cover the current session (since VST Studio started). `vehicles` are the ones logged (timed, a clean track, at least
+  `minLoggedSpeed`). Studio also reports `tries` (every car the tracker followed into the speed zone), split into
+  `vehicles`, `slow` (timed but under `minLoggedSpeed`) and `untimed` (lost before a usable speed).
 * `liveViews` is how many streams (`/api/stream.mjpg`, `/api/live`) are open, out of 4 (see
   [Stream limits](#stream-limits-and-signing-out)).
 * `legalDirection` is `L2R`, `R2L` or `both` (two-way street, nobody is ever wrong-way).

@@ -271,20 +271,27 @@ void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
 	// speed = CalibrationSpeed × CalibrationFrames × (fps / CalibrationFPS) / frames, so a pass at `mph` taking
 	// `frames` at `fps` corresponds to CalibrationFrames = frames × mph / CalibrationSpeed × CalibrationFPS / fps.
 	int calFrames = std::max(1, int(std::lround(calib::impliedFrames(mph, frames, fps, g.CalibrationSpeed, g.CalibrationFPS))));
-	(l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
+	// A one-way street has one lane, so a pass either way measures it for both directions: a wrong-way car is timed in
+	// the same lane.  (Before, a pass against the legal direction calibrated only that way, and the legal direction,
+	// the one step 2 and the speed zone card read, kept whatever it had: often the 2016 sample's value.)
+	const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
 	prefs.calibratedFor = cfg.path();   // autosave writes it to VST.cfg on the next frame
-	// The record of it: which pass, at what speed, and the value it set.  A new apply also makes any earlier check
-	// of this direction moot, so the page's last check result goes too.
-	CalEvent e;
-	e.l2r = l2r;
-	e.drivenMph = mph;
-	e.frames = frames;
-	e.fps = fps;
-	e.calFrames = calFrames;
-	recordCalibration(e);
-	if (lastCheck_.l2r == l2r) lastCheck_ = CalCheck();
-	toast(std::string("Calibrated ") + (l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
-		+ std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
+	for (bool dir : { l2r, !l2r }) {
+		if (dir != l2r && !oneWay) break;
+		(dir ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
+		// The record of it: which pass, at what speed, and the value it set.  A new apply also makes any earlier check
+		// of this direction moot, so the page's last check result goes too.
+		CalEvent e;
+		e.l2r = dir;
+		e.drivenMph = mph;
+		e.frames = frames;
+		e.fps = fps;
+		e.calFrames = calFrames;
+		recordCalibration(e);
+		if (lastCheck_.l2r == dir) lastCheck_ = CalCheck();
+	}
+	toast(std::string("Calibrated ") + (oneWay ? "the lane (both directions)" : l2r ? "left → right" : "right → left") + ": "
+		+ std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 }
 
@@ -327,6 +334,8 @@ void App::averageCalibration(const CalCheck& check) {
 	double second = calib::impliedFrames(check.drivenMph, check.frames, check.fps, g.CalibrationSpeed, g.CalibrationFPS);
 	int calFrames = std::max(1, int(std::lround((check.calFrames + second) / 2)));
 	(check.l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
+	if (g.LegalDirection == "L2R" || g.LegalDirection == "R2L")   // one lane: both directions (see applyCalibration())
+		(check.l2r ? g.CalibrationFramesR2L : g.CalibrationFramesL2R) = calFrames;
 	prefs.calibratedFor = cfg.path();
 	// Recorded as an apply of the check pass (its speed, frames and fps) with the averaged value in force.  That
 	// starts a fresh calibration, so the direction reads "not checked" until a third pass checks the average.
@@ -2442,7 +2451,11 @@ void App::pageTrack() {
 	// From the room left by the scrollbar, which appears once the cards below outgrow the window.
 	float tw = (ImGui::GetContentRegionAvail().x - px(12)) * .5f, th = px(104);
 	char sub[64];
-	if (cn.vehicles) snprintf(sub, sizeof sub, "avg %.0f mph", cn.avgSpeed);
+	// Vehicles counts the cars that got a speed; "of N tried" says how many crossed into the zone, so a view where cars
+	// are seen but not timed reads as that rather than as a tracker counting nothing.
+	if (cn.vehicles && cn.tries > cn.vehicles) snprintf(sub, sizeof sub, "of %d tried · avg %.0f mph", cn.tries, cn.avgSpeed);
+	else if (cn.vehicles) snprintf(sub, sizeof sub, "avg %.0f mph", cn.avgSpeed);
+	else if (cn.tries) snprintf(sub, sizeof sub, "%d tried, none timed yet", cn.tries);
 	else snprintf(sub, sizeof sub, "none yet");
 	statTile(ICON_CAR, "Vehicles", std::to_string(cn.vehicles), sub, c::accent, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
@@ -2453,6 +2466,18 @@ void App::pageTrack() {
 	ImGui::SameLine(0, px(12));
 	if (cfg.g.LegalDirection != "Both") statTile(ICON_WARN, "Wrong way", std::to_string(cn.wrongWay), "on a one-way street", c::wrong, ImVec2(tw, th));
 	else statTile(ICON_FLAG, "Top speed", cn.topSpeed ? std::to_string(cn.topSpeed) + " mph" : "—", "this session", c::accent2, ImVec2(tw, th));
+	// Where the tries went, once some didn't get a speed: the first thing to look at when the counts seem low.
+	if (cn.tries > cn.vehicles) {
+		ImGui::Dummy(ImVec2(0, px(2)));
+		ImGui::PushTextWrapPos(0);
+		std::string why = std::to_string(cn.tries) + " tried: " + std::to_string(cn.vehicles) + " timed";
+		if (cn.slow) why += ", " + std::to_string(cn.slow) + " under " + std::to_string(cfg.g.minLoggedSpeed) + " mph (walkers, bikes; not listed)";
+		if (cn.untimed) why += ", " + std::to_string(cn.untimed) + " lost in the zone before a speed";
+		dimText("%s", (ICON_INFO "  " + why + ".").c_str());
+		if (cn.untimed * 3 > cn.tries && cn.tries >= 5)
+			dimText("Many lost? Check the lane line sits at hubcap height along the whole street, and the box leaves out parked cars and shadows.");
+		ImGui::PopTextWrapPos();
+	}
 
 	ImGui::Dummy(ImVec2(0, px(4)));
 	runOptions();

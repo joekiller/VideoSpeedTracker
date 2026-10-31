@@ -277,7 +277,15 @@ bool App::planFromCalibration(plan::Measured& m, std::string& how) {
 void App::syncPlanFromCalibration(bool announce) {
 	plan::Measured m;
 	std::string how;
-	if (!planFromCalibration(m, how)) return;
+	if (!planFromCalibration(m, how)) {
+		// Right after a calibration, say why step 2 didn't follow rather than leave it silently unchanged.
+		if (announce && prefs.calibratedFor == cfg.path() && !cfg.path().empty()) {
+			if (source == sampleCache_) toast("Step 2 keeps your own street's numbers: this calibration was on the sample video.", c::dim, ICON_INFO);
+			else if (!cfg.problems().empty()) toast("Step 2 will update from this calibration once the problems on Mark your street are fixed.", c::warn, ICON_WARN);
+			else toast("This calibration doesn't look like a street (under 3 ft or over 1000 ft across), so step 2 is unchanged. Check the speed you entered.", c::warn, ICON_WARN);
+		}
+		return;
+	}
 	// The calibration's identity: a new one (or new speed lines, box or direction) measures again; the same one
 	// doesn't, so street numbers typed after it stay.
 	const Globals& g = cfg.g;
@@ -292,9 +300,9 @@ void App::syncPlanFromCalibration(bool announce) {
 	plan::applyMeasured(in, m);
 	setPlanStreet(in.distM, in.clearM, plan::Source::Calibration, "Measured by " + how);
 	if (announce) {
-		char t[200];
-		snprintf(t, sizeof t, "Step 2 updated: the calibration measured about %.0f ft of street across the picture (the plan had %.0f ft).",
-			m.coverFt, wasFt);
+		char t[320];
+		snprintf(t, sizeof t, "Step 2 updated: the calibration measured about %.0f ft of street across the picture (the plan had %.0f ft), "
+			"so the camera is about %.0f ft from the lane with your lens.", m.coverFt, wasFt, in.distM * plan::kFt);
 		toast(t, c::accent2, ICON_RULER);
 	}
 }

@@ -1075,19 +1075,30 @@ int loggedVehicles = 0, speeders = 0, wrongWayVehicles = 0;
 // So logged + belowMinSpeed is the number of timed vehicles, the same whatever minLoggedSpeed is, and minLoggedSpeed = 0
 // logs every one of them.  With the default 18 this is exactly the pre-v1.2 rule (estSpeed >= 18 and isOK), since a
 // vehicle's estSpeed is -1 until it is timed.
-bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed){
+// An embedding host also hears about each belowMinSpeed and untimed vehicle (Hooks::onAttempt), so it can show how many cars
+// were tried against how many got a speed; a logged one reaches it through reportVehicle() instead.
+void reportAttempt(bool leftToRight, bool timed, int estSpeed){
+#ifdef VST_EMBEDDED
+	if (hooks && hooks->onAttempt) hooks->onAttempt({ leftToRight, timed, timed ? estSpeed : 0, frameNumber });
+#else
+	(void)leftToRight; (void)timed; (void)estSpeed;
+#endif
+}
+
+bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed, bool leftToRight){
 	if (isOK && v.getTrackEndPixel() > 0){
 		if (estSpeed >= g.minLoggedSpeed){ runLogged++; return true; }
 		runBelowMinSpeed++;
+		reportAttempt(leftToRight, true, estSpeed);
 	}
-	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()) runUntimed++;
+	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()){ runUntimed++; reportAttempt(leftToRight, false, -1); }
 	return false;
 }
 
 // Forgets every vehicle being tracked, counting each one that was in the speed zone as untimed (see countVehicle()).
 void dropTracks(){
-	for (auto& v : vehiclesGoingRight) countVehicle(false, v, -1);
-	for (auto& v : vehiclesGoingLeft) countVehicle(false, v, -1);
+	for (auto& v : vehiclesGoingRight) countVehicle(false, v, -1, true);
+	for (auto& v : vehiclesGoingLeft) countVehicle(false, v, -1, false);
 	vehiclesGoingRight.clear();
 	vehiclesGoingLeft.clear();
 }
@@ -1128,7 +1139,7 @@ void logL2Rstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
-	if (countVehicle(isOK, vehiclesGoingRight[index], estSpeed)){  // timed, clean track, and at least minLoggedSpeed
+	if (countVehicle(isOK, vehiclesGoingRight[index], estSpeed, true)){  // timed, clean track, and at least minLoggedSpeed
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "
@@ -1198,7 +1209,7 @@ void logR2Lstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
-	if (countVehicle(isOK, vehiclesGoingLeft[index], estSpeed)){  // timed, clean track, and at least minLoggedSpeed
+	if (countVehicle(isOK, vehiclesGoingLeft[index], estSpeed, false)){  // timed, clean track, and at least minLoggedSpeed
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "
