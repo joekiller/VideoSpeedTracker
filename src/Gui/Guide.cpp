@@ -50,52 +50,23 @@ const Preset kPresets[] = {
 	{ "Custom", 0, 0, 0, 0 },
 };
 
-constexpr double kMph = 0.44704;    // m/s per mph
-constexpr double kLockTime = 0.2;   // s of full visibility the tracker needs before timing starts
-// Short-view timing (see the top of the file).
-constexpr double kEdgeM = 0.3;       // m kept clear inside each end of the view: speed lines about 5-10% in
-constexpr double kJitterPx = 12;     // front-bumper jitter in 1280-wide tracker pixels (fits on the 20 ft clip)
-constexpr double kMinSamples = 4;    // bumper positions the fit needs to be trusted; the engine refuses fewer than 3
-constexpr double kShortFrames = 15;  // below this many whole frames in the zone, recommend short-view timing
-constexpr double kMaxTrackMph = 70;  // fastest car the tracker's margins are set for (maxDistOnEntry)
+// The model is plan:: (Plan.h), shared with the companion API; these are the names this file has always used.
+using plan::kMph;
+using plan::kMinSamples;
+using plan::kMaxTrackMph;
+using plan::grade;
+using Eval = plan::Eval;
 
-struct Eval { double cover, visible, zone, frames, quant, calib, total, pxPerM, blurCm, blurPx, samples; bool shortView; };
-
-Eval evaluate(const AppPrefs& p, double mph, bool shortView) {
-	Eval e{};
-	double v = mph * kMph;
-	e.shortView = shortView;
-	e.cover = 2 * p.planDist * std::tan(p.planHfov * IM_PI / 180 / 2);
-	e.visible = std::min(e.cover, p.planClear);
-	e.zone = shortView ? std::max(0.0, e.visible - 2 * kEdgeM) : std::max(0.0, e.visible - p.planCarLen - v * kLockTime);
-	// Timing error of one crossing at s mph, as a fraction of its speed.
-	auto timing = [&](double s, double* framesOut, double* samplesOut) -> double {
-		double frames = e.zone / (s * kMph) * p.planFps;
-		// The engine looks at frames in pairs: one bumper position per pair, plus the one beyond the far line.
-		double samples = e.zone > 0 ? frames / 2 + 1 : 0;
-		if (framesOut) *framesOut = frames;
-		if (samplesOut) *samplesOut = samples;
-		if (!shortView) return frames > 0 ? 1 / frames : INFINITY;
-		if (samples < kMinSamples) return INFINITY;
-		// Slope error of a least-squares line through n evenly spaced points with position noise s over a run of
-		// length L: s * sqrt(12 / n) / L, as a fraction of the speed.
-		double jitterM = kJitterPx * e.cover / 1280;
-		return jitterM * std::sqrt(12 / samples) / e.zone;
-	};
-	e.quant = mph * timing(mph, &e.frames, &e.samples);
-	// VST never measures the zone: it learns it from a pass at a known speed (step 5), so the calibration carries that
-	// pass's own timing error, here a drive past at the speed limit, into every speed.  (The old site calculator's
-	// tape-measured zone length doesn't apply.)
-	e.calib = e.zone > 0 ? mph * timing(p.speedLimit, nullptr, nullptr) : INFINITY;
-	e.total = std::hypot(e.quant, e.calib);
-	e.pxPerM = p.planWidth / std::max(e.cover, .01);
-	e.blurCm = v / p.planShutter * 100;
-	e.blurPx = e.blurCm / 100 * e.pxPerM;
-	return e;
+plan::Inputs inputs(const AppPrefs& p) {
+	plan::Inputs in;
+	in.distM = p.planDist; in.clearM = p.planClear; in.carLenM = p.planCarLen;
+	in.hfovDeg = p.planHfov; in.widthPx = p.planWidth; in.fps = p.planFps; in.shutter = p.planShutter;
+	in.speedLimit = p.speedLimit;
+	return in;
 }
 
-// 0 good, 1 marginal, 2 bad; lower values are better.
-int grade(double x, double good, double warn) { return x <= good ? 0 : x <= warn ? 1 : 2; }
+Eval evaluate(const AppPrefs& p, double mph, bool shortView) { return plan::evaluate(inputs(p), mph, shortView); }
+
 ImU32 gradeColor(int g) { return g == 0 ? c::ok : g == 1 ? c::warn : c::bad; }
 
 void bullet(const char* icon, ImU32 col, const char* head, const char* text) {
@@ -266,45 +237,240 @@ void App::shortViewNote(double coverM, bool on) {
 	}
 }
 
+// ---- the street: a rough guess first, refined as setup goes on ------------------------------------------------
+
+plan::Inputs App::planInputs() const { return inputs(prefs); }
+
+void App::setPlanStreet(double distM, double clearM, plan::Source source, const std::string& note) {
+	prefs.planDist = std::max(distM, 1.0);
+	prefs.planClear = std::max(clearM, 1.0);
+	prefs.planSource = int(source);
+	prefs.planNote = note;
+}
+
+bool App::planPictureAvailable() {
+	if (sampleCache_.empty()) sampleCache_ = findSample();
+	// The documentation tour only has the sample, and shows this card on it.
+	return player.isOpen() && !source.empty() && (source != sampleCache_ || screenshotMode);
+}
+
+// A calibration knows the speed zone in feet (how long a car at CalibrationSpeed took to cross it) and the speed lines
+// say how many pixels that is, which scales the whole picture (plan::fromCalibration).  On a one-way street the legal
+// direction's lane is the one traffic uses; on a two-way street the two lanes sit at different depths, so the
+// planner takes the mean of the two, which is about the middle of the road.
+bool App::planFromCalibration(plan::Measured& m, std::string& how) {
+	if (sampleCache_.empty()) sampleCache_ = findSample();
+	if (cfg.path().empty() || prefs.calibratedFor != cfg.path() || source == sampleCache_ || !cfg.problems().empty()) return false;
+	const Globals& g = cfg.g;
+	double frames = g.LegalDirection == "L2R" ? g.CalibrationFramesL2R : g.LegalDirection == "R2L" ? g.CalibrationFramesR2L
+		: (g.CalibrationFramesL2R + g.CalibrationFramesR2L) / 2.0;
+	double obstruction = std::max(0, g.obstruction[1] - g.obstruction[0]);
+	m = plan::fromCalibration(frames, g.CalibrationSpeed, g.CalibrationFPS, g.speedLineRight - g.speedLineLeft, g.AnalysisBoxWidth, obstruction);
+	if (!m.valid) return false;
+	// When: the latest calibration on record for this config (the date is what a reader wants; the method isn't kept).
+	how = "your step 5 calibration";
+	for (auto it = calibrationHistory().rbegin(); it != calibrationHistory().rend(); ++it)
+		if (!it->check) { how += ", " + it->time.substr(0, 10); break; }
+	return true;
+}
+
+void App::syncPlanFromCalibration(bool announce) {
+	plan::Measured m;
+	std::string how;
+	if (!planFromCalibration(m, how)) return;
+	// The calibration's identity: a new one (or new speed lines, box or direction) measures again; the same one
+	// doesn't, so street numbers typed after it stay.
+	const Globals& g = cfg.g;
+	char sig[256];
+	snprintf(sig, sizeof sig, "%s|%d|%d|%g|%g|%d|%d|%d|%d|%d|%s", cfg.path().c_str(), g.CalibrationFramesL2R, g.CalibrationFramesR2L,
+		g.CalibrationSpeed, g.CalibrationFPS, g.speedLineLeft, g.speedLineRight, g.AnalysisBoxWidth, g.obstruction[0], g.obstruction[1],
+		g.LegalDirection.c_str());
+	if (prefs.planCalSig == sig) return;
+	prefs.planCalSig = sig;
+	double wasFt = plan::coverAt(prefs.planDist, prefs.planHfov) * plan::kFt;
+	plan::Inputs in = planInputs();
+	plan::applyMeasured(in, m);
+	setPlanStreet(in.distM, in.clearM, plan::Source::Calibration, "Measured by " + how);
+	if (announce) {
+		char t[200];
+		snprintf(t, sizeof t, "Step 2 updated: the calibration measured about %.0f ft of street across the picture (the plan had %.0f ft).",
+			m.coverFt, wasFt);
+		toast(t, c::accent2, ICON_RULER);
+	}
+}
+
+std::string App::frameRateAdvice(double fps) {
+	char b[480];
+	plan::Inputs in = planInputs();
+	in.fps = fps;
+	plan::Verdict v = plan::verdict(in, cfg.g.subFrameTiming != 0);
+	std::string reach = v.shortView ? "On the view you planned in step 2 it times cars " + plan::fastestText(v.fastestMph) + "." : "";
+	if (fps >= 24) {
+		snprintf(b, sizeof b, "%.0f fps is good for timing. %s", fps, reach.c_str());
+		return b;
+	}
+	snprintf(b, sizeof b, "%.0f fps is fine to start: everyday speeds still time. %s Most webcams and phone apps drop to 15 fps in dim light or "
+		"on \"auto\": pick 30 or 60 fps in the camera's settings or the phone app, and give it daylight or a lamp off the window.",
+		fps, reach.c_str());
+	return b;
+}
+
+// Under "Your street": the ways to turn a rough guess into real numbers, in the order setup reaches them.
+void App::zeroInCard(float width) {
+	if (showZeroIn_) { ImGui::SetScrollHereY(0); showZeroIn_ = false; }
+	beginCard("zeroin", ICON_BULLSEYE, "Zero in on it", ImVec2(width, 0));
+	ImGui::PushTextWrapPos(0);
+	dimText("Start rough. These firm the numbers up as you go, no tape measure needed.");
+	ImGui::PopTextWrapPos();
+	ImGui::Dummy(ImVec2(0, px(4)));
+
+	// 1. From the picture: how many car lengths fit across it.  A ruler of that many blocks is drawn over the picture
+	// at lane height, so matching one block to a car is the whole job.
+	ImGui::PushFont(fonts.strong);
+	ImGui::TextUnformatted(ICON_CAMERA "  From your camera's picture");
+	ImGui::PopFont();
+	if (planPictureAvailable()) {
+		float w = ImGui::GetContentRegionAvail().x;
+		View v = drawFrame(player.texture().imguiId(), ImVec2(w, w * 9 / 16));
+		if (prefs.planCarLengths <= 0) {
+			// Start the ruler at what the plan says now, so a good guess needs no change.
+			prefs.planCarLengths = std::clamp(plan::coverAt(prefs.planDist, prefs.planHfov) * plan::kFt / plan::kTypicalCarFt, 1.0, 20.0);
+		}
+		const Globals& g = cfg.g;
+		bool boxed = zonesDone();
+		float y = boxed ? float(g.AnalysisBoxTop + g.AnalysisBoxHeight / 2) : 720 * .55f;
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		double blockPx = plan::kFrameWidthPx / prefs.planCarLengths;
+		for (int i = 0; i * blockPx < plan::kFrameWidthPx; i++) {
+			float x0 = float(i * blockPx), x1 = float(std::min((i + 1) * blockPx, plan::kFrameWidthPx));
+			ImU32 col = i % 2 ? c::accent2 : c::warn;
+			dl->AddRectFilled(v.at(x0, y - 16), v.at(x1, y + 16), alpha(col, .5f));
+			dl->AddLine(v.at(x0, y - 40), v.at(x0, y + 40), col, px(2));
+		}
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		float n = float(prefs.planCarLengths);
+		if (ImGui::SliderFloat("##carlengths", &n, 1, 20, "%.1f car lengths across", ImGuiSliderFlags_Logarithmic)) prefs.planCarLengths = n;
+		ImGui::PushTextWrapPos(0);
+		dimText("Slide until one block is as long as a car in the picture, ideally one driving past (a car parked on the far side reads a little short).");
+		ImGui::PopTextWrapPos();
+		plan::Measured m = plan::fromCarLengths(prefs.planCarLengths, boxed ? g.AnalysisBoxWidth : 0,
+			boxed ? std::max(0, g.obstruction[1] - g.obstruction[0]) : 0);
+		char b[96];
+		snprintf(b, sizeof b, ICON_CHECK "  Use it: about %.0f ft across", m.coverFt);
+		if (ghostButton(b, ImVec2(-FLT_MIN, 0)) && m.valid) {
+			plan::Inputs in = planInputs();
+			plan::applyMeasured(in, m);
+			char note[96];
+			snprintf(note, sizeof note, "%.1f car lengths across the picture", prefs.planCarLengths);
+			setPlanStreet(in.distM, in.clearM, plan::Source::Picture, note);
+			toast("Planned from your picture. A calibration in step 5 will measure it exactly.", c::ok, ICON_CHECK);
+		}
+	}
+	else {
+		ImGui::PushTextWrapPos(0);
+		dimText("Connect your camera in step 3 (or open a photo of the view) and this sizes the street from the picture in a few seconds.");
+		ImGui::PopTextWrapPos();
+		if (ghostButton(ICON_CAMERA "  Go to step 3, Connect the camera")) goFlow(2);
+	}
+
+	// 2. A calibration measures it outright, whichever way it was done.
+	ImGui::Dummy(ImVec2(0, px(8)));
+	ImGui::PushFont(fonts.strong);
+	ImGui::TextUnformatted(ICON_RULER "  From your calibration");
+	ImGui::PopFont();
+	plan::Measured m;
+	std::string how;
+	ImGui::PushTextWrapPos(0);
+	if (planFromCalibration(m, how)) {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
+		ImGui::TextWrapped(ICON_CHECK_CIRCLE "  Measured: %.0f ft across the picture, %.0f ft of it clear (%s).", m.coverFt, m.clearFt, how.c_str());
+		ImGui::PopStyleColor();
+		if (prefs.planSource != int(plan::Source::Calibration) && ghostButton(ICON_UNDO "  Use the measured numbers again")) {
+			prefs.planCalSig.clear();
+			syncPlanFromCalibration(false);
+		}
+	}
+	else {
+		dimText("Any way you calibrate in step 5 measures the street, and this page updates by itself: a drive past, VST Ride-along "
+			"on a phone (a bike at 12-15 mph works too), a Tesla clip, a car of known length, or two cones or a pole.");
+	}
+	ImGui::PopTextWrapPos();
+	endCard();
+}
+
 void App::sitePlanner() {
+	syncPlanFromCalibration();
 	float avail = ImGui::GetContentRegionAvail().x;
 	float inW = px(360);
 	float outW = avail - inW - px(20);
 
-	// Street first: it's what the user knows from their window.  The camera comes second and starts as a guess
-	// (a phone, the commonest first camera), so the planner answers "is my window good enough?" before anything is
-	// bought.  Prefs stay in metres (the model's units); the street is entered in feet.
-	constexpr double kFt = 3.281;
+	// Street first: it's what the user knows from their window, roughly.  A preset is a fine answer on day one; the
+	// numbers are there for anyone who has measured, and "Zero in" below firms them up.  The camera comes second and
+	// starts as a guess (a phone, the commonest first camera), so the planner answers "is my window good enough?"
+	// before anything is bought.  Prefs stay in metres (the model's units); the street is entered in feet.
+	constexpr double kFt = plan::kFt;
+	ImGui::BeginGroup();
 	beginCard("planin", ICON_SLIDERS, "Your street", ImVec2(inW, 0));
 	const float col = px(190);
 	int n = int(IM_ARRAYSIZE(kPresets));
+	plan::Source src = plan::Source(std::clamp(prefs.planSource, 0, 3));
+	ImGui::PushTextWrapPos(0);
+	dimText("Which is closest to your view? A rough guess is fine to start.");
+	ImGui::PopTextWrapPos();
+	for (const plan::StreetPreset& sp : plan::kStreetPresets) {
+		bool on = src == plan::Source::Guess && std::fabs(prefs.planDist * kFt - sp.distFt) < .5 && std::fabs(prefs.planClear * kFt - sp.clearFt) < .5;
+		ImGui::PushID(sp.key);
+		ImGui::PushStyleColor(ImGuiCol_Header, v4(alpha(c::accent, .22f)));
+		std::string label = std::string(on ? ICON_CHECK_CIRCLE "  " : ICON_CIRCLE "  ") + sp.name;
+		if (ImGui::Selectable(label.c_str(), on, 0, ImVec2(0, px(26))))
+			setPlanStreet(sp.distFt / kFt, sp.clearFt / kFt, plan::Source::Guess, sp.name);
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", sp.hint);
+		ImGui::PopID();
+	}
+	ImGui::Dummy(ImVec2(0, px(4)));
 	auto num = [&](const char* label, double* v, double step, const char* fmt, const char* help, bool camera) {
 		formLabel(label, col);
 		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));
 		ImGui::PushID(label);
-		if (ImGui::InputDouble("##v", v, step, step * 5, fmt) && camera) prefs.planPreset = n - 1;
+		bool changed = ImGui::InputDouble("##v", v, step, step * 5, fmt);
+		if (changed && camera) prefs.planPreset = n - 1;
 		ImGui::PopID();
 		if (help) helpMarker(help);
+		return changed;
 	};
 	// The same, shown and typed in another unit (feet, inches) while the pref keeps metres.
 	auto numIn = [&](const char* label, double* metres, double scale, double step, const char* fmt, const char* help) {
 		double shown = *metres * scale;
 		num(label, &shown, step, fmt, help, false);
-		if (std::fabs(shown - *metres * scale) > 1e-9) *metres = shown / scale;
+		if (std::fabs(shown - *metres * scale) > 1e-9) { *metres = shown / scale; return true; }
+		return false;
 	};
-	numIn("Window to the lane (ft)", &prefs.planDist, kFt, 1, "%.0f", "Straight-line distance from where the camera will sit to the middle of the nearer moving lane. Pace it out or measure on a map.");
-	numIn("Clear stretch (ft)", &prefs.planClear, kFt, 1, "%.0f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 14-25 ft; that works with short-view timing, down to about 14 ft.");
+	bool typed = numIn("Window to the lane (ft)", &prefs.planDist, kFt, 1, "%.0f", "Straight-line distance from where the camera will sit to the middle of the nearer moving lane.\nNo tape measure? See \"Quick ways to estimate\" below.");
+	typed |= numIn("Clear stretch (ft)", &prefs.planClear, kFt, 1, "%.0f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 14-25 ft; that works with short-view timing, down to about 14 ft.");
+	if (typed) { prefs.planSource = int(plan::Source::Typed); prefs.planNote.clear(); }
 	formLabel("Speed limit (mph)", col);
 	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // lines up with the inputs above
 	ImGui::InputInt("##lim", &prefs.speedLimit, 5);
+	// Where the numbers came from, in the source's colour: amber while it's a guess, green once measured.
+	src = plan::Source(std::clamp(prefs.planSource, 0, 3));
+	ImU32 srcCol = src == plan::Source::Calibration ? c::ok : src == plan::Source::Guess ? c::warn : c::accent2;
 	ImGui::Dummy(ImVec2(0, px(2)));
-	if (ghostButton(ICON_LOCATE "  Narrow street from a front window", ImVec2(-FLT_MIN, 0))) {
-		// An old-city one-way with parking, about 13 ft (4 m) curb to curb, seen from across the sidewalk: about 20 ft
-		// (6 m) of it between the trees and porches.  The camera distance is to the middle of the moving lane.
-		prefs.planDist = 6;
-		prefs.planClear = 6.1;
+	pill(plan::sourceName(src), c::bg0, srcCol);
+	ImGui::SameLine();
+	ImGui::PushTextWrapPos(0);
+	if (src == plan::Source::Guess) dimText("Zero in below whenever you're ready.");
+	else if (!prefs.planNote.empty()) dimText("%s", prefs.planNote.c_str());
+	else dimText("As you typed them.");
+	ImGui::PopTextWrapPos();
+	if (ImGui::TreeNode("Quick ways to estimate")) {
+		ImGui::PushTextWrapPos(0);
+		bullet(ICON_ROAD, c::accent2, "Pace it", "One easy step is about 2.5 ft. Pace from the house to the curb, then add half the street.");
+		bullet(ICON_RULER, c::accent2, "Count what's there", "Sidewalk slabs are usually 5 ft, a parked car about 15 ft, a parking space about 20 ft.");
+		bullet(ICON_LOCATE, c::accent2, "On a map", "Most map apps measure distance: right-click (or long-press) your window, then the middle of the lane.");
+		ImGui::PopTextWrapPos();
+		ImGui::TreePop();
 	}
-	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fills in a typical narrow one-way street: 20 ft from the window to the moving lane, 20 ft of it clear.\nChange either to match yours.");
 
 	ImGui::Dummy(ImVec2(0, px(8)));
 	sectionLabel("CAMERA");
@@ -330,6 +496,24 @@ void App::sitePlanner() {
 			}
 		ImGui::EndCombo();
 	}
+	// A connected camera knows its own size and frame rate; planning with them shows what a 15 fps webcam means.
+	if (planPictureAvailable() && player.info().kind != SourceInfo::Image && player.info().fps > 0
+		&& (std::fabs(player.info().fps - prefs.planFps) > .5 || player.info().width != int(prefs.planWidth))) {
+		char b[120];
+		snprintf(b, sizeof b, ICON_CAMERA "  Plan with your camera: %d × %d, %.0f fps", player.info().width, player.info().height, player.info().fps);
+		if (ghostButton(b, ImVec2(-FLT_MIN, 0))) {
+			prefs.planWidth = player.info().width;
+			prefs.planFps = std::round(player.info().fps);
+			prefs.planPreset = n - 1;
+		}
+	}
+	if (prefs.planFps < 24) {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+		ImGui::PushTextWrapPos(0);
+		ImGui::TextWrapped(ICON_INFO "  %s", frameRateAdvice(prefs.planFps).c_str());
+		ImGui::PopTextWrapPos();
+		ImGui::PopStyleColor();
+	}
 	if (ImGui::TreeNode("Camera details")) {
 		num("Field of view (°)", &prefs.planHfov, 1, "%.0f", "Horizontal angle the camera sees. Phones and webcams: 60-80°. Wide IP cameras: 90-110°.", true);
 		num("Frame width (px)", &prefs.planWidth, 10, "%.0f", nullptr, true);
@@ -349,39 +533,35 @@ void App::sitePlanner() {
 	prefs.planWidth = std::max(prefs.planWidth, 320.0);
 	prefs.speedLimit = std::clamp(prefs.speedLimit, 5, 80);
 	endCard();
+	ImGui::Dummy(ImVec2(0, px(2)));
+	zeroInCard(inW);
+	ImGui::EndGroup();
 
 	ImGui::SameLine(0, px(20));
 	ImGui::BeginGroup();
-	int check = prefs.speedLimit + 10;
-	// A view too short for whole-frame timing is planned with short-view timing, whether or not it's on yet.
-	Eval whole = evaluate(prefs, check, false);
 	bool shortOn = cfg.g.subFrameTiming != 0;
-	bool shortView = shortOn || whole.zone <= 0 || whole.frames < kShortFrames;
-	Eval r = shortView ? evaluate(prefs, check, true) : whole;
-	bool tooFew = shortView && r.samples < kMinSamples;
-	int verdict = r.zone <= 0 || tooFew ? 2 : grade(r.total, 1.5, 3);
+	plan::Verdict pv = plan::verdict(planInputs(), shortOn);
+	int check = pv.checkMph;
+	bool shortView = pv.shortView;
+	const Eval& r = pv.at;
+	int verdict = pv.grade;
 	beginCard("planout", nullptr, nullptr, ImVec2(outW, 0));
-	const char* vtext[] = { "Good to go", "Works, a bit rougher", "Needs a tweak" };
-	linePill(vtext[verdict], c::bg0, gradeColor(verdict), fonts.strong);
+	linePill(plan::gradeName(verdict), c::bg0, gradeColor(verdict), fonts.strong);
 	ImGui::SameLine();
 	ImGui::AlignTextToFramePadding();
-	if (r.zone <= 0) ImGui::TextUnformatted("Only a couple of feet of street fit in the picture. Set the camera further back or zoom out, and it will fit.");
-	else if (tooFew) ImGui::Text("A car at %d mph crosses the %.0f ft zone in %.0f frames. Slower cars still time fine; a 60 fps camera or a little more street times this one too.", check, r.zone * 3.281, r.frames);
-	else ImGui::Text("About ±%.1f mph at %d mph, over a %.0f ft zone.", r.total, check, r.zone * 3.281);
+	ImGui::TextUnformatted(plan::verdictText(pv).c_str());
+	// How firm that is: a verdict on a guessed street says so, and says it's fine.
+	if (src == plan::Source::Guess) {
+		ImGui::PushTextWrapPos(0);
+		dimText(ICON_INFO "  Based on a rough guess at your street. That's enough to choose a camera; it firms up as you zero in.");
+		ImGui::PopTextWrapPos();
+	}
 	if (shortView && r.zone > 0) {
 		// The fastest car this view can time, and what 60 fps would make of it: the spec a short view is bought on.
-		// Past kMaxTrackMph the tracker's margins, not the frame count, are the limit, so it just says "over 70".
-		auto fastest = [&](double fps) {
-			double v = r.zone * fps / (2 * (kMinSamples - 1)) / kMph;
-			char b[32];
-			if (v > kMaxTrackMph) snprintf(b, sizeof b, "over %.0f mph", kMaxTrackMph);
-			else snprintf(b, sizeof b, "up to about %.0f mph", std::floor(v / 5) * 5);
-			return std::string(b);
-		};
 		ImGui::PushTextWrapPos(0);
 		if (prefs.planFps < 59) dimText(ICON_GAUGE "  At %.0f fps this view times cars %s. A 60 fps camera would time them %s.",
-			prefs.planFps, fastest(prefs.planFps).c_str(), fastest(60).c_str());
-		else dimText(ICON_GAUGE "  At %.0f fps this view times cars %s.", prefs.planFps, fastest(prefs.planFps).c_str());
+			prefs.planFps, plan::fastestText(pv.fastestMph).c_str(), plan::fastestText(pv.fastest60).c_str());
+		else dimText(ICON_GAUGE "  At %.0f fps this view times cars %s.", prefs.planFps, plan::fastestText(pv.fastestMph).c_str());
 		ImGui::PopTextWrapPos();
 	}
 	if (shortView) shortViewNote(r.cover, shortOn);
@@ -445,8 +625,9 @@ void App::aimCard(float width) {
 	beginCard("aim", ICON_CROSSHAIRS, "Aim it like this", ImVec2(width, 0));
 	aimSketch(ImVec2(ImGui::GetContentRegionAvail().x, px(220)));
 	bullet(ICON_ARROWS_LR, c::accent2, "Street across the middle", "Point straight across the street. Lenses distort near the edges, so keep the lanes in the middle third of the picture.");
-	bullet(ICON_LOCATE, c::accent2, "Hold it still", "A window clamp or tripod. If it does get bumped, VST notices the view moved and says so; marking the street again takes a minute.");
-	bullet(ICON_SUN, c::accent2, "Mind the glare", "Avoid pointing into the sun, and put the lens right against the glass (a dark cloth around it kills reflections).");
+	bullet(ICON_LOCATE, c::accent2, "Any mount that holds still", "A window clamp, a tripod, even a phone propped on a stack of books. If it gets bumped, VST notices the view moved and says so; marking the street again takes a minute.");
+	bullet(ICON_SUN, c::accent2, "Lens to the glass, screen out", "Take out any insect screen and press the lens against the glass. Black craft foam or a dark cloth around it stops the room reflecting. Avoid pointing into the sun.");
+	bullet(ICON_CAMERA, c::accent2, "Using a phone? We've got you", "Keep it on the charger and on Do Not Disturb. In its webcam app pick 30 or 60 fps and lock exposure if it can, so it doesn't slow down in shade.");
 	endCard();
 }
 
@@ -474,7 +655,7 @@ void App::pageGuide() {
 		// One card per later step, in step order, each naming its step, so the list reads as the plan.
 		float cw = (avail - px(48)) / 4, ch = px(222);
 		gearCard("g2", ICON_LOCATE, c::accent2, "A window on the street", "Step 2 · Pick your spot",
-			"Somewhere that sees the street from the side. About 14 ft of clear street is enough; more lets it time faster cars. You'll check it next.", ImVec2(cw, ch));
+			"Somewhere that sees the street from the side; about 14 ft of clear street is enough. A rough guess is fine: you'll zero in as you go.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g3", ICON_CAMERA, c::accent, "A camera, held still", "Step 3 · Connect the camera",
 			"Whatever you have: a phone, webcam, IP or Raspberry Pi camera, on a window clamp or tripod. 30 fps is fine; 60 fps times faster cars on a short view.", ImVec2(cw, ch));
@@ -483,23 +664,29 @@ void App::pageGuide() {
 			"Drag a box around the moving lane and two lines to time between. Say which way a one-way street runs.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g5", ICON_CAR, c::l2r, "One drive past", "Step 5 · Calibrate",
-			"You or a friend drive past at a known speed: on cruise control, or with a Tesla or VST Ride-along recording. No car yet? A pole or two cones, a taped distance apart.", ImVec2(cw, ch));
+			"Drive past at a known speed (cruise control, a Tesla clip, or VST Ride-along on a phone; a bike works too). No car? Two cones or a pole, or a car of known length.", ImVec2(cw, ch));
 		ImGui::Dummy(ImVec2(0, px(8)));
 		beginCard("need2", ICON_CHECK_CIRCLE, "What makes a good setup", ImVec2(avail, 0));
 		float half = (ImGui::GetContentRegionAvail().x - px(20)) * .5f;
 		ImGui::BeginGroup();
 		ImGui::PushItemWidth(half);
-		bullet(ICON_ROAD, c::accent2, "A clear view of the moving lane", "Nothing in the way between the lines. A tree trunk in the foreground is OK.");
-		bullet(ICON_STOPWATCH, c::accent2, "Enough frames per car", "At 30 fps a car needs about a second between the lines (37 ft at 25 mph). Shorter views use short-view timing or 60 fps.");
+		bullet(ICON_ROAD, c::accent2, "A clear view of the moving lane", "Nothing in the way between the lines. A tree trunk in front, or cars parked behind the lane, is OK.");
+		bullet(ICON_STOPWATCH, c::accent2, "Enough frames per car", "At 30 fps a short view times cars up to about 45 mph, at 60 fps over 70. Webcams can drop to 15 fps in dim light, so set 30 or 60 if you can.");
 		bullet(ICON_ARROWS_LR, c::accent2, "Square-on to the street", "Point straight across, so cars move left-right across the middle of the picture.");
+		bullet(ICON_LOCATE, c::accent2, "Any mount that holds still", "A clamp, a tripod or a stack of books all work. VST checks the view stays put and tells you if it moves.");
 		ImGui::PopItemWidth();
 		ImGui::EndGroup();
 		ImGui::SameLine(0, px(20));
 		ImGui::BeginGroup();
-		bullet(ICON_EYE, c::accent2, "Fixed focus and exposure", "Turn off auto-zoom and digital stabilisation; lock focus if the camera allows it.");
-		bullet(ICON_BOLT, c::accent2, "Daylight first", "Start with daytime video. Night needs streetlights or an infrared camera.");
-		bullet(ICON_FOLDER, c::accent2, "Your data stays yours", "Results are CSV files and videos in a folder on this computer.");
+		bullet(ICON_SUN, c::accent2, "Lens to the glass", "Take out the insect screen, press the lens to the window and put black foam or a dark cloth around it, so the room doesn't reflect.");
+		bullet(ICON_EYE, c::accent2, "Fixed focus and exposure", "Turn off auto-zoom and stabilisation. Lock focus and exposure, with a fast shutter (1/500 s or faster) if the camera lets you.");
+		bullet(ICON_BOLT, c::accent2, "Daylight first", "Start with daytime video. Night through glass needs streetlights; infrared bounces off the window.");
+		bullet(ICON_FOLDER, c::accent2, "Your data stays yours", "Results are CSV files and videos in a folder on this computer. VST makes traffic studies, not tickets, and reads no plates.");
 		ImGui::EndGroup();
+		ImGui::PushTextWrapPos(0);
+		dimText(ICON_ARROW_UP_RIGHT "  Start with what you have. Later, to time faster cars on a short view: a 60 fps webcam (Logitech C922 at 720p, "
+			"or Elgato Facecam), or a Raspberry Pi 5 with the Global Shutter Camera.");
+		ImGui::PopTextWrapPos();
 		endCard();
 	}
 	else {

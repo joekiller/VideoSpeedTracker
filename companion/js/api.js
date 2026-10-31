@@ -108,6 +108,9 @@ export class Vst extends EventTarget {
   }
   vehicle(id) { return this.request('GET', `/api/vehicles/${id}`); }
   run(action) { return this.request('POST', '/api/run', { action }); }
+  /** Step 2's site planner: the street, where its numbers came from, and the verdict (docs: GET/PUT /api/plan). */
+  plan() { return this.request('GET', '/api/plan'); }
+  putPlan(change) { return this.request('PUT', '/api/plan', change); }
   calibrationMark(dir, edge) { return this.request('POST', '/api/calibration/mark', { dir, edge }); }
   calibrationApply(body) { return this.request('POST', '/api/calibration/apply', body); }
   calibrationCheck(body) { return this.request('POST', '/api/calibration/check', body); }

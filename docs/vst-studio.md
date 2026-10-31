@@ -31,14 +31,38 @@ sample comes calibrated). A **Not calibrated** chip in the header opens step 5.
 ### 1 What you need
 
 What each later step will need, one card per step in order: a window on the street (step 2), a camera held still
-(step 3), a few minutes with the picture (step 4) and one drive past (step 5).
+(step 3), a few minutes with the picture (step 4) and one drive past (step 5). **What makes a good setup** gathers
+the placement tips: any mount that holds still (a stack of books counts; VST notices if the view moves), the lens
+pressed to the glass with the insect screen out and a dark hood against reflections, a locked 30 or 60 fps with a
+fast shutter, and daylight first. Starting with whatever camera you own is fine; the card names the upgrades that
+time faster cars on a short view (a 60 fps webcam, or a Raspberry Pi 5 with the Global Shutter Camera).
 
 ![What you need](images/studio/01-get-started.jpg)
 
 ### 2 Pick your spot
 
-A site planner, for before anything is bought or mounted. Start with the street as you see it from the window:
-the distance to the moving lane and how long a stretch of it is clear, in feet, and the speed limit. The camera
+A site planner, for before anything is bought or mounted. Start with the street as you see it from the window,
+roughly: pick the closest of **Narrow street from a front window** (20 ft to the lane, 20 ft clear), **Two-lane
+street from the house** (35 / 50 ft) or **Wide street or a long, open view** (50 / 90 ft), or type the distance to
+the moving lane and how long a stretch of it is clear, in feet, and set the speed limit. *Quick ways to estimate*
+has tricks for doing it without a tape (paces, sidewalk slabs, a parked car, a map's measure tool). A label under
+the numbers says where they came from: **Rough guess**, **Your numbers**, **From your picture** or **Measured**.
+
+**Zero in on it** firms the guess up as setup goes on, so nobody has to measure anything on day one:
+
+- **From your camera's picture.** Once a camera (or a video or photo of your own view) is open, the card shows it with
+  a ruler of car-length blocks across the lane. Slide until one block is as long as a car, then **Use it**: that many
+  15.5 ft car lengths is the width of street the picture spans, which sets the plan.
+- **From your calibration.** Any calibration in step 5 (a drive past, VST Ride-along, a Tesla clip, a car of known
+  length, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
+  measures the whole picture. Step 2 updates by itself after each new calibration (a toast says so), and a number
+  typed afterwards stays until the next one. On a one-way street the legal direction's lane is used; on a two-way
+  street, the mean of the two.
+
+With a camera connected, **Plan with your camera** copies its real size and frame rate into the plan. A camera
+below 24 fps gets a note saying how fast a car the planned view still times and how to raise it (most webcams and
+phone apps drop to 15 fps in dim light or on "auto"); the frame-rate check on Connect the camera says the same.
+The phone companion's Setup step 1 has the same card (`GET/PUT /api/plan`, docs/companion-api.md). The camera
 starts as a phone; pick another from the list once you know which one you'll use, and open **Camera details** for
 field of view, resolution, frame rate and shutter. It shows a to-scale top view and works out the usable timing
 zone, the frames a car spends in it, the timing and calibration error, and motion blur, with a verdict and a table of
@@ -62,6 +86,8 @@ typical plan, and *Narrow streets: parked cars, shadows and wrong-way drivers* h
 use 60 fps, a fixed shutter of 1/1000 s (1/500 at most), and a lens that frames just the clear stretch.
 
 ![Site planner](images/studio/02-site-planner.jpg)
+
+![Zero in on it: car lengths across the picture](images/studio/02b-zero-in.jpg)
 
 ### 3 Connect the camera
 
@@ -367,7 +393,7 @@ be open at once. The API is described in [companion-api.md](companion-api.md).
 | | |
 |---|---|
 | Settings (`VST.cfg`) | the file shown on the Connect the camera page; by default the per-user config (see the README) |
-| App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs, recent sources, pairing token |
+| App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs and where they came from, recent sources, pairing token |
 | Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
 | Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, and street reports in `Reports/` |
 

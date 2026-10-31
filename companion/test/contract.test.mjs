@@ -302,6 +302,59 @@ describe('PUT /api/config', () => {
   });
 });
 
+const PLAN = {
+  street: (s) => s && ['distFt', 'clearFt', 'coverFt'].every((k) => isNum(s[k])) && ['guess', 'typed', 'picture', 'calibration'].includes(s.source)
+    && isStr(s.sourceName) && isStr(s.note) && isInt(s.speedLimit),
+  presets: (a) => Array.isArray(a) && a.length >= 3 && a.every((x) => isStr(x.key) && isStr(x.name) && isStr(x.hint) && isNum(x.distFt) && isNum(x.clearFt)),
+  camera: (c) => c && ['hfov', 'width', 'fps', 'shutter'].every((k) => isNum(c[k])),
+  verdict: (v) => v && [0, 1, 2].includes(v.grade) && isStr(v.label) && isStr(v.text) && isInt(v.checkMph) && isNum(v.zoneFt) && isBool(v.shortView)
+    && (v.errorMph === null || isNum(v.errorMph)) && (v.fastest === null || isStr(v.fastest)) && (v.frameRate === null || isStr(v.frameRate)),
+  measured: (m) => m === null || (isNum(m.coverFt) && isNum(m.clearFt) && isStr(m.how)),
+  carLengths: (n) => n === null || isNum(n),
+  picture: isBool,
+  typicalCarFt: isNum,
+};
+
+describe('GET/PUT /api/plan', () => {
+  it('has the documented fields', async () => {
+    const r = await api.get('/api/plan');
+    assert.equal(r.status, 200);
+    assertShape(r.data, PLAN, 'plan');
+  });
+
+  it('refuses bad changes with 200 {ok:false, problems, plan} and changes nothing', async () => {
+    const { data: before } = await api.get('/api/plan');
+    for (const bad of [{ preset: 'castle' }, { distFt: 'far' }, { clearFt: 1 }, { carLengths: 99 }, {}]) {
+      const r = await api.put('/api/plan', bad);
+      assert.equal(r.status, 200, `${JSON.stringify(bad)}: rejected in-band`);
+      assert.equal(r.data.ok, false, `${JSON.stringify(bad)}: ok`);
+      assert.ok(r.data.problems.length > 0 && r.data.problems.every(isStr), 'problems in words');
+      assert.deepEqual(r.data.plan.street, before.street, '`plan` is the plan still in effect');
+    }
+    assertError(await api.put('/api/plan', 'not json'), 400, 'bad body');
+  });
+
+  it('a preset is a rough guess, typed numbers stick, car lengths size the picture', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes the planner; set MUTATE=1 to run against a real VST Studio');
+    const { data: before } = await api.get('/api/plan');
+    try {
+      let r = await api.put('/api/plan', { preset: 'narrow' });
+      assert.equal(r.data.ok, true);
+      assert.equal(r.data.plan.street.source, 'guess');
+      assert.equal(r.data.plan.street.distFt, 20);
+      r = await api.put('/api/plan', { distFt: 24, clearFt: 30 });
+      assert.equal(r.data.plan.street.source, 'typed');
+      assert.equal(r.data.plan.street.clearFt, 30);
+      r = await api.put('/api/plan', { carLengths: 6 });
+      assert.equal(r.data.plan.street.source, 'picture');
+      assert.equal(r.data.plan.street.coverFt, 93);
+      assert.equal(r.data.plan.carLengths, 6);
+    } finally {
+      await api.put('/api/plan', { distFt: before.street.distFt, clearFt: before.street.clearFt });
+    }
+  });
+});
+
 describe('POST /api/run', () => {
   it('an unknown action is 400 {error}', async () => {
     assertError(await api.post('/api/run', { action: 'dance' }), 400, 'unknown action');

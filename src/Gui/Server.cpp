@@ -104,6 +104,91 @@ json vehicleJson(const Vehicle& v) {
 	};
 }
 
+// Step 2's site planner for the phone (GET/PUT /api/plan): the street as it stands (and where it came from), the
+// presets, the camera the plan assumes, the verdict in the same words as the desktop, and what the calibration
+// measured.  Lengths in feet, rounded to 0.1.
+json planJson(App& app) {
+	app.syncPlanFromCalibration(false);
+	auto r1 = [](double v) { return std::round(v * 10) / 10; };
+	const AppPrefs& p = app.prefs;
+	plan::Inputs in = app.planInputs();
+	plan::Source src = plan::Source(std::clamp(p.planSource, 0, 3));
+	plan::Verdict v = plan::verdict(in, app.cfg.g.subFrameTiming != 0);
+	json presets = json::array();
+	for (const plan::StreetPreset& sp : plan::kStreetPresets)
+		presets.push_back({ { "key", sp.key }, { "name", sp.name }, { "hint", sp.hint }, { "distFt", sp.distFt }, { "clearFt", sp.clearFt } });
+	plan::Measured m;
+	std::string how;
+	json measured = nullptr;
+	if (app.planFromCalibration(m, how)) measured = { { "coverFt", r1(m.coverFt) }, { "clearFt", r1(m.clearFt) }, { "how", how } };
+	bool finite = std::isfinite(v.at.total);
+	return json{
+		{ "street", { { "distFt", r1(p.planDist * plan::kFt) }, { "clearFt", r1(p.planClear * plan::kFt) },
+			{ "coverFt", r1(plan::coverAt(p.planDist, p.planHfov) * plan::kFt) }, { "source", plan::sourceKey(src) },
+			{ "sourceName", plan::sourceName(src) }, { "note", p.planNote }, { "speedLimit", p.speedLimit } } },
+		{ "presets", presets },
+		{ "camera", { { "hfov", p.planHfov }, { "width", p.planWidth }, { "fps", p.planFps }, { "shutter", p.planShutter } } },
+		{ "verdict", { { "grade", v.grade }, { "label", plan::gradeName(v.grade) }, { "text", plan::verdictText(v) },
+			{ "checkMph", v.checkMph }, { "errorMph", finite ? json(r1(v.at.total)) : json(nullptr) }, { "zoneFt", r1(v.at.zone * plan::kFt) },
+			{ "shortView", v.shortView }, { "fastest", v.fastestMph > 0 ? json(plan::fastestText(v.fastestMph)) : json(nullptr) },
+			{ "fastest60", v.fastest60 > 0 ? json(plan::fastestText(v.fastest60)) : json(nullptr) },
+			{ "frameRate", p.planFps < 24 ? json(app.frameRateAdvice(p.planFps)) : json(nullptr) } } },
+		{ "measured", measured },
+		{ "carLengths", p.planCarLengths > 0 ? json(r1(p.planCarLengths)) : json(nullptr) },
+		{ "picture", app.planPictureAvailable() },
+		{ "typicalCarFt", plan::kTypicalCarFt },
+	};
+}
+
+// One change at a time, the way the desktop makes them: a preset ({"preset": "narrow"}), typed numbers
+// ({"distFt", "clearFt"}, either or both), car lengths across the picture ({"carLengths": 6}), or back to what the
+// calibration measured ({"useMeasured": true}).  Returns the problems in words; empty when it was applied.
+std::vector<std::string> applyPlan(App& app, const json& in) {
+	AppPrefs& p = app.prefs;
+	auto num = [&](const char* k, double& out) {
+		if (!in.contains(k)) return false;
+		if (!in[k].is_number()) throw std::string(k) + " must be a number";
+		out = in[k].get<double>();
+		return true;
+	};
+	try {
+		double d = 0, c = 0, n = 0;
+		if (in.contains("preset")) {
+			const plan::StreetPreset* sp = in["preset"].is_string() ? plan::findStreetPreset(in["preset"].get<std::string>()) : nullptr;
+			if (!sp) return { "unknown preset" };
+			app.setPlanStreet(sp->distFt / plan::kFt, sp->clearFt / plan::kFt, plan::Source::Guess, sp->name);
+		}
+		else if (num("carLengths", n)) {
+			if (!(n >= 1 && n <= 20)) return { "carLengths must be between 1 and 20" };
+			const Globals& g = app.cfg.g;
+			bool boxed = app.zonesDone();
+			plan::Measured m = plan::fromCarLengths(n, boxed ? g.AnalysisBoxWidth : 0, boxed ? std::max(0, g.obstruction[1] - g.obstruction[0]) : 0);
+			plan::Inputs pi = app.planInputs();
+			plan::applyMeasured(pi, m);
+			char note[96];
+			std::snprintf(note, sizeof note, "%.1f car lengths across the picture", n);
+			p.planCarLengths = n;
+			app.setPlanStreet(pi.distM, pi.clearM, plan::Source::Picture, note);
+		}
+		else if (in.value("useMeasured", false)) {
+			plan::Measured m;
+			std::string how;
+			if (!app.planFromCalibration(m, how)) return { "there is no calibration for this camera yet (step 5)" };
+			p.planCalSig.clear();
+			app.syncPlanFromCalibration(false);
+		}
+		else {
+			bool hasD = num("distFt", d), hasC = num("clearFt", c);
+			if (!hasD && !hasC) return { "send preset, distFt/clearFt, carLengths or useMeasured" };
+			if (hasD && !(d >= 3 && d <= 1000)) return { "distFt must be between 3 and 1000" };
+			if (hasC && !(c >= 3 && c <= 1000)) return { "clearFt must be between 3 and 1000" };
+			app.setPlanStreet(hasD ? d / plan::kFt : p.planDist, hasC ? c / plan::kFt : p.planClear, plan::Source::Typed, "");
+		}
+	}
+	catch (const std::string& e) { return { e }; }
+	return {};
+}
+
 // The settings the companion can read and change: VST.cfg keys by their own names, plus the app's run settings.
 json configJson(App& app) {
 	const Globals& g = app.cfg.g;
@@ -526,6 +611,19 @@ void Server::routes() {
 		// Rejected settings are a normal answer (200, ok false, the problems in plain words), not an HTTP error: the
 		// companion shows the problems next to the fields, and its client treats any non-2xx as a failed request.
 		sendPosted(res, out);
+	}));
+
+	http_->Get("/api/plan", guard([&app, sendPosted](const Request&, Response& res) {
+		sendPosted(res, app.post([&app] { return planJson(app).dump(); }));
+	}));
+
+	http_->Put("/api/plan", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
+		json in;
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
+		sendPosted(res, app.post([&app, in] {
+			auto problems = applyPlan(app, in);
+			return json{ { "ok", problems.empty() }, { "problems", problems }, { "plan", planJson(app) } }.dump();
+		}));   // 200 either way, as for PUT /api/config
 	}));
 
 	http_->Post("/api/calibration/mark", guard([&app, sendJson, parseBody](const Request& req, Response& res) {

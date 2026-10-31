@@ -1,21 +1,27 @@
 /**
  * Setup: a four-step guided calibration a first-time user can follow from the phone while standing
- * at the camera (or out on the street for step 4).
+ * at the camera (or out on the street for the calibration drive).  The kicker over each page names the step by
+ * VST Studio's numbering (DESKTOP below), so both apps say "step 5" for calibrating.
  *
- *   1. Camera & spot   - what a good view looks like, checked against the live frame;
+ *   1. Camera & spot   - what a good view looks like, checked against the live frame, and "Your street": VST Studio's
+ *                        site planner (GET/PUT /api/plan), starting from a rough guess and sized from the picture by
+ *                        sliding a car-length ruler over it; a calibration (page 4) measures it for real;
  *   2. Mark the street - drag the analysis box, speed lines, lane lines and obstruction on the frame;
  *   3. Rules           - which way is legal, compass headings, limit, "way too fast", site name;
  *   4. Calibration drive - drive through at a known speed, tap your pass, then drive once more to check it;
  *      or, with no car handy, tap two spots a measured distance apart (cones, or one pole moved between them).
  *
- * Steps 2 and 3 edit a draft and save it with PUT /api/config; VST validates and the problems it
- * reports are shown in plain words. Step 4 uses POST /api/calibration/apply with the chosen pass,
+ * Pages 2 and 3 edit a draft and save it with PUT /api/config; VST validates and the problems it
+ * reports are shown in plain words. Page 4 uses POST /api/calibration/apply with the chosen pass,
  * then POST /api/calibration/check with a second one.
  */
 import { html, $, $$, icon, sign, band, arrow, clock, ago, toast, sheet, confirmSheet } from '../ui.js';
 import { zonesSvg, applyHandle, geometry, W, H, LANE } from '../overlay.js';
 
 const STEPS = ['Camera & spot', 'Mark the street', 'Rules of the road', 'Calibration drive'];
+// The same steps by VST Studio's numbering (1 What you need … 5 Calibrate), so the phone and the desktop always name a
+// step the same way; the phone's four pages are only how it is split up for a small screen.
+const DESKTOP = ['Steps 2–3 · Pick your spot, aim the camera', 'Step 4 · Mark your street', 'Step 4 · Mark your street: rules of the road', 'Step 5 · Calibrate'];
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 
 export async function render(ctx, step = '1') {
@@ -23,7 +29,7 @@ export async function render(ctx, step = '1') {
   const cfg = await ctx.vst.config();
   const st = await ctx.vst.status();
   ctx.view.innerHTML = html`
-    <div class="step-kicker">Step ${n} of 4</div>
+    <div class="step-kicker">${DESKTOP[n - 1]}</div>
     <nav class="steps" aria-label="Setup steps">${STEPS.map((s, i) => html`<a href="#/setup/${i + 1}" title="${s}" aria-label="Step ${i + 1}: ${s}" ${i + 1 === n ? 'aria-current="step"' : ''} class="${i + 1 < n ? 'done' : i + 1 === n ? 'current' : ''}"></a>`)}</nav>
     <div id="step"></div>`.__html;
   const body = $('#step');
@@ -63,6 +69,8 @@ function spot({ vst, body, cfg, st, n }) {
       <div class="check">${icon('camera')}<p><b>Whatever camera you have, held still.</b> A webcam, a phone in webcam mode or an IP camera all work; 720p at 30 fps is plenty to start. A clamp or tripod keeps it from shifting.</p></div>
       <div class="check">${icon('sparkle')}<p><b>Little in the way.</b> A post or tree trunk is fine (you'll mark it), but avoid glare: put the lens against the glass and turn off room lights at night.</p></div>
     </div>
+    <h3>Your street</h3>
+    <div class="card" id="plan"><p class="small muted">Loading the plan…</p></div>
     <div class="callout" style="margin-top:12px">${icon(good ? 'check' : 'info')}
       <p>${short
         ? html`Short-view timing is on, so VST times each car to a fraction of a frame and a short speed zone is fine.`
@@ -71,6 +79,93 @@ function spot({ vst, body, cfg, st, n }) {
         : html`A car at ${st.speedLimit} mph spends <b>${secs.toFixed(1)} s</b> in the speed zone, which is short for whole-frame timing. That's fine: turn on short-view timing in VST Studio's site planner (step 2, one click), or widen the zone in the next step.`}</p></div>
     ${nav(n, 'Looks good')}`.__html;
   $('#refresh').onclick = () => { $('#frame').src = vst.frameUrl(); };
+  planCard(vst, $('#plan'), $('#frame'));   // loads on its own, so the step shows at once
+}
+
+const PILL = { guess: 'warn', typed: '', picture: '', calibration: 'ok' };
+const GRADE = ['ok', 'warn', 'bad'];
+
+/**
+ * "Your street": the planner's verdict and where its numbers came from, the presets, a car-length ruler drawn over
+ * the camera picture (slide until one block covers a car, then "Use it"), the measured numbers when a calibration
+ * has them, and the two lengths for anyone who has measured.  Every change goes to VST (PUT /api/plan), which
+ * answers with the whole plan, so the card always shows what the desktop shows.
+ */
+async function planCard(vst, el, frame) {
+  let p;
+  try { p = await vst.plan(); } catch { el.innerHTML = html`<p class="small muted">This VST doesn't have the site planner yet. Update VST Studio to plan from the phone.</p>`.__html; return; }
+  let n = p.carLengths ?? Math.min(20, Math.max(1, Math.round(p.street.coverFt / p.typicalCarFt * 2) / 2));
+  // The ruler lives in an SVG over the frame (1280 x 720 space), so it scales with the picture.
+  const ruler = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  ruler.setAttribute('viewBox', '0 0 1280 720');
+  ruler.setAttribute('aria-hidden', 'true');
+  ruler.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
+  frame.parentElement.style.position = 'relative';
+  frame.parentElement.append(ruler);
+  const drawRuler = () => {
+    const w = 1280 / n;
+    let out = '';
+    for (let i = 0; i * w < 1280; i++) {
+      const col = i % 2 ? '#22d3ee' : '#f5a524';
+      out += `<rect x="${i * w}" y="380" width="${Math.min(w, 1280 - i * w)}" height="34" fill="${col}" fill-opacity=".5"/><line x1="${i * w}" x2="${i * w}" y1="350" y2="444" stroke="${col}" stroke-width="5"/>`;
+    }
+    ruler.innerHTML = out;
+  };
+
+  const render = () => {
+    const v = p.verdict, st = p.street;
+    el.innerHTML = html`
+      <div class="row" style="gap:8px;flex-wrap:wrap"><span class="pill ${GRADE[v.grade]}">${v.label}</span><span class="pill ${PILL[st.source]}">${st.sourceName}</span></div>
+      <p style="margin:8px 0 4px">${v.text}</p>
+      ${v.fastest ? html`<p class="small muted" style="margin:0">At ${p.camera.fps} fps this view times cars ${v.fastest}${p.camera.fps < 59 ? html`; at 60 fps, ${v.fastest60}` : ''}.</p>` : ''}
+      ${v.frameRate ? html`<p class="small" style="margin:6px 0 0;color:var(--warn)">${v.frameRate}</p>` : ''}
+      <p class="small muted" style="margin:6px 0 0">${st.source === 'guess' ? 'A rough guess is fine to start; zero in below.' : st.note || 'As you typed them.'}
+        ${st.distFt.toFixed(0)} ft to the lane, ${st.clearFt.toFixed(0)} ft clear, about ${st.coverFt.toFixed(0)} ft across the picture.</p>
+
+      <h4 style="margin:16px 0 8px">Which is closest to your view?</h4>
+      <div class="choice" id="presets">${p.presets.map((x) => html`<button data-k="${x.key}" aria-pressed="${st.source === 'guess' && Math.abs(st.distFt - x.distFt) < .5 && Math.abs(st.clearFt - x.clearFt) < .5}"><span><b>${x.name}</b><small>${x.hint}</small></span></button>`)}</div>
+
+      <h4 style="margin:16px 0 8px">Size it from the picture above</h4>
+      <label class="field"><span id="cars-label">${n.toFixed(1)} car lengths across</span>
+        <input type="range" id="cars" min="1" max="20" step="0.5" value="${n}" aria-describedby="cars-help"></label>
+      <p class="small muted" id="cars-help" style="margin:6px 0 8px">Slide until one coloured block is as long as a car in the picture, ideally one driving past.</p>
+      <button class="btn" id="use-cars">${icon('ruler')}Use it: about <span id="cars-ft">${(n * p.typicalCarFt).toFixed(0)}</span> ft across</button>
+
+      ${p.measured ? html`
+        <div class="callout ok" style="margin-top:14px">${icon('check')}<p>Measured by ${p.measured.how}: ${p.measured.coverFt.toFixed(0)} ft across the picture, ${p.measured.clearFt.toFixed(0)} ft of it clear.
+          ${st.source !== 'calibration' ? html`<button class="btn ghost" id="use-measured" style="margin-top:8px">Use the measured numbers</button>` : ''}</p></div>`
+      : html`<p class="small muted" style="margin:14px 0 0">Calibrating (step 5: a drive past, or cones or a pole) measures the street exactly, and this updates by itself.</p>`}
+
+      <details style="margin-top:14px"><summary class="small">I've measured it</summary>
+        <div class="row" style="gap:10px;margin-top:10px">
+          <label class="field grow"><span>Window to the lane (ft)</span><input class="input" id="dist" type="number" inputmode="decimal" min="3" max="1000" value="${st.distFt.toFixed(0)}"></label>
+          <label class="field grow"><span>Clear stretch (ft)</span><input class="input" id="clear" type="number" inputmode="decimal" min="3" max="1000" value="${st.clearFt.toFixed(0)}"></label>
+        </div>
+        <button class="btn" id="save-typed" style="margin-top:10px">${icon('check')}Save</button>
+        <p class="small muted" style="margin:8px 0 0">No tape? One easy step is about 2.5 ft, sidewalk slabs are usually 5 ft, a parked car about 15 ft.</p>
+      </details>
+      <p class="small" id="plan-problems" style="color:var(--bad)"></p>`.__html;
+    drawRuler();
+    const send = async (change, said) => {
+      const r = await vst.putPlan(change);
+      p = r.plan;
+      if (!r.ok) { $('#plan-problems', el).textContent = r.problems.join('. '); return; }
+      render();
+      if (said) toast(said);
+    };
+    $('#presets', el).onclick = (e) => { const k = e.target.closest('[data-k]')?.dataset.k; if (k) send({ preset: k }); };
+    $('#cars', el).oninput = (e) => {
+      n = Number(e.target.value);
+      $('#cars-label', el).textContent = `${n.toFixed(1)} car lengths across`;
+      $('#cars-ft', el).textContent = (n * p.typicalCarFt).toFixed(0);
+      drawRuler();
+    };
+    $('#use-cars', el).onclick = () => send({ carLengths: n }, 'Planned from your picture. A calibration will measure it exactly.');
+    const um = $('#use-measured', el);
+    if (um) um.onclick = () => send({ useMeasured: true });
+    $('#save-typed', el).onclick = () => send({ distFt: Number($('#dist', el).value), clearFt: Number($('#clear', el).value) }, 'Saved your numbers.');
+  };
+  render();
 }
 
 // ---- 2. mark the street -------------------------------------------------------------------------

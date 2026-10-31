@@ -59,8 +59,15 @@ struct AppPrefs {
 	int keepVideoGB = 20;        // disk budget for Clips/ + HiLites/, oldest removed first; 0 = keep everything   // the address put in the pairing QR code; "" = automatic (lanAddress())
 	// Site planner inputs (metres, degrees), so the guide remembers what was entered.
 	double planHfov = 66, planWidth = 1920, planFps = 30, planShutter = 120;
-	double planDist = 12, planClear = 18, planCalib = 30, planCarLen = 4.8;
+	// The street starts as a rough guess (the "Two-lane street from the house" preset, 35 ft / 50 ft) and is refined
+	// later; planSource says where planDist and planClear came from now (plan::Source, Plan.h), planNote says how in
+	// words ("6 car lengths across the picture", "Drive-through calibration"), and planCalSig is the calibration
+	// the numbers were last measured from, so a new calibration updates them once and a typed edit afterwards sticks.
+	double planDist = 35 / 3.28084, planClear = 50 / 3.28084, planCalib = 30, planCarLen = 4.8;
 	int planPreset = 0;
+	int planSource = 0;
+	std::string planNote, planCalSig;
+	double planCarLengths = 0;   // the last "car lengths across the picture" estimate (0 = none yet)
 	// The camera zone's spot on the map (degrees; 0, 0 = not set), for matching Tesla dashcam clips by GPS.
 	double siteLat = 0, siteLon = 0;
 	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config

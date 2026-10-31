@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { esc, raw, html, band, passPills } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
 import { geometry, applyHandle } from '../js/overlay.js';
+import * as plan from '../js/plan.js';
 
 describe('ui.js esc', () => {
   it('escapes the five HTML metacharacters', () => {
@@ -165,5 +166,37 @@ describe('api.js normalizeBase', async () => {
   it('is same-origin ("") for blank input or this page', () => {
     assert.equal(normalizeBase(''), '');
     assert.equal(normalizeBase('http://phone.local:8000/'), '');
+  });
+});
+
+// The demo's copy of the site planner (js/plan.js) against the numbers tests/plan_test.cpp checks in the C++ model
+// (src/Gui/Plan.cpp), so the demo says what VST Studio would.
+describe('plan.js (the demo planner) matches src/Gui/Plan.cpp', () => {
+  const phone = { hfov: 66, width: 1920, fps: 30, shutter: 120, speedLimit: 25 };
+  it('measures the Locust Avenue sample from its calibration: 42.8 ft zone, 97.9 ft across', () => {
+    const m = plan.fromCalibration(35, 25, 30, 559, 1269, 60);
+    assert.ok(Math.abs(m.zoneFt - 42.78) < .01);
+    assert.ok(Math.abs(m.coverFt - 97.94) < .05);
+    assert.equal(plan.fromCalibration(0, 25, 30, 559, 1269, 0), null);
+  });
+  it('six car lengths are 93 ft across', () => {
+    assert.equal(plan.fromCarLengths(6).coverFt, 93);
+    assert.equal(plan.fromCarLengths(6).clearFt, 93);
+  });
+  it('the narrow preset: short view, about ±0.9 mph at 35 mph over 18 ft at 30 fps; needs a tweak at 15 fps', () => {
+    const narrow = { ...phone, distFt: 20, clearFt: 20 };
+    const v = plan.verdict(narrow, false);
+    assert.equal(v.shortView, true);
+    assert.equal(v.text, 'About ±0.9 mph at 35 mph, over a 18 ft zone.');
+    assert.equal(v.label, 'Good to go');
+    const slow = plan.verdict({ ...narrow, fps: 15 }, false);
+    assert.equal(slow.grade, 2);
+    assert.match(slow.text, /^A car at 35 mph crosses the 18 ft zone in 5 frames/);
+  });
+  it('a couple of feet of street says how to fix it', () => {
+    assert.match(plan.verdict({ ...phone, distFt: 20, clearFt: 1.5 }, true).text, /further back/);
+  });
+  it('distance from cover round-trips through the field of view', () => {
+    for (const hfov of [45, 66, 100]) assert.ok(Math.abs(plan.coverFt(plan.distForCoverFt(93, hfov), hfov) - 93) < 1e-9);
   });
 });

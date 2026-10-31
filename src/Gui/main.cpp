@@ -114,7 +114,11 @@ struct DemoScript {
 				app.levelDots_[1] = levelTurn(ImVec2(1030, 381), 3);
 			}
 			if (frames == 40) shot("04b-zones-level.png");
-			if (frames == 41) { app.cfg.g.levelDegrees = 0; app.levelTool_ = false; next(); }
+			if (frames == 41) { app.cfg.g.levelDegrees = 0; app.levelTool_ = false; }
+			// Back on Pick your spot with a picture: the "Zero in on it" card's car-length ruler over the sample.
+			if (frames == 42) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
+			if (frames == 61) shot("02b-zero-in.png");
+			if (frames == 63) next();
 			break;
 		case 4:
 			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }
