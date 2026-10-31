@@ -210,7 +210,17 @@ struct DemoScript {
 				app.coneFt_ = 10;
 				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 100 + 200 * i); app.coneY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
 			}
-			if (frames == 80) { shot("07d-calibrate-cones.png"); next(); }
+			if (frames == 80) shot("07d-calibrate-cones.png");
+			// Known car: a parked Camry's bumpers ~250 px apart, 7 ft beyond the lane, as on a narrow one-way street.
+			if (frames == 81) {
+				const Globals& g = app.cfg.g;
+				app.calibMode_ = 3;
+				app.carModel_ = 3;
+				app.carFt_ = calib::kKnownCars[3].inches / 12;
+				app.carParked_ = true;
+				for (int i = 0; i < 2; i++) { app.carX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 150 + 250 * i); app.carY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
+			}
+			if (frames == 100) { shot("07e-calibrate-car.png"); next(); }
 			break;
 		case 9:
 			if (frames == 1) { app.page = Page::Companion; app.setRemote(true); }

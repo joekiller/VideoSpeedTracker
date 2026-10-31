@@ -67,6 +67,40 @@ inline double framesForDistance(double markPx, double markFt, double zonePx, dou
 	return zoneFt / (calSpeed * 5280.0 / 3600.0) * calFps;
 }
 
+// Calibration from a car of known length (the Calibrate page's "Known car" mode) is framesForDistance with the car's
+// two bumpers as the marks and its overall length as the distance.  The catch is depth: on the picture, size goes
+// as 1 / distance from the camera, so a car parked `fartherFt` beyond the middle of the lane traffic uses looks
+// shorter than the same car driving there.  Its bumpers `markPx` apart stand for
+//     markPx × (laneFt + fartherFt) / laneFt
+// pixels at the lane's depth, where `laneFt` is the camera's distance to the middle of that lane (the site planner's
+// "Window to the lane").  Uncorrected, a car parked 7 ft beyond a lane 30 ft away reads every speed ~23% high.
+// fartherFt = 0 (a passing car, or one parked in the lane itself) or an unknown laneFt leaves markPx as it is.
+inline double markPxAtLane(double markPx, double laneFt, double fartherFt) {
+	if (markPx <= 0 || laneFt <= 0 || fartherFt <= 0) return markPx;
+	return markPx * (laneFt + fartherFt) / laneFt;
+}
+
+// Common cars' overall (bumper to bumper) lengths for the Known car picker, from the makers' published specs and
+// rounded to the inch.  Trims and model years within a generation differ by about an inch (0.5%); different
+// generations can differ by several, which is why each entry names its years.
+struct KnownCar { const char* name; double inches; };
+inline constexpr KnownCar kKnownCars[] = {
+	{ "Toyota Highlander 2020-on", 195 },
+	{ "Toyota Highlander 2014-2019", 192 },
+	{ "Toyota RAV4 2019-2025", 181 },
+	{ "Toyota Camry 2018-2024", 192 },
+	{ "Toyota Corolla sedan 2019-on", 182 },
+	{ "Honda CR-V 2023-on", 185 },
+	{ "Honda CR-V 2017-2022", 182 },
+	{ "Honda Civic sedan 2022-on", 184 },
+	{ "Honda Accord 2018-2022", 192 },
+	{ "Subaru Outback 2020-2025", 191 },
+	{ "Subaru Forester 2019-2024", 182 },
+	{ "Tesla Model 3", 185 },
+	{ "Tesla Model Y", 187 },
+	{ "Ford F-150 SuperCrew, 5.5 ft bed, 2015-on", 232 },
+};
+
 // A direction's state from its history.  `currentFrames` is the CalibrationFrames<dir> now in VST.cfg and
 // `calibratedOffRecord` says whether the setup counts as calibrated without a history row (a v1.1 calibration made
 // before the history existed, or the bundled sample's VST.cfg).

@@ -180,6 +180,12 @@ if(TARGET vst_report)
   target_link_libraries(dashcam_test PRIVATE vst_report)
   add_test(NAME dashcam_calibration
     COMMAND dashcam_test ${CMAKE_BINARY_DIR}/dashcam-test)
+
+  # Distance calibration (src/Gui/Calibration.h): cones/pole spacing and a known car's length, with the depth
+  # correction for a car parked beyond the traffic lane checked against a pinhole camera.  Header only.
+  add_executable(calibration_test tests/calibration_test.cpp)
+  target_include_directories(calibration_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Gui)
+  add_test(NAME distance_calibration COMMAND calibration_test)
 endif()
 
 # Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back

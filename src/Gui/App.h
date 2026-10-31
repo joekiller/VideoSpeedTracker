@@ -106,9 +106,9 @@ public:
 	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
 	// was made against) and the check pass imply; recorded as an apply.
 	void averageCalibration(const CalCheck& check);
-	// Sets CalibrationFrames for one or both directions from the two-cone measurement (calib::framesForDistance),
-	// recorded in the history as the equivalent pass: CalibrationFrames frames at CalibrationSpeed.
-	void applyDistanceCalibration(bool l2r, bool r2l, double calFrames);
+	// Sets CalibrationFrames for one or both directions from the two-cone or known-car measurement
+	// (calib::framesForDistance); `from` names it in the toast.  Recorded in the history as the equivalent pass: CalibrationFrames frames at CalibrationSpeed.
+	void applyDistanceCalibration(bool l2r, bool r2l, double calFrames, const char* from = "the measured spots");
 	// Not calibrated / not checked / verified / check failed, from the history rows for the current VST.cfg.
 	CalState calibrationState(bool l2r);
 	void loadResultsCsv(const std::string& path);
@@ -170,6 +170,15 @@ public:
 	double coneTimerAt_ = -1;
 	int coneView_ = -1, coneTexOf_ = -1;
 	Texture coneTex_;
+	// The "Known car" mode (calibMode_ 3) marks a car's two bumpers the way the cones mode marks its spots, sharing
+	// conePlacing_ and coneDir_: carX_/carY_ are the bumpers on the picture (-1 = not marked), carModel_ the picker's
+	// entry in calib::kKnownCars (-1 = typed by hand), carFt_ the length in feet, and carParked_/carFartherFt_ how far
+	// beyond the middle of the traffic lane a parked car sits (calib::markPxAtLane).
+	float carX_[2] = { -1, -1 }, carY_[2] = { -1, -1 };
+	int carModel_ = -1;
+	double carFt_ = 15.5;
+	bool carParked_ = false;
+	double carFartherFt_ = 7;
 	std::unique_ptr<Server> server;
 	bool screenshotMode = false;        // documentation captures (main.cpp --shots)
 	bool persist = true;                // save preferences on exit
