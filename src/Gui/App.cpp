@@ -26,12 +26,22 @@ using namespace theme;
 
 static ImTextureID tid(Texture& t) { return (ImTextureID)(intptr_t)t.imguiId(); }
 
+// The setup flow, in the order a first-time user does it.  Everything that numbers or names a setup step reads this
+// table, so the rail, the stepper, the page headers and the Next buttons can't drift apart.
+const FlowStep kFlow[kFlowSteps] = {
+	{ "What you need", ICON_FLAG, "Everything you need to measure traffic on your street, in the order you'll use it", Page::Guide, 0 },
+	{ "Pick your spot", ICON_LOCATE, "Check that your window sees enough street before you buy or mount anything", Page::Guide, 1 },
+	{ "Connect the camera", ICON_CAMERA, "A phone or USB camera, a network camera, or video you've already recorded", Page::Source, -1 },
+	{ "Mark your street", ICON_VECTOR, "Drag the lines on the picture; the tracker only looks inside the box", Page::Zones, -1 },
+	{ "Calibrate", ICON_RULER, "Teach VST how long a car at a known speed takes to cross the zone", Page::Calibrate, -1 },
+};
+
 static const char* pageTitle(Page p) {
 	switch (p) {
-	case Page::Guide: return "Get started";
-	case Page::Source: return "Video source";
-	case Page::Zones: return "Zones";
-	case Page::Calibrate: return "Calibrate";
+	case Page::Guide: return kFlow[0].name;
+	case Page::Source: return kFlow[2].name;
+	case Page::Zones: return kFlow[3].name;
+	case Page::Calibrate: return kFlow[4].name;
 	case Page::Track: return "Live tracking";
 	case Page::Results: return "Results";
 	case Page::Companion: return "Companion app";
@@ -41,10 +51,10 @@ static const char* pageTitle(Page p) {
 
 static const char* pageIcon(Page p) {
 	switch (p) {
-	case Page::Guide: return ICON_FLAG;
-	case Page::Source: return ICON_VIDEO;
-	case Page::Zones: return ICON_VECTOR;
-	case Page::Calibrate: return ICON_RULER;
+	case Page::Guide: return kFlow[0].icon;
+	case Page::Source: return kFlow[2].icon;
+	case Page::Zones: return kFlow[3].icon;
+	case Page::Calibrate: return kFlow[4].icon;
 	case Page::Track: return ICON_GAUGE;
 	case Page::Results: return ICON_CHART;
 	case Page::Companion: return ICON_BROADCAST;
@@ -54,10 +64,10 @@ static const char* pageIcon(Page p) {
 
 static const char* pageSubtitle(Page p) {
 	switch (p) {
-	case Page::Guide: return "Everything you need to measure traffic on your street, one step at a time";
-	case Page::Source: return "Recorded video, a USB camera or phone, or a network camera";
-	case Page::Zones: return "Drag the lines on the picture; the tracker only looks inside the box";
-	case Page::Calibrate: return "Teach VST how long a car at a known speed takes to cross the zone";
+	case Page::Guide: return kFlow[0].subtitle;
+	case Page::Source: return kFlow[2].subtitle;
+	case Page::Zones: return kFlow[3].subtitle;
+	case Page::Calibrate: return kFlow[4].subtitle;
 	case Page::Track: return "Watch vehicles get measured as they pass";
 	case Page::Results: return "Speeders and wrong-way drivers, with snapshots and statistics";
 	case Page::Companion: return "Check on the camera and see recent speeders from your phone";
@@ -197,7 +207,7 @@ void App::addToBatch(const std::vector<std::string>& paths) {
 void App::startTracking() {
 	if (tracker.running()) return;
 	std::vector<std::string> inputs = batch.empty() ? std::vector<std::string>{ source } : batch;
-	if (inputs.empty() || inputs[0].empty()) { toast("Choose a video or camera first", c::warn, ICON_VIDEO); page = Page::Source; return; }
+	if (inputs.empty() || inputs[0].empty()) { toast("Connect a camera or open a video first (step 3)", c::warn, ICON_VIDEO); goFlow(2); return; }
 	if (classifySource(inputs[0]) == SourceInfo::Image) { toast("A photo is fine for planning zones, but tracking needs video", c::warn, ICON_IMAGE); return; }
 	auto problems = cfg.problems();
 	if (!problems.empty()) { toast("Fix the zone settings first: " + problems[0], c::bad, ICON_WARN); page = Page::Zones; return; }
@@ -501,6 +511,67 @@ void App::frame(float w, float h) {
 	ImGui::End();
 }
 
+// ======================================================================================================
+// The setup flow
+// ======================================================================================================
+
+int App::flowStep() const {
+	switch (page) {
+	case Page::Guide: return std::clamp(guideStep_, 0, 1);
+	case Page::Source: return 2;
+	case Page::Zones: return 3;
+	case Page::Calibrate: return 4;
+	default: return -1;
+	}
+}
+
+// A step is done when what it's for is in place: the first two once the user has moved past them (they only inform),
+// the rest by the same tests that let a run start and that mark a calibration current.
+bool App::flowDone(int step) {
+	switch (step) {
+	case 0: return prefs.guideDone || (page == Page::Guide && guideStep_ > 0);
+	case 1: return prefs.guideDone;
+	case 2: return !source.empty() || !batch.empty();
+	case 3: return zonesDone();
+	case 4: return calibrationDone();
+	default: return false;
+	}
+}
+
+void App::goFlow(int step) {
+	step = std::clamp(step, 0, kFlowSteps - 1);
+	if (step >= 2) prefs.guideDone = true;   // past the Guide: open on Connect the camera next time
+	page = kFlow[step].page;
+	if (kFlow[step].guideStep >= 0) guideStep_ = kFlow[step].guideStep;
+}
+
+// The flow as a row of numbered circles joined by a line, the current step filled, done steps checked.  Drawn at the
+// top of every setup page, with the same numbers and names as the rail; clicking a step goes there.
+void App::flowStepper() {
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	float avail = ImGui::GetContentRegionAvail().x;
+	ImVec2 p = ImGui::GetCursorScreenPos();
+	float w = avail / kFlowSteps, h = px(52);
+	int here = flowStep();
+	for (int i = 0; i < kFlowSteps; i++) {
+		ImVec2 c0 = p + ImVec2(w * i + px(14), px(14));
+		bool done = flowDone(i), cur = i == here;
+		if (i < kFlowSteps - 1) dl->AddLine(c0 + ImVec2(px(16), 0), ImVec2(p.x + w * (i + 1) + px(2), c0.y), done ? c::accent : c::border, 2);
+		dl->AddCircleFilled(c0, px(12), cur ? c::accent : done ? alpha(c::accent, .25f) : c::bg3);
+		std::string num = done && !cur ? ICON_CHECK : std::to_string(i + 1);
+		ImFont* f = fonts.caption;
+		ImVec2 ts = f->CalcTextSizeA(fsz(f), FLT_MAX, 0, num.c_str());
+		dl->AddText(f, fsz(f), c0 - ts * .5f, cur ? c::rgb(0xFFFFFF) : done ? c::accent : c::dim, num.c_str());
+		dl->AddText(cur ? fonts.strong : fonts.body, fsz(fonts.body), c0 + ImVec2(-px(12), px(18)), cur ? c::text : c::dim, kFlow[i].name);
+		ImGui::SetCursorScreenPos(p + ImVec2(w * i, 0));
+		ImGui::PushID(i);
+		if (ImGui::InvisibleButton("flowstep", ImVec2(w, h))) goFlow(i);
+		if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+		ImGui::PopID();
+	}
+	ImGui::SetCursorScreenPos(p + ImVec2(0, h + px(14)));
+}
+
 // Side rail: logo, the workflow as numbered steps, and a status block at the bottom.
 void App::drawRail(float h) {
 	float railW = px(236);
@@ -547,13 +618,12 @@ void App::drawRail(float h) {
 		ImGui::SetCursorPosX(ImGui::GetCursorPosX() + px(10));
 		sectionLabel(label);
 	};
-	int step = 0;
-	auto item = [&](Page p, bool numbered, bool done) {
-		bool sel = page == p;
+	// One row: icon, label, and for a setup step its number (a check once it's done).
+	auto row = [&](int id, const char* icon, const char* label, bool sel, int number, bool done) -> bool {
 		ImVec2 pos = ImGui::GetCursorScreenPos();
 		float iw = ImGui::GetContentRegionAvail().x, ih = px(40);
-		ImGui::PushID(int(p));
-		if (ImGui::InvisibleButton("nav", ImVec2(iw, ih))) page = p;
+		ImGui::PushID(id);
+		bool clicked = ImGui::InvisibleButton("nav", ImVec2(iw, ih));
 		bool hov = ImGui::IsItemHovered();
 		ImGui::PopID();
 		if (sel) {
@@ -563,36 +633,31 @@ void App::drawRail(float h) {
 		else if (hov) dl->AddRectFilled(pos, pos + ImVec2(iw, ih), alpha(c::text, .05f), px(8));
 		ImFont* f = sel ? fonts.strong : fonts.body;
 		ImU32 col = sel ? c::text : (hov ? c::text : c::dim);
-		dl->AddText(f, fsz(f), pos + ImVec2(px(14), (ih - fsz(f)) * .5f), sel ? c::accent : col, pageIcon(p));
-		dl->AddText(f, fsz(f), pos + ImVec2(px(44), (ih - fsz(f)) * .5f), col, pageTitle(p));
-		if (numbered) {
-			step++;
+		dl->AddText(f, fsz(f), pos + ImVec2(px(14), (ih - fsz(f)) * .5f), sel ? c::accent : col, icon);
+		dl->AddText(f, fsz(f), pos + ImVec2(px(44), (ih - fsz(f)) * .5f), col, label);
+		if (number > 0) {
 			ImVec2 cc = pos + ImVec2(iw - px(18), ih * .5f);
-			if (done) {
-				dl->AddCircleFilled(cc, px(9), alpha(c::ok, .2f));
-				ImFont* sf = fonts.caption;
-				ImVec2 ts = sf->CalcTextSizeA(fsz(sf), FLT_MAX, 0, ICON_CHECK);
-				dl->AddText(sf, fsz(sf), cc - ts * .5f, c::ok, ICON_CHECK);
-			}
-			else {
-				dl->AddCircle(cc, px(9), c::faint, 0, 1.5f);
-				std::string n = std::to_string(step);
-				ImFont* sf = fonts.caption;
-				ImVec2 ts = sf->CalcTextSizeA(fsz(sf), FLT_MAX, 0, n.c_str());
-				dl->AddText(sf, fsz(sf), cc - ts * .5f, c::faint, n.c_str());
-			}
+			ImFont* sf = fonts.caption;
+			const std::string n = done ? std::string(ICON_CHECK) : std::to_string(number);
+			ImVec2 ts = sf->CalcTextSizeA(fsz(sf), FLT_MAX, 0, n.c_str());
+			if (done) dl->AddCircleFilled(cc, px(9), alpha(c::ok, .2f));
+			else dl->AddCircle(cc, px(9), sel ? c::accent : c::faint, 0, 1.5f);
+			dl->AddText(sf, fsz(sf), cc - ts * .5f, done ? c::ok : sel ? c::accent : c::faint, n.c_str());
 		}
+		return clicked;
+	};
+	auto item = [&](Page p) {
+		if (row(int(p), pageIcon(p), pageTitle(p), page == p, 0, false)) page = p;
 	};
 	group("SET UP");
-	item(Page::Guide, false, false);
-	item(Page::Source, true, !source.empty());
-	item(Page::Zones, true, zonesDone());
-	item(Page::Calibrate, true, calibrationDone());
+	int here = flowStep();
+	for (int i = 0; i < kFlowSteps; i++)
+		if (row(100 + i, kFlow[i].icon, kFlow[i].name, here == i, i + 1, flowDone(i))) goFlow(i);
 	group("RUN");
-	item(Page::Track, false, false);
-	item(Page::Results, false, false);
+	item(Page::Track);
+	item(Page::Results);
 	group("SHARE");
-	item(Page::Companion, false, false);
+	item(Page::Companion);
 
 	// Status block pinned to the bottom.
 	float bh = px(86);
@@ -634,23 +699,34 @@ void App::drawHeader(float w) {
 
 	ImGui::BeginGroup();
 	ImGui::PushFont(fonts.title);
-	ImGui::TextUnformatted(pageTitle(page));
+	int here = flowStep();
+	ImGui::TextUnformatted(here >= 0 ? kFlow[here].name : pageTitle(page));
 	ImGui::PopFont();
 	ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
-	ImGui::TextUnformatted(pageSubtitle(page));
+	ImGui::TextUnformatted(here >= 0 ? kFlow[here].subtitle : pageSubtitle(page));
 	ImGui::PopStyleColor();
 	ImGui::EndGroup();
 
 	// Right-aligned controls, laid out from the right edge.
 	bool run = tracker.running();
-	// Until setup can produce a measurement, the main button leads to the next setup step instead of a run that
-	// would only fail.  A missing calibration doesn't block (results are still useful relative to each other);
-	// it shows as an amber chip that opens the Calibrate page.
-	Page nextStep = Page::Count;
-	const char* runLabel = run ? ICON_STOP "  Stop" : ICON_PLAY "  Start tracking";
-	if (!run && source.empty() && batch.empty()) { nextStep = Page::Source; runLabel = "Next: choose a video  " ICON_ARROW_RIGHT; }
-	else if (!run && !cfg.problems().empty()) { nextStep = Page::Zones; runLabel = "Next: fix the zones  " ICON_ARROW_RIGHT; }
-	bool calNag = !run && nextStep == Page::Count && !calibrationDone();
+	// The main button walks the setup flow.  On a setup step it goes to the step after it, by the same name the rail
+	// and the stepper use, until steps 3-5 are all checked (a source, zones checked on it, a calibration); then it
+	// starts tracking.  Off the flow (Live, Results, Companion) it goes to the first step a run can't do without,
+	// a source or valid zones.  A missing calibration doesn't block a run (results are still useful relative to
+	// each other); it shows as an amber chip that opens Calibrate.
+	bool haveSource = !source.empty() || !batch.empty();
+	bool runnable = haveSource && cfg.problems().empty();
+	int nextStep = -1;
+	if (!run) {
+		if (here >= 0 && here < kFlowSteps - 1 && !(runnable && zonesDone() && calibrationDone())) nextStep = here + 1;
+		else if (!haveSource) nextStep = 2;
+		else if (!cfg.problems().empty()) nextStep = 3;
+	}
+	std::string runText = run ? ICON_STOP "  Stop" : ICON_PLAY "  Start tracking";
+	if (nextStep >= 0)
+		runText = std::string(here > nextStep ? "Back to: " : "Next: ") + kFlow[nextStep].name + "  " + (here > nextStep ? ICON_ARROW_LEFT : ICON_ARROW_RIGHT);
+	const char* runLabel = runText.c_str();
+	bool calNag = !run && nextStep < 0 && !calibrationDone() && page != Page::Calibrate;
 	const char* calText = ICON_GAUGE "  Not calibrated";
 	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
@@ -666,7 +742,7 @@ void App::drawHeader(float w) {
 	ImGui::SetCursorPos(ImVec2(right - bw, y));
 	if (primaryButton(runLabel, ImVec2(bw, px(40)), run ? c::bad : c::accent)) {
 		if (run) stopTracking();
-		else if (nextStep != Page::Count) page = nextStep;
+		else if (nextStep >= 0) goFlow(nextStep);
 		else startTracking();
 	}
 	if (run) {
@@ -724,6 +800,7 @@ void App::drawToasts(float w, float h) {
 // ======================================================================================================
 
 void App::pageSource() {
+	flowStepper();
 	float avail = ImGui::GetContentRegionAvail().x;
 	float rightW = std::max(px(360), avail * .36f);
 	float leftW = avail - rightW - px(20);
@@ -846,6 +923,8 @@ void App::pageSource() {
 			ImGui::PopID();
 		}
 	endCard();
+	ImGui::Dummy(ImVec2(0, px(4)));
+	aimCard(leftW);
 	ImGui::EndGroup();
 
 	// Right column: preview, facts about the source, config and output folders.
@@ -897,7 +976,6 @@ void App::pageSource() {
 		ImGui::TextWrapped("%s", player.error.c_str());
 		ImGui::PopStyleColor();
 	}
-	if (player.isOpen() && ghostButton(ICON_VECTOR "  Set up zones  " ICON_ARROW_RIGHT, ImVec2(-FLT_MIN, 0))) page = Page::Zones;
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(4)));
@@ -949,6 +1027,7 @@ void App::pageSource() {
 // ======================================================================================================
 
 void App::pageZones() {
+	flowStepper();
 	float avail = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
 	float inspW = px(372);
 	float canvasW = avail - inspW - px(20);
@@ -1110,7 +1189,7 @@ void App::zoneInspector() {
 		intRow("Large vehicle", &g.largeVehicleArea, 1, 1000, "Area above which a vehicle counts as a truck or bus.");
 		bool shortView = g.subFrameTiming != 0;
 		if (ImGui::Checkbox("Short view (about 20 ft of street in the picture)", &shortView)) g.subFrameTiming = shortView;
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Times each car's front bumper to a fraction of a frame, for views where a car fills most of the frame.\nThe site planner on the Get started page can set this and the steps below for you.");
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Times each car's front bumper to a fraction of a frame, for views where a car fills most of the frame.\nThe site planner in step 2, Pick your spot, can set this and the steps below for you.");
 		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Entry look-back", &g.entryLookBack, 0, 1280);
@@ -1286,6 +1365,7 @@ void App::dashcamSpeed(const Vehicle* picked) {
 }
 
 void App::pageCalibrate() {
+	flowStepper();
 	Globals& g = cfg.g;
 	float avail = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
 	float sideW = px(400);
@@ -1416,7 +1496,7 @@ void App::pageCalibrate() {
 			stepLine(2, "Pick that pass and enter the speed you drove. Within ±2 mph is verified.");
 		}
 		else {
-			stepLine(1, "Start tracking (live, or record a video). The zones should already be set.");
+			stepLine(1, "Start tracking (live, or record a video). Your street should already be marked (step 4).");
 			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph, or at any steady speed while a Tesla dashcam or VST Ride-along on your phone records. Once each way on a two-way street.");
 			stepLine(3, "Pick your pass below, enter the speed you drove (or read it from those recordings), and apply.");
 		}
@@ -1670,7 +1750,7 @@ void App::pageTrack() {
 	ImVec2 area = ImGui::GetContentRegionAvail();
 	area.y -= px(30);
 	bool noSource = source.empty() && batch.empty();
-	View v = drawFrame(tex, area, noSource ? "Choose a video or camera to track" : "Press Start tracking to begin");
+	View v = drawFrame(tex, area, noSource ? "Connect a camera or open a video in step 3" : "Press Start tracking to begin");
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 	// Motion the tracker sees, tinted over the analysis box, under the zone and box overlays.
 	if (prefs.showMotion && run && motionTex_.valid()) {
