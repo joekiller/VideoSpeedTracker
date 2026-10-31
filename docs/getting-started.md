@@ -6,7 +6,7 @@ packages install it as `GETTING-STARTED.md` next to `README.md`.
 ## Start here: VST Studio
 
 Most people never need the command line. **VST Studio** is the desktop app: it walks you through choosing a camera,
-drawing the zones, calibrating with one drive past, and leaving it running. It works out where the speed zone should
+drawing the zones, calibrating with one drive past (and checking it with a second), and leaving it running. It works out where the speed zone should
 go before you mount anything.
 
 1. **Install it.**
@@ -76,7 +76,8 @@ In short:
 
 - The street should cross the frame left to right, about halfway up.
 - The speed zone, the stretch between the two white lines, should take a car at least one second to cross at
-  the speed limit. At 25 mph that is about 37 ft.
+  the speed limit. At 25 mph that is about 37 ft. A narrow street where you can only see about 20 ft works too,
+  with short-view timing (see [the example below](#example-a-narrow-view-of-a-one-way-street)).
 - Use 720p or better at 25 to 30 fps. Any size and frame rate is accepted: frames are scaled to 1280x720, and
   every pixel value in `VST.cfg` uses that 1280x720 grid.
 
@@ -169,6 +170,13 @@ CalibrationFPS = 30
 On a one-lane street both directions use the same lane, so the two hubcap lines are close together or the same.
 VST was built for two-lane, two-way streets, so expect to tune `maxL2RDistOnEntry`, `maxR2LDistOnEntry` and `SLOP`
 for a narrow view.
+
+If the view is shorter still, about 20 ft of street with a car filling most of the frame, a zone that takes a full
+second isn't possible. Set `subFrameTiming = 1` (short-view timing): VST then times each car's front bumper to a
+fraction of a frame instead of counting whole frames. It also needs a much larger `maxL2RDistOnEntry`,
+`maxR2LDistOnEntry` and `entryLookBack` (several hundred pixels). The [manual's appendix](Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)
+explains each one, and VST Studio's site planner sets all four for you when it sees a short view (**Use short-view
+timing**). Record at 60 fps if you can: at 30 fps a 20 ft view tops out at about 50 to 60 mph.
 
 ## When something goes wrong
 

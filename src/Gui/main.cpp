@@ -277,6 +277,9 @@ int main(int argc, char** argv) {
 		else glfwWaitEventsTimeout(0.25);
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
+		// Xvfb parks the pointer mid-screen, where it would hover whatever the tour shows there and leave a tooltip in
+		// the screenshot: keep the mouse away.
+		if (shots) io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 		ImGui::NewFrame();
 		if (shots) script.tick();
 		app.frame(io.DisplaySize.x, io.DisplaySize.y);

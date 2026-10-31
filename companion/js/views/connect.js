@@ -32,12 +32,12 @@ export function render({ vst, view, start, probeResult }) {
       <div class="check"><b class="num" style="color:var(--accent)">2</b><p><b>Scan the QR code</b> it shows with this phone's camera. That opens the companion already paired.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">3</b><p><b>Add it to your home screen</b> so it opens like an app next time.</p></div>
     </div>
-    <details style="margin-top:12px" ${tried ? 'open' : ''}><summary class="small muted" style="cursor:pointer">Can't scan? Enter it by hand</summary>
-      <form class="card stack" id="manual" style="margin-top:10px">
+    <details style="margin-top:4px" ${tried ? 'open' : ''}><summary class="small muted">Can't scan? Enter it by hand</summary>
+      <form class="card stack" id="manual" style="margin-top:4px">
         <label class="field"><span>Address shown under the QR code</span><input class="input" id="addr" inputmode="url" autocomplete="off" placeholder="192.168.1.20:8787" value="${vst.base.replace(/^https?:\/\//, '')}"></label>
         <label class="field"><span>Pairing code</span><input class="input" id="tok" autocomplete="off" autocapitalize="off" spellcheck="false" value="${vst.token}"></label>
         <button class="btn primary block" type="submit">${icon('wifi')}Connect</button>
-        <p class="small muted" id="msg" style="margin:0"></p>
+        <p class="small" id="msg" role="status" style="margin:0"></p>
       </form>
     </details>
     <h3>Just looking?</h3>

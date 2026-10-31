@@ -70,7 +70,7 @@ export async function render({ vst, view }) {
       <h3>Speeds</h3>
       <div class="card"><div class="chart" id="hist"></div>
         <div class="legend"><span><i class="sw" style="background:var(--bar-neutral)"></i>At or under ${st.speedLimit}</span>
-        <span><i class="sw" style="background:var(--warn)"></i>Speeding</span>
+        <span><i class="sw" style="background:var(--bar-warn)"></i>Speeding</span>
         <span><i class="sw" style="background:var(--bad)"></i>${s.egregiousAt}+ mph</span></div>
         <details class="table"><summary>Show as table</summary><table><tr><th>mph</th><th>vehicles</th></tr>
           ${s.histogram.filter((b) => b.n).map((b) => html`<tr><td>${b.speed}</td><td>${b.n}</td></tr>`)}</table></details>
@@ -78,7 +78,7 @@ export async function render({ vst, view }) {
       <h3>Time of day</h3>
       <div class="card"><div class="chart" id="hours"></div>
         <div class="legend"><span><i class="sw" style="background:var(--bar-neutral)"></i>Within limit</span>
-        <span><i class="sw" style="background:var(--warn)"></i>Over limit</span></div>
+        <span><i class="sw" style="background:var(--bar-warn)"></i>Over limit</span></div>
         <details class="table"><summary>Show as table</summary><table><tr><th>hour</th><th>within</th><th>over</th></tr>
           ${s.hours.map((h) => html`<tr><td>${hourLabel(h.h)}</td><td>${h.ok}</td><td>${h.over}</td></tr>`)}</table></details>
       </div>
@@ -86,7 +86,7 @@ export async function render({ vst, view }) {
       <div class="btn-row" id="actions">
         <a class="btn primary" id="street-report" href="${vst.reportUrl(reportRange(period))}" target="_blank" rel="noopener">${icon('report')}Street report</a>
         ${sharingOn() ? html`<button class="btn" id="report">${icon('share')}Share report card</button>` : ''}
-        ${vst.csvUrl() ? html`<a class="btn" href="${vst.csvUrl()}" download="vst-stats.csv">${icon('download')}Download csv</a>` : ''}
+        ${vst.csvUrl() ? html`<a class="btn" href="${vst.csvUrl()}" download="vst-stats.csv">${icon('download')}Download CSV</a>` : ''}
       </div>
       ${sharingOn() ? '' : html`<p class="small muted" style="margin-top:8px">Turn on sharing in <a href="#/system">System</a> to make a report card image.</p>`}`.__html;
 

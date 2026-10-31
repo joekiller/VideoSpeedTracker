@@ -702,16 +702,19 @@ void App::drawToasts(float w, float h) {
 	ImDrawList* dl = ImGui::GetForegroundDrawList();
 	float y = px(88);
 	for (auto it = toasts_.rbegin(); it != toasts_.rend(); ++it) {
-		std::string text = std::string(it->icon ? it->icon : ICON_INFO) + "   " + it->text;
+		// The icon gets its own column, so a message that wraps lines up under its first word.
+		const char* icon = it->icon ? it->icon : ICON_INFO;
 		ImFont* f = fonts.strong;
-		ImVec2 ts = f->CalcTextSizeA(fsz(f), px(520), px(520), text.c_str());
-		ImVec2 size = ts + ImVec2(px(36), px(24));
+		float iconW = px(26);
+		ImVec2 ts = f->CalcTextSizeA(fsz(f), px(520), px(520), it->text.c_str());
+		ImVec2 size = ts + ImVec2(px(36) + iconW, px(24));
 		float fade = float(std::min(1.0, (it->until - t) / .4));
 		ImVec2 p(w - size.x - px(24), y);
 		dl->AddRectFilled(p + ImVec2(0, px(4)), p + size + ImVec2(0, px(4)), IM_COL32(0, 0, 0, int(90 * fade)), px(10));
 		dl->AddRectFilled(p, p + size, alpha(c::bg3, .98f * fade), px(10));
 		dl->AddRectFilled(p, p + ImVec2(px(4), size.y), alpha(it->color, fade), px(10), ImDrawFlags_RoundCornersLeft);
-		dl->AddText(f, fsz(f), p + ImVec2(px(20), px(12)), alpha(c::text, fade), text.c_str(), nullptr, px(520));
+		dl->AddText(f, fsz(f), p + ImVec2(px(20), px(12)), alpha(it->color, fade), icon);
+		dl->AddText(f, fsz(f), p + ImVec2(px(20) + iconW, px(12)), alpha(c::text, fade), it->text.c_str(), nullptr, px(520));
 		y += size.y + px(10);
 	}
 }
@@ -771,6 +774,7 @@ void App::pageSource() {
 				}
 				ImGui::EndCombo();
 			}
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Which camera to use: 0 is usually the built-in or first one plugged in.");
 			ImGui::SameLine(0, px(8));
 			if (primaryButton(ICON_LINK " Connect", ImVec2(-FLT_MIN, 0), c::ok)) { batch.clear(); openSource(std::to_string(cameraIndex_)); }
 		});
@@ -795,7 +799,8 @@ void App::pageSource() {
 		ImGui::PopStyleColor();
 		ImGui::SameLine();
 		ImGui::TextUnformatted("No camera yet? Try the 2016 Locust Avenue sample, the clip VST was built on.");
-		ImGui::SameLine(leftW - px(36) - ImGui::CalcTextSize(ICON_PLAY " Use the sample").x - px(28));
+		// Flush with the card's right padding: the button's label is semibold, plus its frame padding.
+		ImGui::SameLine(leftW - px(18) - fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, ICON_PLAY " Use the sample").x - px(28));
 		if (ghostButton(ICON_PLAY " Use the sample")) { batch.clear(); openSource(sample); }
 		endCard();
 	}
@@ -887,7 +892,9 @@ void App::pageSource() {
 	}
 	else if (!player.error.empty()) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad));
-		ImGui::TextWrapped(ICON_WARN "  %s", player.error.c_str());
+		ImGui::TextUnformatted(ICON_WARN);
+		ImGui::SameLine();
+		ImGui::TextWrapped("%s", player.error.c_str());
 		ImGui::PopStyleColor();
 	}
 	if (player.isOpen() && ghostButton(ICON_VECTOR "  Set up zones  " ICON_ARROW_RIGHT, ImVec2(-FLT_MIN, 0))) page = Page::Zones;
@@ -895,7 +902,7 @@ void App::pageSource() {
 
 	ImGui::Dummy(ImVec2(0, px(4)));
 	beginCard("files", ICON_FOLDER, "Settings and output", ImVec2(rightW, 0));
-	formLabel("Config", px(96));
+	formLabel("Config", px(112));
 	ImGui::TextUnformatted(cfg.path().empty() ? "(none)" : fs::path(cfg.path()).filename().string().c_str());
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", cfg.path().c_str());
 	float bw = (ImGui::GetContentRegionAvail().x - px(16)) / 3;
@@ -914,8 +921,19 @@ void App::pageSource() {
 		if (!r.empty()) { if (cfg.saveAs(r)) prefs.configPath = r; else toast(cfg.error, c::bad, ICON_WARN); }
 	}
 	ImGui::Dummy(ImVec2(0, px(2)));
-	formLabel("Results go to", px(96));
-	ImGui::TextUnformatted(dataDir().c_str());
+	formLabel("Results go to", px(112));
+	{
+		// A per-user data folder is a long path: keep its end (the part that names the folder) and show it all on hover.
+		std::string dir = dataDir();
+		float room = ImGui::GetContentRegionAvail().x;
+		std::string shown = dir;
+		for (size_t cut = 0; cut < dir.size() && ImGui::CalcTextSize(shown.c_str()).x > room;) {
+			do cut++; while (cut < dir.size() && (dir[cut] & 0xC0) == 0x80);   // whole UTF-8 characters only
+			shown = "…" + dir.substr(cut);
+		}
+		ImGui::TextUnformatted(shown.c_str());
+		if (shown != dir && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", dir.c_str());
+	}
 	if (ghostButton(ICON_FOLDER_OPEN " Open folder", ImVec2(bw * 1.5f + px(4), 0))) openWithSystem(dataDir());
 	ImGui::SameLine(0, px(8));
 	if (ghostButton(ICON_FOLDER " Change", ImVec2(-FLT_MIN, 0))) {
@@ -943,7 +961,7 @@ void App::pageZones() {
 	OverlayStyle st;
 	st.editable = true;
 	const char* hovered = nullptr;
-	zoneOverlay(v, cfg.g, st, &hovered);
+	if (player.isOpen()) zoneOverlay(v, cfg.g, st, &hovered);   // with no picture, the lines would only cover the hint
 	ImGui::EndChild();
 
 	// Scrub bar under the canvas: play/step for files, a status line for live sources.
@@ -978,9 +996,9 @@ void App::pageZones() {
 	const Key keys[] = {
 		{ c::accent2, "Analysis box", "the only part of the picture the tracker looks at" },
 		{ c::rgb(0xFFFFFF), "Speed lines", "timing runs from one to the other" },
-		{ c::l2r, "→ lane", "hubcap height of cars going right" },
-		{ c::r2l, "← lane", "hubcap height of cars going left" },
 		{ c::obstruction, "Obstruction", "the tracker coasts through it" },
+		{ c::l2r, "→ Lane", "hubcap height of cars going right" },   // the two lanes share a row
+		{ c::r2l, "← Lane", "hubcap height of cars going left" },
 	};
 	float kw = (canvasW - px(36)) / 3;
 	for (int i = 0; i < 5; i++) {
@@ -1037,8 +1055,8 @@ void App::zoneInspector() {
 		}
 		ImGui::PopStyleColor();
 	};
-	compassCombo("→ heads", g.L2RDirection, c::l2r);
-	compassCombo("← heads", g.R2LDirection, c::r2l);
+	compassCombo("→ traffic heads", g.L2RDirection, c::l2r);
+	compassCombo("← traffic heads", g.R2LDirection, c::r2l);
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
@@ -1144,7 +1162,7 @@ void App::pageCalibrate() {
 	OverlayStyle st;
 	st.opacity = .75f;
 	st.dimOutside = false;
-	zoneOverlay(v, g, st);
+	if (player.isOpen()) zoneOverlay(v, g, st);
 	// Highlight the line the user should be lining the bumper up with in the manual mode.
 	if (calibMode_ == 1 && player.isOpen()) {
 		bool l2r = calibDir_ == 0;
@@ -1275,7 +1293,7 @@ void App::pageCalibrate() {
 			for (auto it = vs.rbegin(); it != vs.rend(); ++it) {
 				ImGui::PushID(it->id);
 				char label[180];
-				snprintf(label, sizeof label, "%s  %s   %d frames   (now reads %d mph)   %s%s", it->ev.leftToRight ? "→" : "←",
+				snprintf(label, sizeof label, "%s   %d frames   measured %d mph   %s%s",
 					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
 					it->id == calibAppliedId_ ? "   calibrated from" : "");
 				if (ImGui::Selectable(label, calibPickId_ == it->id)) calibPickId_ = it->id;
@@ -1460,8 +1478,14 @@ void App::calibrationCheckCard(float width) {
 		for (const char* t : {
 			"Speedometer error: most read high. A GPS speed app is a better reference.",
 			"The zones moved: the camera or the speed lines shifted since the first pass.",
-			"A different lane: the far lane crosses more road between the lines." })
-			dimText("•  %s", t);
+			"A different lane: the far lane crosses more road between the lines." }) {
+			// Hanging indent: a wrapped line starts under the text, not under the bullet.
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
+			ImGui::TextUnformatted("•");
+			ImGui::SameLine(0, px(8));
+			ImGui::TextWrapped("%s", t);
+			ImGui::PopStyleColor();
+		}
 	}
 	ImGui::PopTextWrapPos();
 	if (!k.verified) {
@@ -1507,7 +1531,8 @@ void App::pageTrack() {
 	void* tex = haveLive ? liveTex_.imguiId() : player.isOpen() ? player.texture().imguiId() : nullptr;
 	ImVec2 area = ImGui::GetContentRegionAvail();
 	area.y -= px(30);
-	View v = drawFrame(tex, area, "Press Start tracking to begin");
+	bool noSource = source.empty() && batch.empty();
+	View v = drawFrame(tex, area, noSource ? "Choose a video or camera to track" : "Press Start tracking to begin");
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 	// Motion the tracker sees, tinted over the analysis box, under the zone and box overlays.
 	if (prefs.showMotion && run && motionTex_.valid()) {
@@ -1517,7 +1542,7 @@ void App::pageTrack() {
 	OverlayStyle st;
 	st.opacity = run ? .3f : .5f;   // while tracking, the zones step back so the vehicles and their speeds read first
 	st.dimOutside = true;
-	zoneOverlay(v, cfg.g, st);
+	if (tex) zoneOverlay(v, cfg.g, st);
 	if (haveLive) trackOverlay(v, cfg.g, live_.analysisBox, live_.boxes, prefs.speedLimit, prefs.egregious);
 
 	// HUD: source badge, frame counter and how fast processing is going relative to real time.
@@ -1549,7 +1574,10 @@ void App::pageTrack() {
 		ImVec2 mid = v.origin + v.size * .5f;
 		ImVec2 bsz(px(220), px(52));
 		ImGui::SetCursorScreenPos(mid - bsz * .5f + ImVec2(0, px(40)));
-		if (primaryButton(ICON_PLAY "  Start tracking", bsz)) startTracking();
+		if (noSource ? primaryButton(ICON_VIDEO "  Choose a source", bsz) : primaryButton(ICON_PLAY "  Start tracking", bsz)) {
+			if (noSource) page = Page::Source;
+			else startTracking();
+		}
 	}
 	// Progress for files: a bar along the bottom edge of the picture, with the percentage in the HUD above
 	// (the canvas child has no room below the picture, which used to clip the percentage).
@@ -1566,13 +1594,19 @@ void App::pageTrack() {
 	ImGui::BeginChild("strip", ImVec2(canvasW, px(84) + ImGui::GetStyle().ScrollbarSize), 0, ImGuiWindowFlags_HorizontalScrollbar);
 	{
 		auto recent = tracker.vehiclesSince(0, 24);
-		if (recent.empty()) dimText("Vehicles appear here the moment they leave the speed zone. Click one for details.");
+		if (recent.empty()) {
+			ImGui::SetCursorPos(ImVec2(px(14), px(12)));
+			dimText("Vehicles appear here the moment they leave the speed zone. Click one for details.");
+		}
+		// As many whole cards as fit across the picture, the rest a scroll away, so none is cut off at the edge.
+		int fit = std::max(1, int((canvasW + px(10)) / px(290)));
+		float cardW = (canvasW - px(10) * (fit - 1)) / fit;
 		bool first = true;
 		for (auto it = recent.rbegin(); it != recent.rend(); ++it) {
 			if (!first) ImGui::SameLine(0, px(10));
 			first = false;
 			ImGui::BeginGroup();
-			vehicleCard(*it, px(300));
+			vehicleCard(*it, cardW);
 			ImGui::EndGroup();
 		}
 	}
@@ -1600,9 +1634,11 @@ void App::pageTrack() {
 	ImGui::SameLine(0, px(20));
 	ImGui::BeginChild("tside", ImVec2(sideW, availH), 0, 0);
 	Counts cn = tracker.counts();
-	float tw = (sideW - px(12)) * .5f, th = px(104);
+	// From the room left by the scrollbar, which appears once the cards below outgrow the window.
+	float tw = (ImGui::GetContentRegionAvail().x - px(12)) * .5f, th = px(104);
 	char sub[64];
-	snprintf(sub, sizeof sub, "avg %.0f mph", cn.avgSpeed);
+	if (cn.vehicles) snprintf(sub, sizeof sub, "avg %.0f mph", cn.avgSpeed);
+	else snprintf(sub, sizeof sub, "none yet");
 	statTile(ICON_CAR, "Vehicles", std::to_string(cn.vehicles), sub, c::accent, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
 	snprintf(sub, sizeof sub, "%d%% of traffic", cn.vehicles ? cn.speeders * 100 / cn.vehicles : 0);
@@ -1629,13 +1665,13 @@ void App::pageTrack() {
 			const Vehicle& v = all[i];
 			ImGui::PushID(v.id);
 			ImU32 col = v.ev.wrongWay ? c::wrong : speedColor(v.ev.speed, prefs.speedLimit, prefs.egregious);
-			pill((std::to_string(v.ev.speed) + " mph").c_str(), c::bg0, col, fonts.strong);
+			linePill((std::to_string(v.ev.speed) + " mph").c_str(), c::bg0, col, fonts.strong);
 			ImGui::SameLine();
 			ImGui::AlignTextToFramePadding();
 			ImGui::PushStyleColor(ImGuiCol_Text, v4(v.ev.leftToRight ? c::l2r : c::r2l));
 			ImGui::Text("%s %s", v.ev.leftToRight ? "→" : "←", v.ev.compass.c_str());
 			ImGui::PopStyleColor();
-			if (v.ev.wrongWay) { ImGui::SameLine(); pill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
+			if (v.ev.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
 			if (v.large) { ImGui::SameLine(); ImGui::TextUnformatted(ICON_TRUCK); }
 			ImGui::PopID();
 		}
@@ -1739,7 +1775,7 @@ void App::pageResults() {
 	ImGui::SameLine(0, px(16));
 	if (ghostButton(ICON_CLOCK " This session")) showSessionResults();
 	ImGui::SameLine();
-	if (ghostButton(ICON_FILE_CSV " Open csv")) {
+	if (ghostButton(ICON_FILE_CSV " Open CSV")) {
 		auto r = pfd::open_file("Open stats csv", (fs::path(dataDir()) / "Stats").string(), { "Stats csv", "*.csv", "All files", "*" }).result();
 		if (!r.empty()) loadResultsCsv(r[0]);
 	}
@@ -1770,8 +1806,9 @@ void App::pageResults() {
 		ImGui::Dummy(ImVec2(0, px(40)));
 		beginCard("noresults", ICON_CHART, "Nothing here yet", ImVec2(avail, 0));
 		dimText("Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
-			"Or open a stats csv from an earlier run.");
-		if (primaryButton(ICON_PLAY "  Start tracking")) startTracking();
+			"Or use Open CSV to look at the results of an earlier run.");
+		if (source.empty() && batch.empty()) { if (primaryButton(ICON_VIDEO "  Choose a source")) page = Page::Source; }
+		else if (primaryButton(ICON_PLAY "  Start tracking")) startTracking();
 		endCard();
 		return;
 	}
@@ -1815,7 +1852,7 @@ void App::pageResults() {
 
 	float tableH = ImGui::GetContentRegionAvail().y;
 	if (ImGui::BeginTable("rows", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable
-		| ImGuiTableFlags_SizingStretchProp, ImVec2(leftW, tableH))) {
+		| ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX, ImVec2(leftW, tableH))) {
 		ImGui::TableSetupScrollFreeze(0, 1);
 		ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, px(46));
 		ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, px(110));
@@ -1839,6 +1876,9 @@ void App::pageResults() {
 					return asc ? kx < ky : kx > ky;
 				});
 			}
+		// Every cell is one frame-height line: the row number centred in it (the selectable spans the row), pills
+		// centred on it and plain text aligned to frame padding, so a row reads along one baseline.
+		float lineH = ImGui::GetFrameHeight();
 		ImGuiListClipper clip;
 		clip.Begin(int(order.size()));
 		while (clip.Step())
@@ -1850,18 +1890,20 @@ void App::pageResults() {
 				ImGui::PushID(idx);
 				char num[16];
 				snprintf(num, sizeof num, "%d", idx + 1);
-				if (ImGui::Selectable(num, selectedRow_ == idx, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, px(24)))) selectedRow_ = idx;
+				ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, .5f));
+				if (ImGui::Selectable(num, selectedRow_ == idx, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, lineH))) selectedRow_ = idx;
+				ImGui::PopStyleVar();
 				ImGui::PopID();
 				ImGui::TableNextColumn();
 				std::string s = std::to_string(r.speed) + " mph";
 				ImU32 col = speedColor(r.speed, prefs.speedLimit, prefs.egregious);
-				pill(s.c_str(), c::bg0, col, fonts.strong);
+				linePill(s.c_str(), c::bg0, col, fonts.strong);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				ImGui::PushStyleColor(ImGuiCol_Text, v4(r.l2r ? c::l2r : c::r2l));
 				ImGui::Text("%s %s", r.l2r ? "→" : "←", r.compass.c_str());
 				ImGui::PopStyleColor();
-				if (r.wrongWay) { ImGui::SameLine(); pill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
+				if (r.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				if (!r.time.empty()) ImGui::TextUnformatted(r.time.size() > 11 ? r.time.substr(11).c_str() : r.time.c_str());
@@ -1897,7 +1939,10 @@ void App::pageResults() {
 		else {
 			ImVec2 p = ImGui::GetCursorScreenPos();
 			ImGui::GetWindowDrawList()->AddRectFilled(p, p + ImVec2(w, w * .4f), c::bg3, px(8));
-			ImGui::GetWindowDrawList()->AddText(p + ImVec2(px(12), px(12)), c::faint, "Snapshots are kept for this session's vehicles");
+			// Rows read from a csv have no picture; say why, centred in the placeholder.
+			const char* why = "Snapshots are kept only for\nvehicles tracked this session";
+			ImVec2 ts = ImGui::CalcTextSize(why);
+			ImGui::GetWindowDrawList()->AddText(p + (ImVec2(w, w * .4f) - ts) * .5f, c::faint, why);
 			ImGui::Dummy(ImVec2(w, w * .4f));
 		}
 		ImU32 col = r.wrongWay ? c::wrong : speedColor(r.speed, prefs.speedLimit, prefs.egregious);
@@ -1925,7 +1970,7 @@ void App::pageResults() {
 		kv("In the zone", std::to_string(r.frames) + " frames (" + std::to_string(r.frames / r.fps).substr(0, 4) + " s)");
 		kv("Size", std::to_string(r.area) + (r.large ? "  (truck or bus)" : ""));
 		kv("Frame", std::to_string(r.frame));
-		if (!r.time.empty()) kv("Passed at", r.time);
+		if (!r.time.empty()) { std::string t = r.time; if (t.size() > 10 && t[10] == 'T') t[10] = ' '; kv("Passed at", t); }
 		kv("Source", r.source);
 		ImGui::Dummy(ImVec2(0, px(4)));
 		Vehicle v;
@@ -1977,8 +2022,12 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		}
 		float lx = p.x + (prefs.speedLimit + 1 - lo) / 2.f * bw;
 		for (float y = p.y; y < p.y + sz.y; y += px(8)) dl->AddLine(ImVec2(lx, y), ImVec2(lx, y + px(4)), c::text, 1.5f);
+		// The label sits on a chip of the card colour so the bars behind it can't swallow it.
 		std::string lim = std::to_string(prefs.speedLimit) + " mph limit";
-		dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(lx + px(6), p.y), c::text, lim.c_str());
+		ImVec2 ls = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, lim.c_str());
+		ImVec2 lp(std::min(lx + px(6), p.x + sz.x - ls.x - px(4)), p.y);
+		dl->AddRectFilled(lp - ImVec2(px(4), px(1)), lp + ls + ImVec2(px(4), px(1)), alpha(c::bg2, .9f), px(4));
+		dl->AddText(fonts.caption, fsz(fonts.caption), lp, c::text, lim.c_str());
 		dl->AddLine(ImVec2(p.x, p.y + sz.y), ImVec2(p.x + sz.x, p.y + sz.y), c::border);
 		for (int mph = (lo + 9) / 10 * 10; mph <= hi; mph += 10) {
 			float x = p.x + (mph - lo) / 2.f * bw;
@@ -2159,13 +2208,16 @@ void App::pageCompanion() {
 	ImGui::InputInt("##port", &prefs.remotePort, 0);
 	prefs.remotePort = std::clamp(prefs.remotePort, 1024, 65535);
 	ImGui::EndDisabled();
+	if (on && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Turn the companion off to change the port.");
 	formLabel("Site name", px(110));
 	char site[96];
 	snprintf(site, sizeof site, "%s", prefs.siteName.c_str());
 	if (ImGui::InputText("##site", site, sizeof site)) prefs.siteName = site;
 	ImGui::Dummy(ImVec2(0, px(6)));
 	ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
-	ImGui::TextWrapped(ICON_INFO "  Pairing uses a secret in the QR code. Anyone with it can see the camera and change settings, so only "
+	ImGui::TextUnformatted(ICON_INFO);
+	ImGui::SameLine();   // the paragraph wraps under itself, not under the icon
+	ImGui::TextWrapped("Pairing uses a secret in the QR code. Anyone with it can see the camera and change settings, so only "
 		"share it with people you trust. Making a new code signs out every paired phone.");
 	ImGui::PopStyleColor();
 	if (ghostButton(ICON_ROTATE "  New pairing code")) {
@@ -2180,7 +2232,7 @@ void App::pageCompanion() {
 	ImGui::BeginGroup();
 	float rw = avail - leftW - px(20);
 	beginCard("pair", ICON_LINK, "Pair your phone", ImVec2(rw, 0));
-	if (!on) dimText("Turn on the companion to get a pairing code.");
+	if (!on) dimText("Tick \"Allow the companion app to connect\" to get a code to scan with your phone.");
 	else {
 		std::string url = server->pairingUrl();
 		float qs = std::min(px(260), rw - px(40));
@@ -2194,7 +2246,7 @@ void App::pageCompanion() {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::accent2));
 		ImGui::TextWrapped("%s", server->baseUrl().c_str());
 		ImGui::PopStyleColor();
-		if (ghostButton(ICON_LINK "  Copy pairing link")) { ImGui::SetClipboardText(url.c_str()); toast("Copied", c::ok, ICON_CHECK); }
+		if (ghostButton(ICON_LINK "  Copy pairing link")) { ImGui::SetClipboardText(url.c_str()); toast("Pairing link copied", c::ok, ICON_CHECK); }
 		// Only shown when there's a choice: a computer on Wi-Fi and Ethernet, or with a VPN or virtual adapters, has
 		// several addresses and the automatic pick can be one the phone can't reach.  The interfaces are re-read
 		// every 5 s rather than every frame (each read opens a socket), so a cable plugged in shows up on its own.

@@ -13,6 +13,9 @@ export async function render({ vst, view, prefs, start }) {
     const src = s.source || {};
     const live = vst.mode !== 'demo';
     const where = live ? (vst.base || location.origin) : 'Built-in demo';
+    // A repaint replaces every control; put keyboard focus back on the one that had it.
+    const had = view.contains(document.activeElement) ? document.activeElement : null;
+    const refocus = had && (had.id ? `#${had.id}` : had.dataset.a ? `[data-a="${had.dataset.a}"]` : had.dataset.pref ? `[data-pref="${had.dataset.pref}"]` : null);
     view.innerHTML = html`
       <h1>System</h1>
       <p class="lede">${s.running ? (s.paused ? 'Tracking is paused.' : 'VST is watching the street.') : 'Tracking is stopped.'}</p>
@@ -35,12 +38,12 @@ export async function render({ vst, view, prefs, start }) {
       <h3>Sharing</h3>
       <div class="list">
         <div class="item"><div class="label"><b>Allow sharing from this phone</b><small>Off by default. Nothing is uploaded unless you share it.</small></div>
-          <label class="switch"><input type="checkbox" id="sharing" ${prefs.get('sharing') ? 'checked' : ''}><i></i></label></div>
+          <label class="switch"><input type="checkbox" id="sharing" aria-label="Allow sharing from this phone" ${prefs.get('sharing') ? 'checked' : ''}><i></i></label></div>
         ${prefs.get('sharing') ? html`
           <div class="item"><div class="label"><b>Include the spot's name</b><small>${s.siteName || 'Not set'}</small></div>
-            <label class="switch"><input type="checkbox" data-pref="shareSite" ${prefs.get('shareSite') ? 'checked' : ''}><i></i></label></div>
+            <label class="switch"><input type="checkbox" data-pref="shareSite" aria-label="Include the spot's name" ${prefs.get('shareSite') ? 'checked' : ''}><i></i></label></div>
           <div class="item"><div class="label"><b>Include date and time</b></div>
-            <label class="switch"><input type="checkbox" data-pref="shareTime" ${prefs.get('shareTime') ? 'checked' : ''}><i></i></label></div>` : ''}
+            <label class="switch"><input type="checkbox" data-pref="shareTime" aria-label="Include date and time" ${prefs.get('shareTime') ? 'checked' : ''}><i></i></label></div>` : ''}
       </div>
 
       <h3>Connection</h3>
@@ -54,6 +57,7 @@ export async function render({ vst, view, prefs, start }) {
       </div>
       <p class="small muted" style="margin-top:24px">VST Companion is part of <a href="https://github.com/joekiller/VideoSpeedTracker">VideoSpeedTracker</a>, open source under the BSD license. Data stays on your network.</p>`.__html;
 
+    if (refocus) view.querySelector(refocus)?.focus();
     $('#run').onclick = async (e) => {
       const a = e.target.closest('[data-a]')?.dataset.a;
       if (!a) return;

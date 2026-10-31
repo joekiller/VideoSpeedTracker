@@ -32,7 +32,7 @@ async function list({ vst, view }) {
     <a class="pass" href="#/passes/${v.id}">
       ${sign(v.speed, band(v))}
       <div class="meta"><b>${v.wrongWay ? `Wrong way · ${v.speed} mph` : `${v.speed} mph`} ${arrow(v.dir)}</b>
-        <small>${clock(v.time)} · ${v.compass}-bound ${passPills(v, st.speedLimit)}</small></div>
+        <small>${clock(v.time)} <span class="nowrap">· ${v.compass}-bound</span> ${passPills(v, st.speedLimit)}</small></div>
       <img class="thumb" src="${vst.media(v.snapshot)}" alt="" loading="lazy">
     </a>`;
 
@@ -105,7 +105,7 @@ async function detail({ vst, view, go }, id) {
       <div id="share"></div>
       <h3>Calibration</h3>
       <div class="callout">${icon('ruler')}<p>Was this your own car, driven at a known speed? Use it to calibrate VST.
-        <a href="#/setup/4" id="use-cal">Use this pass</a></p></div>
+        <br><a class="btn small" href="#/setup/4" id="use-cal" style="margin-top:8px">Calibrate from this pass</a></p></div>
     </div>`.__html;
 
   $('#use-cal').onclick = () => sessionStorage.setItem('vst.calPass', String(v.id));
