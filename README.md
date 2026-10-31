@@ -349,7 +349,7 @@ calibration:
 
 | Field | Meaning |
 |---|---|
-| source | `input` is the file name (a whole folder for an interactive `*` run), the camera index, or the stream URL with any password removed (both `user:password@` and parameters such as `pwd=`). `kind` is `file`, `camera` or `stream`. |
+| source | `input` is the file name (a whole folder for an interactive `*` run), the camera index, the Pi camera name (`picam:0?...`), or the stream URL with any password removed (both `user:password@` and parameters such as `pwd=`). `kind` is `file`, `camera` or `stream`. |
 | started, ended | when the first frame and the end of the last frame analyzed were taken. They follow the same rules as Timestamp, and are `null` when unknown. |
 | complete | `false` while a camera or stream run is still going |
 | frames, fps | frames analyzed, and the video's frame rate |
@@ -363,13 +363,50 @@ arrive, after each reconnect, and every 10 minutes. So a crash loses at most 10 
 
 ## Unattended runs on a camera or stream
 
-A camera (`--input 0`) or a stream URL (`--input rtsp://...`) runs until it's stopped (Esc, Stop in VST Studio, or
+A camera (`--input 0`, or `--input picam` for a [Raspberry Pi camera](#raspberry-pi-camera)) or a stream URL (`--input rtsp://...`) runs until it's stopped (Esc, Stop in VST Studio, or
 ending the process). If the picture drops out (a Wi-Fi blip, a camera reboot) VST doesn't end the job: it reopens the
 source after 1, 2, 4, 8 and 16 s, then every 30 s for as long as it takes, and logs each attempt and the reconnect.
 Vehicles being tracked when the picture stopped are dropped, so no speed is ever measured across a gap; frame numbers
 keep counting, so `Frame` never goes backwards. Each gap is recorded in the
 [run manifest](#the-run-manifest)'s `outages`, which is rewritten every 10 minutes while the job runs. A URL that reports a length (an `http://` link to a recorded file) is
 treated as a file and ends at its end, as files always do.
+
+## Raspberry Pi camera
+
+VST reads the Raspberry Pi's own ribbon-cable cameras when it runs on the Pi they're plugged into (Raspberry Pi OS
+Bookworm or later, which has `rpicam-vid`; on a Lite install, `sudo apt install rpicam-apps`). VST runs `rpicam-vid` and
+reads its raw frames, so the same `.deb` works with or without a camera and nothing else needs installing.
+
+| Camera | Use it for | At VST's defaults |
+|---|---|---|
+| **Global Shutter Camera** (IMX296) + a CS-mount lens | the best choice: no rolling-shutter lean on fast cars | 60 fps, full sensor width. Focus by hand on the lens, then lock its screw. |
+| **Camera Module 3** (IMX708), also Wide and NoIR | cheaper, sharper in daylight | 60 fps; the 720p mode is a centre crop (about 47° of view, 79° for Wide). Focus is locked (see `focus`). |
+| **Camera Module v2** (IMX219), also NoIR | works if you already have one | about 47 fps at 720p (it has no 720p60 mode with the full view). |
+
+NoIR models have no infrared filter: daytime colors look pink and washed out, which tracking doesn't mind, and at night
+they need an infrared light. A Pi 5 needs the 22-pin to 15-pin camera cable that some cameras don't come with.
+
+In VST Studio, step 3 lists the Pi camera first in the camera card's menu when one is attached; the sliders button next to it sets the frame rate, shutter,
+focus and upside-down mounting. On the command line, `VideoSpeedTracker --list-pi-cameras` shows what's attached and
+`--input picam` (or `picam:1` for a second camera) uses it:
+
+```
+VideoSpeedTracker --headless --input picam --config VST.cfg
+VideoSpeedTracker --headless --input 'picam:0?fps=30&shutter=2000&focus=0.2'   # quote it: the shell treats ? and & specially
+```
+
+| Setting | Default | |
+|---|---|---|
+| `fps` | 60, or the camera's best below that | Speeds are computed from it. VST times the first second of frames and uses the measured rate, and says so, if the camera delivers more than 10% fewer than asked. |
+| `shutter` | `1000` (1/1000 s) | Microseconds, fixed so cars don't smear; the camera raises its gain to make up the light. `0` lets the camera choose (blurrier cars, better at night). |
+| `gain` | `0` (automatic) | Analogue gain, e.g. `4`, to fix the brightness too. |
+| `focus` | `0.25` | Camera Module 3's lens position in dioptres (1 ÷ metres to the lane), locked for the whole run so it never hunts as cars pass. 0.25 (4 m, 13 ft) keeps about 2 m to beyond 30 m sharp. |
+| `size` | `1280x720` | What `rpicam-vid` delivers; 1280x720 is VST's working size, so nothing is rescaled. Width a multiple of 64, height of 16. |
+| `rotate` | `0` | `180` for a camera mounted upside down. |
+
+A Pi camera is live like a USB camera: times come from the Pi's clock (keep it on network time), and if `rpicam-vid`
+stops VST reconnects as described above. `VST_RPICAM_VID` names a different program to run instead of `rpicam-vid`;
+the tests use it to stand in a recording for the camera.
 
 ## Troubleshooting
 
@@ -382,6 +419,8 @@ These come from the [issues filed against the original project](docs/upstream-is
 | Exits right after reading the config, or "Frame width is not 1280" / "Frame rate is not 30" | The 2016 code accepted only exactly 1280x720 at exactly 30.000 fps, so 1080p, 29.97 fps and phone video all quit. Any size and rate now work. |
 | "Can't open video" | The file is missing or this OpenCV can't decode it. Convert it with `ffmpeg -i in.ext -c:v libx264 out.mp4`. |
 | Date, Time and Timestamp are blank | The video isn't a Foscam `manual_yyyymmddhhmmss` file and its modified time can't be trusted (see [The stats csv](#the-stats-csv)). Rename it `manual_<when it started>.<ext>` and run it again. |
+| "No Raspberry Pi camera found" | The ribbon cable isn't seated or is the wrong way round, or a Pi 5 has the older 15-pin cable. Reseat it with the power off; `rpicam-hello --list-cameras` should list the camera. |
+| "Pi camera 0 is in use by another program" | Only one program can use a Pi camera. Close `rpicam-hello`, another VST, or a browser using it. |
 | A camera or stream job keeps logging "Reconnecting" | The source stopped sending pictures. VST keeps retrying every 30 s; check the camera's power, network and URL. Vehicles resume when it's back. |
 | Crash partway through an H.264 file | Likely cause: the 2016 loop trusted the container's frame count and read past the last real frame. VST now reads until the video ends. |
 | "unknown setting" or "can't read a value" | Typo in VST.cfg. The message gives the file and line number. |

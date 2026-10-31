@@ -33,7 +33,13 @@ const Preset kPresets[] = {
 	{ "USB webcam, e.g. Logitech C920 (1080p, 30 fps)", 70, 1920, 30, 250 },
 	{ "PoE IP camera, 2.8 mm lens (1080p, 30 fps)", 100, 1920, 30, 250 },
 	{ "PoE IP camera, 4 mm lens (1080p, 30 fps)", 80, 1920, 30, 250 },
-	{ "Raspberry Pi Global Shutter + 6 mm lens (60 fps)", 45, 1440, 60, 500 },
+	// Raspberry Pi cameras at VST's defaults (PiCamera.h): 1280x720 and a 1/1000 s shutter.  At that size Camera Module 3
+	// and v2 run a sensor mode that is a centre crop (3072 of 4608 and 1920 of 3280 pixels across), so their view is
+	// narrower than the lens's full 66 / 102 / 62 degrees.  The Global Shutter Camera uses its whole sensor.
+	{ "Raspberry Pi Global Shutter + 6 mm lens (60 fps)", 45, 1440, 60, 1000 },
+	{ "Raspberry Pi Camera Module 3 (720p, 60 fps)", 47, 1280, 60, 1000 },
+	{ "Raspberry Pi Camera Module 3 Wide (720p, 60 fps)", 79, 1280, 60, 1000 },
+	{ "Raspberry Pi Camera Module v2 (720p, 47 fps)", 39, 1280, 47, 1000 },
 	{ "720p camera at 60 fps, fixed shutter (short views)", 66, 1280, 60, 500 },
 	{ "Original VST camera: Foscam 720p, 30 fps", 70, 1280, 30, 250 },
 	{ "Custom", 0, 0, 0, 0 },
@@ -295,6 +301,12 @@ void App::sitePlanner() {
 	ImGui::PopTextWrapPos();
 	ImGui::SetNextItemWidth(-FLT_MIN);
 	prefs.planPreset = std::clamp(prefs.planPreset, 0, n - 1);
+	// Presets are saved by position, and new ones get inserted (the Pi cameras were); a saved choice whose numbers no
+	// longer match the preset now at that position is shown as Custom, keeping the numbers the user had.
+	const Preset& chosen = kPresets[prefs.planPreset];
+	if (chosen.hfov > 0 && (chosen.hfov != prefs.planHfov || chosen.width != prefs.planWidth || chosen.fps != prefs.planFps
+		|| chosen.shutter != prefs.planShutter))
+		prefs.planPreset = n - 1;
 	if (ImGui::BeginCombo("##preset", kPresets[prefs.planPreset].name)) {
 		for (int i = 0; i < n; i++)
 			if (ImGui::Selectable(kPresets[i].name, prefs.planPreset == i)) {
@@ -437,7 +449,7 @@ void App::pageGuide() {
 			"Somewhere that sees the street from the side. 20 ft of clear street is enough; more is better. You'll check it next.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g3", ICON_CAMERA, c::accent, "A camera, held still", "Step 3 · Connect the camera",
-			"A phone, webcam or IP camera at 720p or better and 25-30 fps (60 for a short view), on a window clamp or tripod.", ImVec2(cw, ch));
+			"A phone, webcam, IP or Raspberry Pi camera at 720p or better and 25-30 fps (60 for a short view), on a window clamp or tripod.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g4", ICON_VECTOR, c::warn, "A few minutes with the picture", "Step 4 · Mark your street",
 			"Drag a box around the moving lane and two lines to time between. Say which way a one-way street runs.", ImVec2(cw, ch));

@@ -231,6 +231,15 @@ private:
 	std::string sampleCache_;
 	char urlBuf_[512] = "rtsp://";
 	int cameraIndex_ = 0;
+	// Raspberry Pi cameras (PiCamera.h).  `rpicam-vid --list-cameras` takes a moment, so init() starts it in the
+	// background where rpicam-vid exists, and the camera card picks the result up when it's ready.  On a Pi with a
+	// camera found, the card's menu starts on it rather than on USB camera 0.
+	std::future<std::vector<picam::Camera>> piListing_;
+	std::vector<picam::Camera> piCams_;
+	bool piListed_ = false;
+	int piChoice_ = -1;                 // index into piCams_ when the menu is on a Pi camera, -1 for the USB camera
+	picam::Settings piSettings_;        // the Pi camera settings popup; made into the source name on Connect
+	void piCameraSettings();            // that popup's contents
 	char searchBuf_[64] = "";
 	bool logOpen_ = false;
 	std::string status_;
