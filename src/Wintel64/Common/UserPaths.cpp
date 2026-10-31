@@ -85,11 +85,15 @@ fs::path dataPath(const string& dataPathPrefix){
 //   <exe dir>/rel                          Windows zip / MSIX, macOS tarball (flat layout)
 //   <exe dir>/../share/videospeedtracker/  .deb (/usr/bin -> /usr/share) and other FHS prefixes
 //   <exe dir>/../Resources/                macOS .app bundle (Contents/MacOS -> Contents/Resources)
+//   <exe dir>/VSTStudio.app/Contents/Resources/
+//                                          macOS tarball's command-line tools: the sample and companion ship once,
+//                                          inside the VST Studio bundle beside them
 fs::path installedFile(const string& rel){
 	fs::path exe = executableDir();
 	if (exe.empty()) return {};
 	fs::path r = fs::path(rel).make_preferred();
-	for (const fs::path& candidate : { exe / r, exe / ".." / "share" / "videospeedtracker" / r, exe / ".." / "Resources" / r }){
+	for (const fs::path& candidate : { exe / r, exe / ".." / "share" / "videospeedtracker" / r, exe / ".." / "Resources" / r,
+		exe / "VSTStudio.app" / "Contents" / "Resources" / r }){
 		error_code ec;
 		if (fs::is_regular_file(candidate, ec)) return fs::weakly_canonical(candidate, ec);
 	}
