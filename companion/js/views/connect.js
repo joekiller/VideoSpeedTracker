@@ -32,6 +32,7 @@ export function render({ vst, view, start, probeResult }) {
       <div class="check"><b class="num" style="color:var(--accent)">2</b><p><b>Scan the QR code</b> it shows with this phone's camera. That opens the companion already paired.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">3</b><p><b>Add it to your home screen</b> so it opens like an app next time.</p></div>
     </div>
+    <p class="small muted" style="margin:4px 0 8px">Is this phone the camera? Pair a second phone or a tablet instead, or skip the companion: every step works in VST Studio on the computer.</p>
     <details style="margin-top:4px" ${tried ? 'open' : ''}><summary class="small muted">Can't scan? Enter it by hand</summary>
       <form class="card stack" id="manual" style="margin-top:4px">
         <label class="field"><span>Address shown under the QR code</span><input class="input" id="addr" inputmode="url" autocomplete="off" placeholder="192.168.1.20:8787" value="${vst.base.replace(/^https?:\/\//, '')}"></label>

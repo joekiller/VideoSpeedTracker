@@ -21,10 +21,12 @@ go before you mount anything.
 3. **Follow the five setup steps.** What you need, Pick your spot, Connect the camera, Mark your street and
    Calibrate, numbered the same in the side rail and across the top of each step. The header's main button always
    names the next step, then becomes Start tracking. No camera yet? Step 3 offers the bundled sample video, so you
-   can watch cars get measured first.
+   can watch cars get measured first. Not calibrated yet? Tracking still runs; speeds firm up once you calibrate.
 4. **Leave it running.** VST Studio reconnects to a camera that drops out and keeps video under a disk budget.
    It warns if the camera gets knocked out of line, and logs each day to `Stats/health.csv`.
-5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb.
+5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb. Phone busy being
+   the camera? Pair a second phone or a tablet, or skip it: every step works on the computer, and Calibrate can take
+   timed pictures while you stand the pole outside.
 6. **Make a street report** from Results when you have a week or two of data.
 
 Everything in VST Studio is described in [VST Studio](vst-studio.md). The rest of this guide covers the same
@@ -127,6 +129,11 @@ speed = CalibrationSpeed × CalibrationFrames × (video fps / CalibrationFPS) / 
 [VST Studio](vst-studio.md#5-calibrate) does all of this in step 5, Calibrate: pick your pass and the speed you drove,
 then **Check it with a second drive**, which shows the error and calls it **Verified** within ±2 mph. Every
 calibration and check it makes is appended to `calibration-history.csv` in the config folder, as that record.
+
+No car handy yet? **Cones or pole** on the same page calibrates from a measured distance instead: chalk two spots a
+taped distance apart along the lane, stand a cone on each or hold a pole upright on one and then the other, click
+(or, from the phone companion on the street, tap) each, and enter the distance. It's a good start and only as
+accurate as where the spots are, so check it with a drive past when you can.
 
 If a direction can't be calibrated, a rough value is the other direction's frame count scaled by how much shorter
 or longer the zone looks in that lane.

@@ -358,6 +358,38 @@ describe('calibration', () => {
     }
   });
 
+  it('distance: cones missing, too close or no distance is {ok:false, problems}', async () => {
+    for (const bad of [{}, { cones: [[300, 400]], feet: 10 }, { cones: [[300, 400], [320, 400]], feet: 10 }, { cones: [[300, 400], [900, 400]] },
+      { cones: [[300, 400], [900, 400]], feet: 10, dir: 'up' }]) {
+      const r = await api.post('/api/calibration/distance', bad);
+      assert.equal(r.status, 200, JSON.stringify(bad));
+      assert.equal(r.data.ok, false, JSON.stringify(bad));
+      assert.ok(r.data.problems.length > 0 && r.data.problems.every(isStr));
+    }
+    assertError(await api.post('/api/calibration/distance', 'not json'), 400, 'distance with a body that is not JSON');
+  });
+
+  it('distance sets CalibrationFrames from the cones and keeps CalibrationSpeed/FPS', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
+    const { data: before } = await api.get('/api/config');
+    try {
+      // Cones 300 px apart and 10 ft apart: the zone is (speedLineRight - speedLineLeft) / 300 x 10 ft.
+      const r = await api.post('/api/calibration/distance', { cones: [[400, 450], [700, 450]], feet: 10, dir: 'L2R' });
+      assert.equal(r.status, 200);
+      assert.equal(r.data.ok, true, JSON.stringify(r.data.problems));
+      const zoneFeet = (before.speedLineRight - before.speedLineLeft) / 300 * 10;
+      const frames = zoneFeet / (before.CalibrationSpeed * 5280 / 3600) * before.CalibrationFPS;
+      assert.ok(Math.abs(r.data.zoneFeet - zoneFeet) <= 0.05 + 1e-9, `zoneFeet ${r.data.zoneFeet} vs ${zoneFeet}`);
+      assert.ok(Math.abs(r.data.frames - frames) <= 0.05 + 1e-9, `frames ${r.data.frames} vs ${frames}`);
+      assert.equal(r.data.config.CalibrationFramesL2R, Math.max(1, Math.round(frames)));
+      assert.equal(r.data.config.CalibrationFramesR2L, before.CalibrationFramesR2L);
+      assert.equal(r.data.config.CalibrationSpeed, before.CalibrationSpeed);
+      assert.equal(r.data.config.CalibrationFPS, before.CalibrationFPS);
+    } finally {
+      await api.put('/api/config', { CalibrationFramesL2R: before.CalibrationFramesL2R });
+    }
+  });
+
   it('apply from a vehicle that is gone is {ok:false, problems}', async () => {
     const a = await api.post('/api/calibration/apply', { dir: 'L2R', speed: 25, vehicleId: 987654321 });
     assert.equal(a.status, 200);

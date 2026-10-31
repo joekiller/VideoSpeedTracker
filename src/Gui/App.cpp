@@ -30,7 +30,7 @@ static ImTextureID tid(Texture& t) { return (ImTextureID)(intptr_t)t.imguiId(); 
 // table, so the rail, the stepper, the page headers and the Next buttons can't drift apart.
 const FlowStep kFlow[kFlowSteps] = {
 	{ "What you need", ICON_FLAG, "Everything you need to measure traffic on your street, in the order you'll use it", Page::Guide, 0 },
-	{ "Pick your spot", ICON_LOCATE, "Check that your window sees enough street before you buy or mount anything", Page::Guide, 1 },
+	{ "Pick your spot", ICON_LOCATE, "See what your window can measure, before you buy or mount anything", Page::Guide, 1 },
 	{ "Connect the camera", ICON_CAMERA, "A phone or USB camera, a network camera, or video you've already recorded", Page::Source, -1 },
 	{ "Mark your street", ICON_VECTOR, "Drag the lines on the picture; the tracker only looks inside the box", Page::Zones, -1 },
 	{ "Calibrate", ICON_RULER, "Teach VST how long a car at a known speed takes to cross the zone", Page::Calibrate, -1 },
@@ -315,6 +315,31 @@ void App::averageCalibration(const CalCheck& check) {
 	lastCheck_ = CalCheck();
 	toast(std::string("Averaged ") + (check.l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
 		+ std::to_string(int(g.CalibrationSpeed)) + " mph. Check it once more.", c::ok, ICON_CHECK_CIRCLE);
+}
+
+void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD) {
+	Globals& g = cfg.g;
+	int calFrames = std::max(1, int(std::lround(calFramesD)));
+	if (calFramesD <= 0 || (!l2r && !r2l)) return;
+	for (int d = 0; d < 2; d++) {
+		bool dirL2R = d == 0;
+		if (!(dirL2R ? l2r : r2l)) continue;
+		(dirL2R ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
+		// The history format has no column for the method; the row reads as the pass the measurement stands for, a
+		// car at CalibrationSpeed taking CalibrationFrames frames at CalibrationFPS.
+		CalEvent e;
+		e.l2r = dirL2R;
+		e.drivenMph = g.CalibrationSpeed;
+		e.frames = calFrames;
+		e.fps = g.CalibrationFPS;
+		e.calFrames = calFrames;
+		recordCalibration(e);
+		if (lastCheck_.l2r == dirL2R) lastCheck_ = CalCheck();
+	}
+	prefs.calibratedFor = cfg.path();
+	calibAppliedId_ = 0;
+	toast("Calibrated from the measured spots: " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
+		+ " mph. Check it with one drive past.", c::ok, ICON_CHECK_CIRCLE);
 }
 
 // Appends a calibration event to calibration-history.csv and to the in-memory copy the page reads.  The
@@ -727,7 +752,7 @@ void App::drawHeader(float w) {
 		runText = std::string(here > nextStep ? "Back to: " : "Next: ") + kFlow[nextStep].name + "  " + (here > nextStep ? ICON_ARROW_LEFT : ICON_ARROW_RIGHT);
 	const char* runLabel = runText.c_str();
 	bool calNag = !run && nextStep < 0 && !calibrationDone() && page != Page::Calibrate;
-	const char* calText = ICON_GAUGE "  Not calibrated";
+	const char* calText = ICON_GAUGE "  Not calibrated yet";
 	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
 	float pauseW = run ? ImGui::GetFrameHeight() + px(10) : 0;
@@ -765,7 +790,7 @@ void App::drawHeader(float w) {
 	if (calNag) {
 		ImGui::SetCursorPos(ImVec2(right - bw - pauseW - cs.x - calSize.x - px(24), (hh - calSize.y) * .5f));
 		pill(calText, c::warn, alpha(c::warn, .14f), fonts.body);
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Speeds use the calibration in %s, which wasn't made for this camera.\nClick to calibrate with one drive past.",
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Speeds use the calibration in %s, which wasn't made for this camera.\nClick to calibrate: one drive past, or no car at all with cones or a pole.",
 			cfg.path().empty() ? "VST.cfg" : fs::path(cfg.path()).filename().string().c_str());
 		if (ImGui::IsItemClicked()) page = Page::Calibrate;
 	}
@@ -965,9 +990,9 @@ void App::pageSource() {
 			ImGui::TextUnformatted(good ? okText : badText);
 			ImGui::PopTextWrapPos();
 		};
-		check(in.height >= 720, "HD or better: plenty of detail", "Below 720p: bumpers get blurry; 1280×720 or better is best");
+		check(in.height >= 720, "HD or better: plenty of detail", "Below 720p: it works, with a little less detail; 1280×720 or better sharpens the bumpers");
 		if (in.kind == SourceInfo::Image) check(false, "", "A still photo: use it to plan zones; tracking needs video");
-		else check(in.fps == 0 || in.fps >= 24, "Frame rate is good for timing", "Under 24 fps: fast cars jump too far between frames");
+		else check(in.fps == 0 || in.fps >= 24, "Frame rate is good for timing", "Under 24 fps: everyday speeds time fine; the very fastest cars may cross too quickly");
 	}
 	else if (!player.error.empty()) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad));
@@ -1367,6 +1392,22 @@ void App::dashcamSpeed(const Vehicle* picked) {
 void App::pageCalibrate() {
 	flowStepper();
 	Globals& g = cfg.g;
+	// The timed pictures for marking spots alone: each is a copy of the camera's frame at its moment.  Once both are
+	// taken the canvas shows the first and the next click marks spot 1 on it.
+	if (coneTimerAt_ >= 0 && player.isOpen()) {
+		double t = now() - coneTimerAt_;
+		for (int i = 0; i < 2; i++)
+			if (coneShot_[i].empty() && t >= kConeFirstS + i * kConeGapS) coneShot_[i] = player.frame().clone();
+		if (!coneShot_[1].empty()) {
+			coneTimerAt_ = -1;
+			coneView_ = 0;
+			conePlacing_ = 0;
+			coneX_[0] = coneX_[1] = coneY_[0] = coneY_[1] = -1;
+			toast("Both pictures taken. Click the pole in each one to mark spots 1 and 2.", c::ok, ICON_CHECK);
+		}
+	}
+	bool coneShots = !coneShot_[0].empty() && !coneShot_[1].empty();
+	if (!coneShots || calibMode_ != 2) coneView_ = -1;
 	float avail = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
 	float sideW = px(400);
 	float canvasW = avail - sideW - px(20);
@@ -1375,7 +1416,10 @@ void App::pageCalibrate() {
 	ImGui::BeginGroup();
 	float canvasH = std::min(availH - barH - px(10), canvasW * 9 / 16);
 	ImGui::BeginChild("ccanvas", ImVec2(canvasW, canvasH), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-	View v = drawFrame(player.isOpen() ? player.texture().imguiId() : nullptr, ImGui::GetContentRegionAvail(), "Open the video of your calibration drive");
+	// In the cones-or-pole mode the canvas can show one of the timed pictures instead of the camera.
+	if (coneView_ >= 0 && coneTexOf_ != coneView_) { coneTex_.update(coneShot_[coneView_]); coneTexOf_ = coneView_; }
+	void* tex = coneView_ >= 0 ? coneTex_.imguiId() : player.isOpen() ? player.texture().imguiId() : nullptr;
+	View v = drawFrame(tex, ImGui::GetContentRegionAvail(), "Open a video or connect the camera (step 3)");
 	OverlayStyle st;
 	st.opacity = .75f;
 	st.dimOutside = false;
@@ -1394,6 +1438,51 @@ void App::pageCalibrate() {
 		ImVec2 tp(std::clamp(a.x - ts.x * .5f, v.origin.x + px(8), v.origin.x + v.size.x - ts.x - px(20)), a.y - ts.y - px(16));
 		dl->AddRectFilled(tp, tp + ts + ImVec2(px(16), px(10)), c::warn, px(6));
 		dl->AddText(fonts.strong, fsz(fonts.strong), tp + ImVec2(px(8), px(5)), c::bg0, t.c_str());
+	}
+	// Two-cone mode: the cones marked so far, and the click that places the next one.
+	if (calibMode_ == 2 && player.isOpen()) {
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		float top = float(g.AnalysisBoxTop) - 30, bottom = float(g.AnalysisBoxTop + g.AnalysisBoxHeight) + 30;
+		for (int i = 0; i < 2; i++) {
+			if (coneX_[i] < 0) continue;
+			ImVec2 a = v.at(coneX_[i], top), b = v.at(coneX_[i], bottom), base = v.at(coneX_[i], coneY_[i]);
+			dl->AddLine(a, b, alpha(c::warn, .8f), px(2));
+			dl->AddTriangleFilled(base + ImVec2(0, -px(16)), base + ImVec2(-px(8), 0), base + ImVec2(px(8), 0), c::warn);
+			std::string t = "Spot " + std::to_string(i + 1);
+			dl->AddText(fonts.strong, fsz(fonts.strong), a + ImVec2(px(6), 0), c::warn, t.c_str());
+		}
+		if (coneX_[0] >= 0 && coneX_[1] >= 0) {
+			ImVec2 a = v.at(coneX_[0], coneY_[0]), b = v.at(coneX_[1], coneY_[0]);
+			dl->AddLine(a + ImVec2(0, px(8)), b + ImVec2(0, px(8)), c::warn, px(2));
+		}
+		if (coneTimerAt_ >= 0) {
+			// Big enough to read from across the room on the way out.
+			double t = now() - coneTimerAt_;
+			int which = coneShot_[0].empty() ? 0 : 1;
+			int left = int(std::ceil(kConeFirstS + which * kConeGapS - t));
+			std::string s = "Picture of spot " + std::to_string(which + 1) + " in " + std::to_string(std::max(left, 0)) + " s";
+			ImVec2 ts = fonts.title->CalcTextSizeA(fsz(fonts.title), FLT_MAX, 0, s.c_str());
+			ImVec2 tp = v.origin + ImVec2((v.size.x - ts.x) * .5f, px(16));
+			dl->AddRectFilled(tp - ImVec2(px(12), px(8)), tp + ts + ImVec2(px(12), px(8)), alpha(c::bg0, .85f), px(8));
+			dl->AddText(fonts.title, fsz(fonts.title), tp, c::warn, s.c_str());
+		}
+		if (conePlacing_ >= 0) {
+			ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+			std::string t = "Click the cone or pole at spot " + std::to_string(conePlacing_ + 1);
+			ImVec2 ts = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t.c_str());
+			ImVec2 tp = v.origin + ImVec2((v.size.x - ts.x) * .5f, px(12));
+			dl->AddRectFilled(tp - ImVec2(px(8), px(5)), tp + ts + ImVec2(px(8), px(5)), c::warn, px(6));
+			dl->AddText(fonts.strong, fsz(fonts.strong), tp, c::bg0, t.c_str());
+			ImVec2 m = ImGui::GetMousePos();
+			bool inside = m.x >= v.origin.x && m.y >= v.origin.y && m.x < v.origin.x + v.size.x && m.y < v.origin.y + v.size.y;
+			if (inside && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0)) {
+				ImVec2 f = v.frame(m);
+				coneX_[conePlacing_] = f.x;
+				coneY_[conePlacing_] = f.y;
+				conePlacing_ = coneX_[1 - conePlacing_] < 0 ? 1 - conePlacing_ : -1;   // straight on to the other cone
+				if (coneShots && conePlacing_ >= 0) coneView_ = conePlacing_;          // on its own picture
+			}
+		}
 	}
 	ImGui::EndChild();
 
@@ -1434,7 +1523,7 @@ void App::pageCalibrate() {
 	else {
 		beginCard("how", ICON_INFO, "How VST turns frames into speed", ImVec2(canvasW, 0));
 		ImGui::PushTextWrapPos(0);
-		dimText("VST never measures feet. It counts the frames a front bumper takes to get from one white line to the other and "
+		dimText("While tracking, VST doesn't measure feet. It counts the frames a front bumper takes to get from one white line to the other and "
 			"compares that with your calibration pass:");
 		ImGui::PopTextWrapPos();
 		ImGui::PushFont(fonts.strong);
@@ -1447,8 +1536,10 @@ void App::pageCalibrate() {
 
 	ImGui::SameLine(0, px(20));
 	ImGui::BeginChild("cside", ImVec2(sideW, availH));
-	static const char* const modes[] = { "Drive-through", "Count frames" };
-	segmented("cmode", &calibMode_, modes, 2);
+	static const char* const modes[] = { "Drive-through", "Count frames", "Cones or pole" };
+	segmented("cmode", &calibMode_, modes, 3);
+	if (calibMode_ != 2) conePlacing_ = -1;
+	if (calibMode_ == 2) calibChecking_ = false;   // a check is always a pass, on the other two modes
 	ImGui::Dummy(ImVec2(0, px(4)));
 
 	// The check pass reuses the calibration controls (the pass list or the frame marks, and the speed you drove):
@@ -1476,21 +1567,23 @@ void App::pageCalibrate() {
 		return nullptr;
 	};
 
+	// A numbered step: the number in a tinted circle, the text wrapped beside it.
+	auto stepLine = [&](int n, const char* text) {
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		ImVec2 p = ImGui::GetCursorScreenPos();
+		dl->AddCircleFilled(p + ImVec2(px(11), px(11)), px(11), alpha(c::accent, .2f));
+		std::string s = std::to_string(n);
+		ImVec2 ts = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, s.c_str());
+		dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(11), px(11)) - ts * .5f, c::accent, s.c_str());
+		ImGui::SetCursorScreenPos(p + ImVec2(px(32), 0));
+		ImGui::PushTextWrapPos(0);
+		ImGui::TextUnformatted(text);
+		ImGui::PopTextWrapPos();
+		ImGui::Dummy(ImVec2(0, px(2)));
+	};
+
 	if (calibMode_ == 0) {
 		beginCard("drive", calibChecking_ ? ICON_BULLSEYE : ICON_CAR, calibChecking_ ? "Check it with a second drive" : "Drive through at a known speed");
-		auto stepLine = [&](int n, const char* text) {
-			ImDrawList* dl = ImGui::GetWindowDrawList();
-			ImVec2 p = ImGui::GetCursorScreenPos();
-			dl->AddCircleFilled(p + ImVec2(px(11), px(11)), px(11), alpha(c::accent, .2f));
-			std::string s = std::to_string(n);
-			ImVec2 ts = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, s.c_str());
-			dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(11), px(11)) - ts * .5f, c::accent, s.c_str());
-			ImGui::SetCursorScreenPos(p + ImVec2(px(32), 0));
-			ImGui::PushTextWrapPos(0);
-			ImGui::TextUnformatted(text);
-			ImGui::PopTextWrapPos();
-			ImGui::Dummy(ImVec2(0, px(2)));
-		};
 		if (calibChecking_) {
 			stepLine(1, "Drive past again on cruise control, ideally at a different speed from your first pass.");
 			stepLine(2, "Pick that pass and enter the speed you drove. Within ±2 mph is verified.");
@@ -1539,6 +1632,102 @@ void App::pageCalibrate() {
 			ImGui::EndDisabled();
 		}
 		checkOffer();
+		endCard();
+	}
+	else if (calibMode_ == 2) {
+		// No car needed: the zone's length from two cones a taped distance apart.  It's only as good as where the cones
+		// stand (the cars' near side, at the lane's depth), so it counts as a rough start until a drive past checks it.
+		beginCard("cones", ICON_RULER, "Two spots a measured distance apart");
+		stepLine(1, "Chalk two spots 10 ft or more apart along the lane, where cars' near wheels run, near the two white lines. "
+			"Stand a cone on each, or have one person hold a pole (or a broom) upright on one spot, then the other.");
+		stepLine(2, "With no car in the way, mark each spot on the picture, here or on the phone companion from the street. "
+			"Any point on an upright pole will do, so it works even where the road surface is hidden.");
+		stepLine(3, "Enter the distance and apply. Then check it with one drive past.");
+		ImGui::Dummy(ImVec2(0, px(4)));
+		// On your own, or with the phone busy being the camera: two timed pictures (live cameras), or the recording.
+		bool live = player.isOpen() && (player.info().kind == SourceInfo::Camera || player.info().kind == SourceInfo::Stream);
+		if (live && coneTimerAt_ < 0) {
+			if (ghostButton(ICON_STOPWATCH "  On your own? Take two timed pictures", ImVec2(-FLT_MIN, 0))) {
+				coneShot_[0].release();
+				coneShot_[1].release();
+				coneTimerAt_ = now();
+				coneTexOf_ = -1;
+				conePlacing_ = -1;
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Press it, walk out, and hold the pole upright on spot 1 for the first picture (%.0f s from now),\n"
+					"then on spot 2 for the second (%.0f s after that). Come back and click the pole in each picture.", kConeFirstS, kConeGapS);
+		}
+		else if (live) {
+			ImGui::PushTextWrapPos(0);
+			dimText(ICON_STOPWATCH "  Hold the pole on spot 1 for the first picture, then on spot 2 for the second, %.0f s later.", kConeGapS);
+			ImGui::PopTextWrapPos();
+			if (ImGui::SmallButton("Cancel the timer")) coneTimerAt_ = -1;
+		}
+		else if (player.isOpen() && player.seekable()) {
+			ImGui::PushTextWrapPos(0);
+			dimText(ICON_FILM "  A recording works too: step to where the pole stands on spot 1 and mark it, then to spot 2.");
+			ImGui::PopTextWrapPos();
+		}
+		if (coneShots) {
+			static const char* const views[] = { "Camera", "Spot 1 picture", "Spot 2 picture" };
+			int sel = coneView_ + 1;
+			if (segmented("coneview", &sel, views, 3)) coneView_ = sel - 1;
+		}
+		float bw = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
+		ImGui::BeginDisabled(!player.isOpen() && !coneShots);
+		for (int i = 0; i < 2; i++) {
+			if (i) ImGui::SameLine(0, px(10));
+			std::string label = std::string(conePlacing_ == i ? ICON_CROSSHAIRS "  Click the picture" : ICON_FLAG "  Mark spot ")
+				+ (conePlacing_ == i ? "" : std::to_string(i + 1)) + "##cone" + std::to_string(i);
+			if (conePlacing_ == i ? primaryButton(label.c_str(), ImVec2(bw, 0)) : ghostButton(label.c_str(), ImVec2(bw, 0))) {
+				conePlacing_ = conePlacing_ == i ? -1 : i;
+				if (coneShots && conePlacing_ >= 0) coneView_ = conePlacing_;
+			}
+		}
+		ImGui::EndDisabled();
+		auto coneText = [&](int i) { return coneX_[i] < 0 ? std::string("not marked") : "x " + std::to_string(int(std::lround(coneX_[i]))); };
+		dimText("Spot 1: %s    Spot 2: %s", coneText(0).c_str(), coneText(1).c_str());
+		formLabel("Spots apart (ft)", px(130));
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		ImGui::InputDouble("##coneft", &coneFt_, .5, 1, "%.1f");
+		coneFt_ = std::clamp(coneFt_, 0.0, 500.0);
+		static const char* const coneDirs[] = { "Both ways", "→ only", "← only" };
+		segmented("conedir", &coneDir_, coneDirs, 3);
+		if (coneDir_ == 0 && g.LegalDirection == "Both") {
+			ImGui::PushTextWrapPos(0);
+			dimText(ICON_INFO "  On a two-way street each lane is a different distance from the camera. Mark spots in one lane, "
+				"apply that direction, then do the other lane.");
+			ImGui::PopTextWrapPos();
+		}
+		double markPx = (coneX_[0] >= 0 && coneX_[1] >= 0) ? std::fabs(coneX_[1] - coneX_[0]) : 0;
+		double zonePx = g.speedLineRight - g.speedLineLeft;
+		double framesD = calib::framesForDistance(markPx, coneFt_, zonePx, g.CalibrationSpeed, g.CalibrationFPS);
+		bool tooClose = markPx > 0 && markPx < 40;
+		if (framesD > 0 && !tooClose) {
+			double zoneFt = zonePx / markPx * coneFt_;
+			int rounded = std::max(1, int(std::lround(framesD)));
+			ImGui::PushFont(fonts.stat);
+			ImGui::Text("%.1f ft zone", zoneFt);
+			ImGui::PopFont();
+			ImGui::PushTextWrapPos(0);
+			dimText("A car at %.0f mph crosses it in %.1f frames at %.0f fps, saved as %d (%.1f%% from rounding).", g.CalibrationSpeed,
+				framesD, g.CalibrationFPS, rounded, std::fabs(rounded - framesD) / framesD * 100);
+			ImGui::PopTextWrapPos();
+		}
+		else if (tooClose) dimText(ICON_WARN "  The two spots are too close together on the picture. Space them further apart.");
+		ImGui::BeginDisabled(framesD <= 0 || tooClose);
+		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD);
+		ImGui::EndDisabled();
+		if (ImGui::SmallButton("Clear spots")) { coneX_[0] = coneX_[1] = coneY_[0] = coneY_[1] = -1; conePlacing_ = -1; }
+		if (anyCalibrated) {
+			ImGui::Dummy(ImVec2(0, px(2)));
+			if (ghostButton(ICON_BULLSEYE "  Check it with a drive past", ImVec2(-FLT_MIN, 0))) {
+				calibMode_ = 0;
+				calibChecking_ = true;
+				calibPickId_ = 0;
+			}
+		}
 		endCard();
 	}
 	else {
@@ -2417,7 +2606,8 @@ void App::pageCompanion() {
 
 	beginCard("remote", ICON_BROADCAST, "Remote companion", ImVec2(leftW, 0));
 	dimText("Open VST on your phone to check the camera's aim, help with calibration from the street, and see recent speeders, "
-		"while this computer keeps tracking. Your phone needs to be on the same Wi-Fi network.");
+		"while this computer keeps tracking. Your phone needs to be on the same Wi-Fi network. Is your phone the camera? Pair a second "
+		"phone or a tablet, or skip this: every step works from this computer, and Calibrate can take timed pictures while you're outside.");
 	ImGui::Dummy(ImVec2(0, px(4)));
 	bool want = on;
 	if (ImGui::Checkbox("Allow the companion app to connect", &want)) setRemote(want);

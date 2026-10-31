@@ -220,8 +220,8 @@ void App::shortViewNote(double coverM, bool on) {
 	ImGui::PushTextWrapPos(0);
 	if (on) dimText(ICON_CHECK "  Short-view timing is on: VST times each car's front bumper to a fraction of a frame, so it doesn't need a whole car in view.");
 	else {
-		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
-		ImGui::TextWrapped(ICON_INFO "  This is a short view. It needs short-view timing, which times each car's front bumper to a fraction of a frame instead of whole frames.");
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::accent));
+		ImGui::TextWrapped(ICON_INFO "  A short view like this is what short-view timing is for: it times each car's front bumper to a fraction of a frame. One click sets it up.");
 		ImGui::PopStyleColor();
 	}
 	ImGui::PopTextWrapPos();
@@ -349,12 +349,12 @@ void App::sitePlanner() {
 	bool tooFew = shortView && r.samples < kMinSamples;
 	int verdict = r.zone <= 0 || tooFew ? 2 : grade(r.total, 1.5, 3);
 	beginCard("planout", nullptr, nullptr, ImVec2(outW, 0));
-	const char* vtext[] = { "Workable", "Marginal", "Not enough room" };
+	const char* vtext[] = { "Good to go", "Works, a bit rougher", "Needs a tweak" };
 	linePill(vtext[verdict], c::bg0, gradeColor(verdict), fonts.strong);
 	ImGui::SameLine();
 	ImGui::AlignTextToFramePadding();
-	if (r.zone <= 0) ImGui::TextUnformatted("Less than a couple of feet of street is in view. Move back, or use a wider lens.");
-	else if (tooFew) ImGui::Text("At %d mph a car crosses the %.0f ft zone in %.0f frames, too few to time. Use a 60 fps camera, or see more of the street.", check, r.zone * 3.281, r.frames);
+	if (r.zone <= 0) ImGui::TextUnformatted("Only a couple of feet of street fit in the picture. Set the camera further back or zoom out, and it will fit.");
+	else if (tooFew) ImGui::Text("A car at %d mph crosses the %.0f ft zone in %.0f frames. Slower cars still time fine; a 60 fps camera or a little more street times this one too.", check, r.zone * 3.281, r.frames);
 	else ImGui::Text("About ±%.1f mph at %d mph, over a %.0f ft zone.", r.total, check, r.zone * 3.281);
 	if (shortView && r.zone > 0) {
 		// The fastest car this view can time, and what 60 fps would make of it: the spec a short view is bought on.
@@ -411,7 +411,7 @@ void App::sitePlanner() {
 			ImGui::TableNextColumn(); ImGui::TextColored(v4(speedColor(mph, prefs.speedLimit, prefs.egregious)), "%d mph", mph);
 			ImGui::TableNextColumn(); ImGui::Text("%.0f", shortView ? e.samples : e.frames);
 			if (!std::isfinite(e.total)) {
-				ImGui::TableNextColumn(); ImGui::TextColored(v4(c::bad), "too fast");
+				ImGui::TableNextColumn(); ImGui::TextColored(v4(c::warn), "past this view");
 				ImGui::TableNextColumn(); ImGui::TableNextColumn();
 				ImGui::TableNextColumn(); ImGui::Text("%.0f px", e.blurPx);
 				continue;
@@ -433,7 +433,7 @@ void App::aimCard(float width) {
 	beginCard("aim", ICON_CROSSHAIRS, "Aim it like this", ImVec2(width, 0));
 	aimSketch(ImVec2(ImGui::GetContentRegionAvail().x, px(220)));
 	bullet(ICON_ARROWS_LR, c::accent2, "Street across the middle", "Point straight across the street. Lenses distort near the edges, so keep the lanes in the middle third of the picture.");
-	bullet(ICON_LOCATE, c::accent2, "Hold it still", "A window clamp or tripod. Once the street is marked, even a small bump means marking it and calibrating again.");
+	bullet(ICON_LOCATE, c::accent2, "Hold it still", "A window clamp or tripod. If it does get bumped, VST notices the view moved and says so; marking the street again takes a minute.");
 	bullet(ICON_SUN, c::accent2, "Mind the glare", "Avoid pointing into the sun, and put the lens right against the glass (a dark cloth around it kills reflections).");
 	endCard();
 }
@@ -457,20 +457,21 @@ void App::pageGuide() {
 		ImGui::TextUnformatted("Measure the traffic on your street");
 		ImGui::PopFont();
 		lead("VST times every car that passes between two lines on your video and works out its speed. Setting it up takes "
-			"about half an hour, in five steps. Here is what each one needs. Nothing leaves your computer.");
+			"about half an hour, in five steps. Here is what each one needs. Nothing leaves your computer. Whatever camera you have is a fine "
+			"place to start, and every step has a way through if something isn't to hand yet.");
 		// One card per later step, in step order, each naming its step, so the list reads as the plan.
 		float cw = (avail - px(48)) / 4, ch = px(222);
 		gearCard("g2", ICON_LOCATE, c::accent2, "A window on the street", "Step 2 · Pick your spot",
-			"Somewhere that sees the street from the side. 15 ft of clear street is enough; more is better. You'll check it next.", ImVec2(cw, ch));
+			"Somewhere that sees the street from the side. About 14 ft of clear street is enough; more lets it time faster cars. You'll check it next.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g3", ICON_CAMERA, c::accent, "A camera, held still", "Step 3 · Connect the camera",
-			"A phone, webcam or IP camera at 720p or better and 25-30 fps (60 for a short view), on a window clamp or tripod.", ImVec2(cw, ch));
+			"Whatever you have: a phone, webcam or IP camera, on a window clamp or tripod. 30 fps is fine; 60 fps times faster cars on a short view.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g4", ICON_VECTOR, c::warn, "A few minutes with the picture", "Step 4 · Mark your street",
 			"Drag a box around the moving lane and two lines to time between. Say which way a one-way street runs.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g5", ICON_CAR, c::l2r, "One drive past", "Step 5 · Calibrate",
-			"You or a friend drive past at a known speed: on cruise control, or at any steady speed with a Tesla or VST Ride-along recording.", ImVec2(cw, ch));
+			"You or a friend drive past at a known speed: on cruise control, or with a Tesla or VST Ride-along recording. No car yet? A pole or two cones, a taped distance apart.", ImVec2(cw, ch));
 		ImGui::Dummy(ImVec2(0, px(8)));
 		beginCard("need2", ICON_CHECK_CIRCLE, "What makes a good setup", ImVec2(avail, 0));
 		float half = (ImGui::GetContentRegionAvail().x - px(20)) * .5f;
