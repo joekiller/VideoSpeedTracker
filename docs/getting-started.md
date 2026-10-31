@@ -21,10 +21,12 @@ go before you mount anything.
 3. **Follow the five setup steps.** What you need, Pick your spot, Connect the camera, Mark your street and
    Calibrate, numbered the same in the side rail and across the top of each step. The header's main button always
    names the next step, then becomes Start tracking. No camera yet? Step 3 offers the bundled sample video, so you
-   can watch cars get measured first.
+   can watch cars get measured first. Not calibrated yet? Tracking still runs; speeds firm up once you calibrate.
 4. **Leave it running.** VST Studio reconnects to a camera that drops out and keeps video under a disk budget.
    It warns if the camera gets knocked out of line, and logs each day to `Stats/health.csv`.
-5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb.
+5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb. Phone busy being
+   the camera? Pair a second phone or a tablet, or skip it: every step works on the computer, and Calibrate can take
+   timed pictures while you stand the pole outside.
 6. **Make a street report** from Results when you have a week or two of data.
 
 Everything in VST Studio is described in [VST Studio](vst-studio.md). The rest of this guide covers the same

@@ -160,6 +160,16 @@ public:
 	int conePlacing_ = -1;
 	double coneFt_ = 10;
 	int coneDir_ = 0;
+	// The same alone, with one pole and nobody at the computer (or the phone busy being the camera): timed pictures.
+	// Start the timer, walk out, hold the pole on spot 1 for the first picture (kConeFirstS after the start) and on
+	// spot 2 for the second (kConeGapS later), then come back and click the pole in each picture.  coneTimerAt_ is
+	// now() at the start (-1 = no timer); coneView_ is the picture the Calibrate canvas shows (-1 = the camera itself),
+	// coneTexOf_ the one uploaded to coneTex_.
+	static constexpr double kConeFirstS = 30, kConeGapS = 20;
+	cv::Mat coneShot_[2];
+	double coneTimerAt_ = -1;
+	int coneView_ = -1, coneTexOf_ = -1;
+	Texture coneTex_;
 	std::unique_ptr<Server> server;
 	bool screenshotMode = false;        // documentation captures (main.cpp --shots)
 	bool persist = true;                // save preferences on exit

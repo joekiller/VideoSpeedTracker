@@ -59,16 +59,16 @@ function spot({ vst, body, cfg, st, n }) {
     <h3>A good view has</h3>
     <div class="card">
       <div class="check">${icon('compass')}<p><b>The street crossing the picture side to side.</b> Aim straight across, not up or down the road; a window above street level is ideal.</p></div>
-      <div class="check">${icon('ruler')}<p><b>About 100 feet of road in view.</b> A car at the limit should take at least a second to cross the middle of the picture. A narrow street with only 15 ft or so in view works too, with short-view timing from VST Studio's site planner.</p></div>
-      <div class="check">${icon('camera')}<p><b>A steady 720p or 1080p picture at 30 fps.</b> Any webcam, a phone in webcam mode, or an IP camera (RTSP) works. Mount it so it can't shift.</p></div>
+      <div class="check">${icon('ruler')}<p><b>Any clear stretch of road from about 14 ft.</b> A narrow street seen from a front window works, with short-view timing (one click in VST Studio's site planner). More road lets it time faster cars.</p></div>
+      <div class="check">${icon('camera')}<p><b>Whatever camera you have, held still.</b> A webcam, a phone in webcam mode or an IP camera all work; 720p at 30 fps is plenty to start. A clamp or tripod keeps it from shifting.</p></div>
       <div class="check">${icon('sparkle')}<p><b>Little in the way.</b> A post or tree trunk is fine (you'll mark it), but avoid glare: put the lens against the glass and turn off room lights at night.</p></div>
     </div>
-    <div class="callout ${good ? '' : 'warn'}" style="margin-top:12px">${icon(good ? 'check' : 'warn')}
+    <div class="callout" style="margin-top:12px">${icon(good ? 'check' : 'info')}
       <p>${short
         ? html`Short-view timing is on, so VST times each car to a fraction of a frame and a short speed zone is fine.`
         : good
         ? html`With the current calibration a car at ${st.speedLimit} mph spends <b>${secs.toFixed(1)} s</b> in the speed zone. That is enough for a reliable reading.`
-        : html`A car at ${st.speedLimit} mph spends only <b>${secs.toFixed(1)} s</b> in the speed zone. Widen the zone in the next step, or move the camera further back, so it is at least 1 s.`}</p></div>
+        : html`A car at ${st.speedLimit} mph spends <b>${secs.toFixed(1)} s</b> in the speed zone, which is short for whole-frame timing. That's fine: turn on short-view timing in VST Studio's site planner (step 2, one click), or widen the zone in the next step.`}</p></div>
     ${nav(n, 'Looks good')}`.__html;
   $('#refresh').onclick = () => { $('#frame').src = vst.frameUrl(); };
 }

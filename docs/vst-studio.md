@@ -115,6 +115,11 @@ can turn into one.
   The phone companion has the same step (Setup › Calibration drive › *No car handy?*), so you can stand on the
   street with the phone on your Wi-Fi, see yourself and the pole on the live picture, tap it and apply there.
 
+  On your own, or with the phone busy being the camera, **Take two timed pictures**: press it, walk out, and hold
+  the pole on spot 1 for the first picture (30 s later) and on spot 2 for the second (20 s after that). A countdown on
+  the picture says which is next. Back at the computer, click the pole in each picture. With a recorded video instead
+  of a live camera, step to where the pole stands on each spot and mark it there.
+
 ![Cones or pole](images/studio/07d-calibrate-cones.jpg)
 
 All three keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
