@@ -99,9 +99,23 @@ that replaces `VST.cfg` in one step, so a crash or power cut can't leave it half
 **Your street** sets the compass direction of each lane and whether the street is one-way. On a one-way street
 VST flags every vehicle going the other way: the lane on the picture turns red, the run shows an alert, and the
 results count wrong-way drivers. This is the `LegalDirection` key in `VST.cfg` (`Both`, `L2R`, `R2L`, or the
-compass label of one direction, such as `NE`); the command line prints a `WRONG WAY` line for each.
+compass label of one direction, such as `NE`); the command line prints a `WRONG WAY` line for each. A one-way
+street has a single lane, so the picture shows one lane line with chevrons pointing the legal way, and dragging it
+sets both `L2RStreetY` and `R2LStreetY` (a wrong-way car drives in the same lane).
+
+**Level the picture** is for a camera that isn't mounted quite level. Cars are tracked along a lane line that runs
+straight across the picture, so if the camera is rolled a few degrees, cars drift off it from one side to the other.
+Drag the slider while the reference rows are on the picture, or press **Use the curb**, drag the two dots onto
+the curb, a lane stripe or the bottom of a fence, and press **Level it**. The tracker then turns
+every frame the same way before it looks at it (`levelDegrees` in `VST.cfg`, up to 15° either way; positive turns
+the picture counter-clockwise), and the preview shows the turned picture so the lines you draw land on the same
+pixels. Level first, then mark the lines and calibrate: a new angle moves the street under them. Aiming the camera
+along the street at an angle (yaw) or looking down at it (pitch) needs no fix, because calibration measures speed in
+the perspective the camera sees. A tilt past 15° is better fixed at the mount.
 
 ![Mark your street](images/studio/04-zones.jpg)
+
+![Level the picture](images/studio/04b-zones-level.jpg)
 
 ### 5 Calibrate
 
@@ -120,7 +134,10 @@ can turn into one: cones a taped distance apart, or a car whose length you know.
   `CalibrationSpeed` takes over it (`feet ÷ (CalibrationSpeed × 5280 / 3600) × CalibrationFPS`), for both directions
   or just one. It is only as good as the spots' depth: put them on the line the cars' near side runs along, because
   the far lane crosses more road between the lines. The page shows the zone length and how much rounding to whole
-  frames costs; this calibration is marked **Not checked** until a drive past checks it.
+  frames costs; this calibration is marked **Not checked** until a drive past checks it. Put one spot at each white
+  line if you can: spots closer together still work, but the zone length is scaled up from them, so any marking
+  error grows with it, and with the camera at an angle to the street the same stretch of road doesn't cover the same
+  pixels everywhere across the picture. Below about 60% of the zone the page says so.
 
   The phone companion has the same step (Setup › Calibration drive › *No car handy?*), so you can stand on the
   street with the phone on your Wi-Fi, see yourself and the pole on the live picture, tap it and apply there.

@@ -77,6 +77,7 @@
 #include "UserPaths.h"
 #include "Engine.h"
 #include "PiCamera.h"
+#include "Level.h"
 
 #ifndef VST_VERSION
 #define VST_VERSION "dev"  // CMake stamps the release version in; it goes into the run manifest's "vst"
@@ -152,11 +153,12 @@ struct EngineExit { int code; };  // thrown by quit() so an embedded run unwinds
 const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp";
 
 // Reads the next frame and scales it to the 1280x720 canvas every config coordinate refers to, so cameras that record
-// 1080p, 4K or 640x480 work with the same VST.cfg geometry.  Returns false at end of video or on a read error.
+// 1080p, 4K or 640x480 work with the same VST.cfg geometry, then levels it (levelDegrees).  Returns false at end of video or on a read error.
 bool readFrame(FrameSource& cap, Mat& frame){
 	if (!cap.read(frame) || frame.empty()) return false;
 	if (frame.cols != Globals::FrameWidth || frame.rows != Globals::FrameHeight)
 		cv::resize(frame, frame, Size(Globals::FrameWidth, Globals::FrameHeight), 0, 0, INTER_AREA);
+	levelFrame(frame, g.levelDegrees);  // a camera mounted off level: turn the picture so the lanes run straight across
 	return true;
 }
 
@@ -459,7 +461,8 @@ void writeManifest(bool complete){
 		<< "    \"LegalDirection\": " << jsonString(g.LegalDirection) << ", \"L2RDirection\": " << jsonString(g.L2RDirection)
 		<< ", \"R2LDirection\": " << jsonString(g.R2LDirection) << ",\n"
 		<< "    \"speedLineLeft\": " << g.speedLineLeft << ", \"speedLineRight\": " << g.speedLineRight << ",\n"
-		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << ", \"subFrameTiming\": " << g.subFrameTiming << "\n"
+		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << ", \"subFrameTiming\": " << g.subFrameTiming << ",\n"
+		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << "\n"
 		<< "  },\n"
 		<< "  \"counts\": { \"logged\": " << runLogged << ", \"belowMinSpeed\": " << runBelowMinSpeed << ", \"untimed\": " << runUntimed << " }\n"
 		<< "}\n";

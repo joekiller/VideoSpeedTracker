@@ -65,7 +65,7 @@ static void tag(ImDrawList* dl, ImVec2 at, const char* text, ImU32 fg, ImU32 bg,
 namespace {
 
 enum Handle {
-	H_None, H_SpeedL, H_SpeedR, H_ObsL, H_ObsR, H_LaneR2L, H_LaneL2R,
+	H_None, H_SpeedL, H_SpeedR, H_ObsL, H_ObsR, H_LaneR2L, H_LaneL2R, H_LaneOne,
 	H_BoxL, H_BoxR, H_BoxT, H_BoxB, H_BoxTL, H_BoxTR, H_BoxBL, H_BoxBR, H_BoxMove
 };
 
@@ -84,6 +84,7 @@ const char* describe(Handle h) {
 	case H_ObsL: case H_ObsR: return "Obstruction edge (tree, pole): the tracker coasts through it";
 	case H_LaneR2L: return "Right-to-left lane: the hubcap height of cars going that way";
 	case H_LaneL2R: return "Left-to-right lane: the hubcap height of cars going that way";
+	case H_LaneOne: return "Lane: the hubcap height of cars on this one-way street (wrong-way drivers use it too)";
 	case H_BoxMove: return "Analysis box: drag to move";
 	case H_None: return nullptr;
 	default: return "Analysis box: drag to resize";
@@ -106,6 +107,11 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 		&& m.x <= v.origin.x + v.size.x && m.y <= v.origin.y + v.size.y;
 	float tol = px(7);
 	bool hasObs = g.obstruction[0] < g.obstruction[1];
+	// A one-way street has one lane: both directions' hubcap lines are the same row (a wrong-way car drives in that
+	// same lane), so the editor shows and drags a single line that sets both.  The legal direction's value leads.
+	const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+	const bool legalL2R = g.LegalDirection == "L2R";
+	const int oneLaneY = legalL2R ? g.L2RStreetY : g.R2LStreetY;
 	if (inFrame && drag.active == H_None) {
 		auto nearX = [&](float fx) { return std::fabs(m.x - v.at(fx, 0).x) < tol && m.y > b0.y - tol && m.y < b1.y + tol; };
 		auto nearY = [&](float fy) { return std::fabs(m.y - v.at(0, fy).y) < tol && m.x > b0.x - tol && m.x < b1.x + tol; };
@@ -121,8 +127,9 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 		else if (nearX(bx + g.speedLineRight)) hot = H_SpeedR;
 		else if (hasObs && nearX(bx + g.obstruction[0])) hot = H_ObsL;
 		else if (hasObs && nearX(bx + g.obstruction[1])) hot = H_ObsR;
-		else if (nearY(by + g.R2LStreetY)) hot = H_LaneR2L;
-		else if (nearY(by + g.L2RStreetY)) hot = H_LaneL2R;
+		else if (oneWay && nearY(by + oneLaneY)) hot = H_LaneOne;
+		else if (!oneWay && nearY(by + g.R2LStreetY)) hot = H_LaneR2L;
+		else if (!oneWay && nearY(by + g.L2RStreetY)) hot = H_LaneL2R;
 		else if (nearL && withinY) hot = H_BoxL;
 		else if (nearR && withinY) hot = H_BoxR;
 		else if (nearT && withinX) hot = H_BoxT;
@@ -135,7 +142,7 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 	// Mouse cursor feedback.
 	switch (shown) {
 	case H_SpeedL: case H_SpeedR: case H_ObsL: case H_ObsR: case H_BoxL: case H_BoxR: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); break;
-	case H_LaneR2L: case H_LaneL2R: case H_BoxT: case H_BoxB: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS); break;
+	case H_LaneR2L: case H_LaneL2R: case H_LaneOne: case H_BoxT: case H_BoxB: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS); break;
 	case H_BoxTL: case H_BoxBR: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE); break;
 	case H_BoxTR: case H_BoxBL: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNESW); break;
 	case H_BoxMove: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll); break;
@@ -178,6 +185,7 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 				case H_ObsR: g.obstruction[1] = std::clamp(s[7] + dx, g.obstruction[0] + 4, g.AnalysisBoxWidth); break;
 				case H_LaneR2L: g.R2LStreetY = std::clamp(s[8] + dy, 1, g.AnalysisBoxHeight); break;
 				case H_LaneL2R: g.L2RStreetY = std::clamp(s[9] + dy, 1, g.AnalysisBoxHeight); break;
+				case H_LaneOne: g.L2RStreetY = g.R2LStreetY = std::clamp((legalL2R ? s[9] : s[8]) + dy, 1, g.AnalysisBoxHeight); break;
 				case H_BoxL: setBox(L + dx, T, L + W, T + H); break;
 				case H_BoxR: setBox(L, T, L + W + dx, T + H); break;
 				case H_BoxT: setBox(L, T + dy, L + W, T + H); break;
@@ -232,7 +240,27 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 	}
 
 	// Lanes: direction arrows at the hubcap lines; the wrong-way lane is called out on one-way streets.
-	if (st.showLanes) {
+	if (st.showLanes && oneWay) {
+		// One lane line in the legal direction's colour, with chevrons along it showing the flow.
+		ImU32 col = legalL2R ? c::l2r : c::r2l;
+		bool hotL = shown == H_LaneOne;
+		float y = Y + (legalL2R ? g.L2RStreetY : g.R2LStreetY);
+		ImVec2 a = v.at(X + 6, y), b = v.at(X + g.AnalysisBoxWidth - 6, y);
+		dl->AddLine(a, b, A(c::rgb(0x0B0E14), .45f), hotL ? 6.f : 5.f);   // a dark casing so the line reads on bright asphalt
+		dl->AddLine(a, b, A(col, hotL ? 1 : .9f), hotL ? 3.f : 2.f);
+		// Chevrons every ~90 screen px pointing the legal way; the label sits above the line, clear of them.
+		float span = b.x - a.x, step = std::max(px(70), span / std::max(1.f, std::floor(span / px(90))));
+		float h = px(7), dir = legalL2R ? 1.f : -1.f;
+		for (float x = a.x + step * .5f; x < b.x - px(4); x += step) {
+			ImVec2 tip(x + dir * h * .5f, a.y);
+			dl->AddPolyline(std::vector<ImVec2>{ ImVec2(tip.x - dir * h, a.y - h), tip, ImVec2(tip.x - dir * h, a.y + h) }.data(), 3,
+				A(col), ImDrawFlags_None, hotL ? 3.f : 2.5f);
+		}
+		std::string label = std::string(legalL2R ? "One-way  L→R " : "One-way  R→L ") + (legalL2R ? g.L2RDirection : g.R2LDirection);
+		ImVec2 at(legalL2R ? a.x + px(6) : b.x - px(6) - pillSize(label.c_str()).x, a.y - px(24));
+		tag(dl, at, label.c_str(), A(c::rgb(0x0B0E14)), A(col, .92f));
+	}
+	else if (st.showLanes) {
 		struct Lane { float y; bool l2r; Handle h; };
 		for (Lane lane : { Lane{ Y + g.R2LStreetY, false, H_LaneR2L }, Lane{ Y + g.L2RStreetY, true, H_LaneL2R } }) {
 			ImU32 col = lane.l2r ? c::l2r : c::r2l;
@@ -313,4 +341,62 @@ void trackOverlay(const View& v, const Globals& g, const cv::Rect& ab, const std
 		dl->AddRectFilled(ta, ta + size, col, px(6));
 		dl->AddText(f, fsz(f), ta + ImVec2(px(7), px(4)), c::rgb(0x0B0E14), label.c_str());
 	}
+}
+
+namespace { int levelDrag = -1; }   // which level-guide dot is being dragged, -1 = none
+
+bool levelGuide(const View& v, ImVec2 dots[2], bool showDots) {
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	// Reference rows across the whole picture: a level street runs parallel to them.
+	ImVec2 f0 = v.origin, f1 = v.origin + v.size;
+	for (int i = 1; i < 8; i++) {
+		float y = f0.y + v.size.y * i / 8.f;
+		dl->AddLine(ImVec2(f0.x, y), ImVec2(f1.x, y), alpha(c::rgb(0xFFFFFF), i == 4 ? .35f : .18f), 1.f);
+	}
+	if (!showDots) { levelDrag = -1; return false; }
+
+	ImVec2 m = ImGui::GetIO().MousePos;
+	bool inFrame = ImGui::IsWindowHovered() && m.x >= f0.x && m.y >= f0.y && m.x <= f1.x && m.y <= f1.y;
+	int hot = -1;
+	for (int i = 0; i < 2 && levelDrag < 0 && inFrame; i++) {
+		ImVec2 d = v.at(dots[i].x, dots[i].y) - m;
+		if (d.x * d.x + d.y * d.y < px(12) * px(12)) hot = i;
+	}
+	if (hot >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) levelDrag = hot;
+	if (levelDrag >= 0) {
+		if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) levelDrag = -1;
+		else {
+			ImVec2 f = v.frame(m);
+			dots[levelDrag] = ImVec2(std::clamp(f.x, 0.f, 1280.f), std::clamp(f.y, 0.f, 720.f));
+		}
+	}
+	if (hot >= 0 || levelDrag >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+
+	// The line through the two dots, extended across the picture so a small tilt is easy to see against the rows.
+	ImVec2 a = v.at(dots[0].x, dots[0].y), b = v.at(dots[1].x, dots[1].y);
+	if (std::fabs(b.x - a.x) > 1) {
+		float k = (b.y - a.y) / (b.x - a.x);
+		dl->AddLine(ImVec2(f0.x, a.y + (f0.x - a.x) * k), ImVec2(f1.x, a.y + (f1.x - a.x) * k), alpha(c::accent2, .45f), 1.5f);
+	}
+	dl->AddLine(a, b, c::accent2, 3.f);
+	for (int i = 0; i < 2; i++) {
+		ImVec2 p = i ? b : a;
+		bool lit = hot == i || levelDrag == i;
+		dl->AddCircleFilled(p, px(lit ? 9 : 7), c::rgb(0x0B0E14));
+		dl->AddCircle(p, px(lit ? 9 : 7), c::accent2, 0, 2.5f);
+	}
+	tag(dl, ImVec2((a.x + b.x) * .5f, std::max(a.y, b.y) + px(10)), "drag the dots onto the curb", c::rgb(0x0B0E14), alpha(c::accent2, .92f), true);
+	return levelDrag >= 0;
+}
+
+double levelCorrection(ImVec2 p, ImVec2 q) {
+	if (q.x < p.x) std::swap(p, q);
+	if (q.x - p.x < 1) return 0;
+	return std::atan2(q.y - p.y, q.x - p.x) * 180.0 / 3.14159265358979323846;
+}
+
+ImVec2 levelTurn(ImVec2 p, double degrees) {
+	double t = degrees * 3.14159265358979323846 / 180.0, cs = std::cos(t), sn = std::sin(t);
+	double dx = p.x - 640.0, dy = p.y - 360.0;
+	return ImVec2(float(640.0 + dx * cs + dy * sn), float(360.0 - dx * sn + dy * cs));
 }
