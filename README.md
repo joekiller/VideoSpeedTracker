@@ -115,17 +115,31 @@ packages and a `SHA256SUMS` file.
 
 ### Verifying a download
 
-Every package is signed by GitHub at build time with an [artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
-(Sigstore-backed SLSA build provenance), which proves the file was built by this repository's release workflow from the
-tagged commit. With the [GitHub CLI](https://cli.github.com/):
+Every package, on every platform, is signed by GitHub at build time with an [artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations)
+(Sigstore-backed SLSA build provenance). It proves the file's exact bytes came out of this repository's release
+workflow, on a GitHub-hosted runner, from the tagged commit; it has no long-lived key that could leak. With the
+[GitHub CLI](https://cli.github.com/), pinning the workflow and tag so a file built any other way fails:
 
 ```
-gh attestation verify videospeedtracker_1.0.0_debian-bookworm_arm64.deb -R joekiller/VideoSpeedTracker
+gh attestation verify videospeedtracker_1.8.0_ubuntu-24.04_arm64.deb -R joekiller/VideoSpeedTracker \
+  --signer-workflow joekiller/VideoSpeedTracker/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.8.0 --deny-self-hosted-runners
 ```
 
-`SHA256SUMS` lists every file's checksum (`sha256sum -c SHA256SUMS --ignore-missing`). These attestations are not
-Windows Authenticode or Apple notarization; tag releases carry those separately (below). To check a macOS download
-yourself, in the opened disk image or untarred folder:
+`SHA256SUMS` lists every file in the release, and is itself attested, so one check covers a whole download folder
+(from v1.8.0 on). `SHA256SUMS.sigstore.json` is that signature as a file, for checking later or without access to
+GitHub's attestation API:
+
+```
+gh attestation verify SHA256SUMS --bundle SHA256SUMS.sigstore.json -R joekiller/VideoSpeedTracker \
+  --signer-workflow joekiller/VideoSpeedTracker/.github/workflows/release.yml --source-ref refs/tags/v1.8.0
+sha256sum -c SHA256SUMS --ignore-missing        # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+The `.deb` files have no separate GPG signature: apt checks signatures on repositories, not on a `.deb` installed
+from a file, so the attestation is the Linux signature (see [docs/code-signing.md](docs/code-signing.md#linux-and-checksums-build-provenance)).
+These attestations are not Windows Authenticode or Apple notarization; tag releases carry those separately (below).
+To check a macOS download yourself, in the opened disk image or untarred folder:
 
 ```
 spctl -a -t open --context context:primary-signature -vv VideoSpeedTracker-*.dmg   # the image: Notarized Developer ID

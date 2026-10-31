@@ -1,6 +1,7 @@
 # Code signing for releases
 
-Release packages build and publish unsigned until signing is configured. Each platform's signing steps turn on
+Release packages build and publish without OS code signatures until signing is configured (every tag build is
+still attested; see [Linux and checksums](#linux-and-checksums-build-provenance)). Each platform's signing steps turn on
 by themselves once that platform's secrets exist (repo **Settings → Secrets and variables → Actions**). Only tag
 builds (`v*`) are signed; main and branch builds stay unsigned and never touch the signing services.
 
@@ -98,6 +99,33 @@ The binaries are then signed with the hardened runtime and notarized with `notar
 their notarization online the first time they run. The `.dmg` is built from those stapled files, then signed,
 notarized and stapled itself (a second, short notary submission). The job ends with `spctl --assess` on the app, so a release whose
 app Gatekeeper would refuse fails instead of publishing; the README shows the same checks for a downloaded copy.
+
+## Linux and checksums: build provenance
+
+Nothing to set up, no secrets, no cost beyond a few seconds of the tag build. Every package (the `.deb`s, but
+also the Windows and macOS files) gets a GitHub artifact attestation: the job's short-lived OIDC identity is
+exchanged with Sigstore for a ten-minute certificate naming this repo, `release.yml` and the tag, which signs an
+SLSA provenance statement over the file's sha256, and the signature is logged in Sigstore's public transparency
+log. Nobody holds a key, so there is no key to steal or rotate. The README shows how to verify.
+
+The release is created as a draft. Once every platform is uploaded, the last job (`checksums`) writes `SHA256SUMS`
+from the digests GitHub recorded for the stored assets, attests it, uploads it with `SHA256SUMS.sigstore.json` (the
+signature bundle) and only then publishes. If any platform fails, the release stays a draft: fix it and
+"Re-run failed jobs".
+
+**Turn on immutable releases** (repo **Settings → General → Releases → Enable release immutability**). A published
+release's assets and tag can then never be replaced, even with a write token, and GitHub adds its own release
+attestation (`gh release verify v1.8.0`, `gh release verify-asset v1.8.0 <file>`). Because the workflow publishes
+only at the end, it works with this as is. Create releases by pushing the tag, or as a draft in the UI; a release
+published from the UI before the build would refuse the uploads.
+
+Not done, on purpose:
+
+- **GPG-signed `.deb`s** (`dpkg-sig`, `debsigs`): dpkg and apt don't check them by default, so they add a key to
+  guard and protect almost no one.
+- **A signed apt repository** (`apt install videospeedtracker` with automatic updates): the Linux equivalent of
+  Authenticode for users who want it. It needs a long-lived GPG key in the `release` environment and a host for
+  the repo (GitHub Pages works). Worth doing if people start installing VST on many Pis.
 
 Sources: [Artifact Signing signing integrations](https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations),
 [azure/artifact-signing-action](https://github.com/Azure/artifact-signing-action),
