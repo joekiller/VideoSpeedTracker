@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- VSTStudio.app's Info.plist; release.yml fills in @VERSION@. A bundle (rather than a bare executable) is what
+     Finder will open with a double-click once it's notarized, and the only form a notarization ticket staples to. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>VSTStudio</string>
+	<key>CFBundleIconFile</key>
+	<string>VSTStudio</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.joekiller.vststudio</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>VST Studio</string>
+	<key>CFBundleDisplayName</key>
+	<string>VST Studio</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- Shown by macOS the first time VST Studio opens a USB camera or a camera stream on the home network. -->
+	<key>NSCameraUsageDescription</key>
+	<string>VST Studio measures vehicle speeds from your camera's video.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>VST Studio reads network cameras and serves the companion app to phones on your home network.</string>
+</dict>
+</plist>

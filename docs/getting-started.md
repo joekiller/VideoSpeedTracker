@@ -14,8 +14,9 @@ go before you mount anything.
      for you (no admin prompt) or for everyone on the computer. Installing for everyone also lets phones reach the
      companion app through Windows Firewall on your home network.
    - **Linux:** `sudo apt install ./videospeedtracker_*.deb`.
-   - **macOS:** untar the release next to Homebrew's `opencv`.
-2. **Open VST Studio** from the Start menu, or the applications menu on Linux. `VSTStudio` starts it from a
+   - **macOS:** `brew install opencv`, then untar the release. VST Studio is `VSTStudio.app`; the command-line
+     tools are beside it.
+2. **Open VST Studio** from the Start menu, the applications menu on Linux, or `VSTStudio.app` on macOS. `VSTStudio` starts it from a
    terminal.
 3. **Follow Get started.** It opens on the bundled sample video, so you can watch cars get measured before your
    own camera is set up. Then it takes you through Video source, Zones, Calibrate and Live tracking in order. The
