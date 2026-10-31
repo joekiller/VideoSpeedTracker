@@ -23,7 +23,9 @@
 #                                                per-user or all-users, signed like the exes (packaging/windows)
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes (static OpenCV) + FFmpeg plugin/MSVC runtime DLLs
 #                                                and their licenses
-#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv` (Homebrew's 5.x)
+#   VideoSpeedTracker-<ver>-macos-arm64.dmg      VSTStudio.app (drag to Applications) + the command-line tools;
+#                                                signed, notarized and stapled on tags
+#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   the same files; both need `brew install opencv` (Homebrew's 5.x)
 # Linux and Windows build OpenCV from source with packaging/build-opencv.sh; the install is
 # cached per platform, so only the first run (or a change to that script) pays for the build.
 #   SHA256SUMS
@@ -397,6 +399,7 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"   # the disk image is signed with it after packaging
           # Signing the bundle signs Contents/MacOS/VSTStudio and seals Info.plist and Resources with it.
           for exe in VideoSpeedTracker ProcessHiLites VSTStudio.app; do
             codesign --force --timestamp --options runtime \
@@ -416,13 +419,35 @@ jobs:
           for exe in VideoSpeedTracker ProcessHiLites; do
             spctl --assess --type install --verbose=4 "pkg/$PKG_NAME/$exe" || true
           done
-          security delete-keychain "$keychain"
-      - name: Tar
+      # The disk image is built from the already signed and stapled files, so the app inside it opens
+      # offline; Applications is a symlink to drag VSTStudio.app onto (it carries everything it needs).
+      - name: Tar and disk image
         run: |
           name="$PKG_NAME"
           mkdir dist
           tar -C pkg -czf "dist/$name.tar.gz" "$name"
           otool -L "pkg/$name/VideoSpeedTracker"
+          dmgroot="$RUNNER_TEMP/dmgroot"
+          ditto "pkg/$name" "$dmgroot"
+          ln -s /Applications "$dmgroot/Applications"
+          hdiutil create -volname "VideoSpeedTracker ${{ needs.meta.outputs.version }}" -srcfolder "$dmgroot" \
+            -fs HFS+ -format UDZO -ov "dist/$name.dmg"
+      # A second notarization, of the image itself, so its ticket can be stapled to the .dmg too.
+      - name: Sign and notarize the disk image
+        if: env.SIGN_MACOS == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          dmg="dist/$PKG_NAME.dmg"
+          codesign --force --timestamp --sign "Developer ID Application" --keychain "$KEYCHAIN" "$dmg"
+          xcrun notarytool submit "$dmg" --wait --output-format json \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" | tee "$RUNNER_TEMP/notary-dmg.json"
+          grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary-dmg.json"
+          xcrun stapler staple "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          security delete-keychain "$KEYCHAIN"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-macos-arm64
@@ -485,7 +510,7 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: dist/*
       - name: Add to the release
         working-directory: dist
         env:
@@ -493,9 +518,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.meta.outputs.tag }}
         run: |
-          gh release upload "$TAG" *.tar.gz --clobber
+          gh release upload "$TAG" *.dmg *.tar.gz --clobber
           gh release download "$TAG" --pattern SHA256SUMS
           grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
-          sha256sum *.tar.gz >> SHA256SUMS.new
+          sha256sum *.dmg *.tar.gz >> SHA256SUMS.new
           mv SHA256SUMS.new SHA256SUMS
           gh release upload "$TAG" SHA256SUMS --clobber

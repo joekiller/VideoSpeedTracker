@@ -97,7 +97,8 @@ built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`
 | Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 / 26.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
 | Windows x64 | `VideoSpeedTracker-<ver>-windows-x64-setup.exe` | run it: installs for you (no admin prompt) or for everyone, adds **VST Studio** to the Start menu, and uninstalls from Settings › Apps. Your config and results stay put across upgrades and uninstalls |
 | Windows x64, portable | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
-| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | `brew install opencv`, untar, then open **VSTStudio.app** (the command-line tools sit beside it) |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.dmg` | `brew install opencv`, open the disk image and drag **VSTStudio.app** to Applications; the command-line tools are in the image too |
+| macOS, archive | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | the same files: `brew install opencv`, untar, open **VSTStudio.app** |
 
 Every package includes the 2016 sample video and a `VST.cfg` set up for it. Open **VST Studio** first: it starts on
 the sample and walks you through your own camera. On the command line, the first thing to run is
@@ -120,9 +121,10 @@ gh attestation verify videospeedtracker_1.0.0_debian-bookworm_arm64.deb -R joeki
 
 `SHA256SUMS` lists every file's checksum (`sha256sum -c SHA256SUMS --ignore-missing`). These attestations are not
 Windows Authenticode or Apple notarization; tag releases carry those separately (below). To check a macOS download
-yourself, in the untarred folder:
+yourself, in the opened disk image or untarred folder:
 
 ```
+spctl -a -t open --context context:primary-signature -vv VideoSpeedTracker-*.dmg   # the image: Notarized Developer ID
 codesign -dv --verbose=4 VSTStudio.app      # Authority=Developer ID Application: …, Runtime Version, Timestamp
 spctl -a -t exec -vv VSTStudio.app          # accepted, source=Notarized Developer ID
 xcrun stapler validate VSTStudio.app        # The validate action worked!
@@ -130,7 +132,7 @@ spctl -a -t install -vv VideoSpeedTracker   # the command-line tools: source=Not
 ```
 
 Unsigned builds (from `main` or a fork) are refused by Gatekeeper; clear the quarantine with
-`xattr -dr com.apple.quarantine .` in the untarred folder.
+`xattr -dr com.apple.quarantine .` in the untarred folder (or on the copied app).
 
 ### Code signing (optional)
 
