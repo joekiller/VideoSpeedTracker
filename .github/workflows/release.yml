@@ -23,7 +23,9 @@
 #                                                per-user or all-users, signed like the exes (packaging/windows)
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes (static OpenCV) + FFmpeg plugin/MSVC runtime DLLs
 #                                                and their licenses
-#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   needs `brew install opencv` (Homebrew's 5.x)
+#   VideoSpeedTracker-<ver>-macos-arm64.dmg      VSTStudio.app (drag to Applications) + the command-line tools;
+#                                                signed, notarized and stapled on tags
+#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   the same files; both need `brew install opencv` (Homebrew's 5.x)
 # Linux and Windows build OpenCV from source with packaging/build-opencv.sh; the install is
 # cached per platform, so only the first run (or a change to that script) pays for the build.
 #   SHA256SUMS
@@ -353,9 +355,32 @@ jobs:
           echo "PKG_NAME=$name" >> "$GITHUB_ENV"
           cmake --install build --prefix "pkg/$name"
           printf 'Requires Homebrew OpenCV 5:  brew install opencv\n' > "pkg/$name/REQUIREMENTS.txt"
-      # Hardened runtime is required for notarization; the entitlement lets it load Homebrew's
-      # OpenCV dylibs, which aren't signed by our team. Bare executables can't be stapled, so
-      # Gatekeeper looks the notarization ticket up online on first launch.
+          # VST Studio ships as VSTStudio.app: Gatekeeper won't pass a double-clicked bare executable even when it's
+          # notarized, and only a bundle can carry a stapled ticket. Its resources (companion, sample, VST.cfg
+          # template) go inside the bundle, because a quarantined app is translocated alone on first launch; the
+          # command-line tools beside it find the sample there too (userpaths::installedFile).
+          app="pkg/$name/VSTStudio.app/Contents"
+          mkdir -p "$app/MacOS" "$app/Resources"
+          mv "pkg/$name/VSTStudio" "$app/MacOS/"
+          mv "pkg/$name/companion" "pkg/$name/sample" "$app/Resources/"
+          cp "pkg/$name/VST.cfg" "$app/Resources/"
+          sed 's/@VERSION@/${{ needs.meta.outputs.version }}/g' packaging/macos-Info.plist > "$app/Info.plist"
+          plutil -lint "$app/Info.plist"
+          iconset="$RUNNER_TEMP/VSTStudio.iconset"
+          mkdir -p "$iconset"
+          for s in 16 32 128 256; do
+            sips -z $s $s packaging/vst-studio.png --out "$iconset/icon_${s}x${s}.png" >/dev/null
+            if [ $s -le 128 ]; then
+              sips -z $((s * 2)) $((s * 2)) packaging/vst-studio.png --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
+            fi
+          done
+          iconutil -c icns "$iconset" -o "$app/Resources/VSTStudio.icns"
+          # Seal the bundle (Info.plist and resources) with an ad-hoc signature; tag builds re-sign it below.
+          codesign --force --sign - "pkg/$name/VSTStudio.app"
+      # Hardened runtime is required for notarization; the entitlements let it load Homebrew's
+      # OpenCV dylibs, which aren't signed by our team, and use the camera. The ticket is stapled to
+      # VSTStudio.app so it opens offline; the bare command-line tools can't be stapled, so Gatekeeper
+      # looks theirs up online the first time they run.
       - name: Sign and notarize
         if: env.SIGN_MACOS == 'true'
         env:
@@ -374,22 +399,55 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          for exe in VideoSpeedTracker ProcessHiLites VSTStudio; do
+          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"   # the disk image is signed with it after packaging
+          # Signing the bundle signs Contents/MacOS/VSTStudio and seals Info.plist and Resources with it.
+          for exe in VideoSpeedTracker ProcessHiLites VSTStudio.app; do
             codesign --force --timestamp --options runtime \
               --entitlements packaging/macos-entitlements.plist \
               --sign "Developer ID Application" --keychain "$keychain" "pkg/$PKG_NAME/$exe"
-            codesign --verify --strict --verbose=2 "pkg/$PKG_NAME/$exe"
+            codesign --verify --deep --strict --verbose=2 "pkg/$PKG_NAME/$exe"
           done
           ditto -c -k --keepParent "pkg/$PKG_NAME" "$RUNNER_TEMP/notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
-          security delete-keychain "$keychain"
-      - name: Tar
+          # notarytool exits 0 on an Invalid verdict too, so check the status it reports.
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" | tee "$RUNNER_TEMP/notary.json"
+          grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary.json"
+          xcrun stapler staple "pkg/$PKG_NAME/VSTStudio.app"
+          # What a user's Mac will decide: the app must read "accepted, source=Notarized Developer ID". The tools'
+          # verdict depends on an online ticket lookup, so it's printed for the log rather than gating the release.
+          spctl --assess --type execute --verbose=4 "pkg/$PKG_NAME/VSTStudio.app"
+          for exe in VideoSpeedTracker ProcessHiLites; do
+            spctl --assess --type install --verbose=4 "pkg/$PKG_NAME/$exe" || true
+          done
+      # The disk image is built from the already signed and stapled files, so the app inside it opens
+      # offline; Applications is a symlink to drag VSTStudio.app onto (it carries everything it needs).
+      - name: Tar and disk image
         run: |
           name="$PKG_NAME"
           mkdir dist
           tar -C pkg -czf "dist/$name.tar.gz" "$name"
           otool -L "pkg/$name/VideoSpeedTracker"
+          dmgroot="$RUNNER_TEMP/dmgroot"
+          ditto "pkg/$name" "$dmgroot"
+          ln -s /Applications "$dmgroot/Applications"
+          hdiutil create -volname "VideoSpeedTracker ${{ needs.meta.outputs.version }}" -srcfolder "$dmgroot" \
+            -fs HFS+ -format UDZO -ov "dist/$name.dmg"
+      # A second notarization, of the image itself, so its ticket can be stapled to the .dmg too.
+      - name: Sign and notarize the disk image
+        if: env.SIGN_MACOS == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          dmg="dist/$PKG_NAME.dmg"
+          codesign --force --timestamp --sign "Developer ID Application" --keychain "$KEYCHAIN" "$dmg"
+          xcrun notarytool submit "$dmg" --wait --output-format json \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" | tee "$RUNNER_TEMP/notary-dmg.json"
+          grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary-dmg.json"
+          xcrun stapler staple "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+          security delete-keychain "$KEYCHAIN"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-macos-arm64
@@ -452,7 +510,7 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: dist/*
       - name: Add to the release
         working-directory: dist
         env:
@@ -460,9 +518,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.meta.outputs.tag }}
         run: |
-          gh release upload "$TAG" *.tar.gz --clobber
+          gh release upload "$TAG" *.dmg *.tar.gz --clobber
           gh release download "$TAG" --pattern SHA256SUMS
           grep -v -- '-macos-' SHA256SUMS > SHA256SUMS.new || true
-          sha256sum *.tar.gz >> SHA256SUMS.new
+          sha256sum *.dmg *.tar.gz >> SHA256SUMS.new
           mv SHA256SUMS.new SHA256SUMS
           gh release upload "$TAG" SHA256SUMS --clobber

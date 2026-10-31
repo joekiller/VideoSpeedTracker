@@ -5,5 +5,8 @@
 	<!-- Hardened runtime would otherwise refuse Homebrew's OpenCV dylibs (not signed by our team). -->
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
+	<!-- Hardened runtime blocks the camera without this, for the command-line tools as well as VST Studio. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
 </dict>
 </plist>

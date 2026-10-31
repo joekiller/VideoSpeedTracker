@@ -653,6 +653,7 @@ void Server::routes() {
 	fs::path web = userpaths::executableDir() / "companion";
 	std::error_code ec;
 	if (!fs::is_directory(web, ec)) web = userpaths::executableDir() / ".." / "share" / "videospeedtracker" / "companion";
+	if (!fs::is_directory(web, ec)) web = userpaths::executableDir() / ".." / "Resources" / "companion";  // VSTStudio.app
 	if (fs::is_directory(web, ec)) http_->set_mount_point("/", web.string());
 	else
 		http_->Get("/", [](const Request&, Response& res) {

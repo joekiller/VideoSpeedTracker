@@ -226,6 +226,9 @@ int main(int argc, char** argv) {
 	}
 
 	glfwSetErrorCallback([](int code, const char* desc) { std::fprintf(stderr, "GLFW error %d: %s\n", code, desc); });
+	// Inside VSTStudio.app, GLFW would chdir into Contents/Resources, where resolveConfig() would then pick the
+	// bundle's read-only VST.cfg template as the working-directory config (and autosave would break the seal).
+	glfwInitHint(GLFW_COCOA_CHDIR_RESOURCES, GLFW_FALSE);
 	if (!glfwInit()) return 1;
 	// OpenGL 3.2 core works everywhere VST runs, including macOS (which needs forward-compatible core profiles).
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
