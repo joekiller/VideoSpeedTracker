@@ -89,7 +89,8 @@ Apple Developer Program, $99/year.
 1. Enroll as an individual, create a *Developer ID Application* certificate and export it with its key as a .p12.
 2. Create an app-specific password for your Apple ID (account.apple.com → Sign-In and Security).
 3. Secrets: `MACOS_CERT_P12_BASE64` (`base64 -i cert.p12`), `MACOS_CERT_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`,
-   `APPLE_APP_PASSWORD`.
+   `APPLE_APP_PASSWORD`. Either repo secrets or secrets of the `release` environment work: the macos job enters
+   `release` on tag builds, like windows.
 
 The binaries are then signed with the hardened runtime and notarized with `notarytool`. Bare executables can't be
 stapled, so Gatekeeper checks the notarization online on first launch.
