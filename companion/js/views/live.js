@@ -11,7 +11,7 @@ import { zonesSvg, tracksSvg, W, H } from '../overlay.js';
 export async function render({ vst, view, go }) {
   const s = vst.lastStatus || await vst.status();
   const cfg = vst.lastConfig || await vst.config();
-  let showZones = true, tracks = [], hideSpeedo = null;
+  let showZones = true, tracks = [], hideSpeedo = null, shownRun = '';
   const src = vst.liveSource();
 
   view.innerHTML = html`
@@ -27,9 +27,9 @@ export async function render({ vst, view, go }) {
       <div class="seg" style="flex:none"><button id="zones" aria-pressed="true">Zones</button></div>
       <div class="btn-row" id="runctl"></div>
     </div>
-    <h3>Today</h3>
+    <h3>This session</h3>
     <div class="kpis" id="kpis"></div>
-    <div class="row between"><h3>Latest passes</h3><a class="small muted" href="#/passes">See all</a></div>
+    <div class="section-head"><h3>Latest passes</h3><a class="small" href="#/passes">See all</a></div>
     <div id="latest"></div>`.__html;
 
   const ov = $('#ov'), feed = $('#feed');
@@ -57,10 +57,12 @@ export async function render({ vst, view, go }) {
     $('#rec').innerHTML = on ? '<i></i>Live' : st.running ? 'Paused' : 'Stopped';
     $('#fps').textContent = on ? `${(st.procFps || 0).toFixed(0)} fps` : '';
     $('#fps').hidden = !on;
-    $('#runctl').innerHTML = html`
+    // Status arrives every second; redraw the run button only when it changes, so it keeps keyboard focus.
+    const runKey = `${st.running}/${st.paused}`;
+    if (runKey !== shownRun) { shownRun = runKey; $('#runctl').innerHTML = html`
       ${st.running
         ? html`<button class="btn" data-a="${st.paused ? 'resume' : 'pause'}">${icon(st.paused ? 'play' : 'pause')}${st.paused ? 'Resume' : 'Pause'}</button>`
-        : html`<button class="btn primary" data-a="start">${icon('play')}Start tracking</button>`}`.__html;
+        : html`<button class="btn primary" data-a="start">${icon('play')}Start tracking</button>`}`.__html; }
     const c = st.counts || {};
     const kpi = (n, label, cls = '') => html`<div class="kpi ${cls}"><b>${n ?? 0}</b><span>${label}</span></div>`;
     $('#kpis').innerHTML = html`${kpi(c.vehicles, 'Vehicles')}${kpi(c.speeders, 'Speeding', c.speeders ? 'warn' : '')}
@@ -72,7 +74,7 @@ export async function render({ vst, view, go }) {
     <a class="pass" href="#/passes/${v.id}" data-id="${v.id}">
       ${sign(v.speed, band(v))}
       <div class="meta"><b>${v.wrongWay ? 'Wrong way' : `${v.speed} mph`} ${arrow(v.dir)}</b>
-        <small>${ago(v.time)} · ${v.compass}-bound ${passPills(v, (vst.lastStatus || s).speedLimit)}</small></div>
+        <small>${ago(v.time)}<br><span class="nowrap">${v.compass}-bound</span> ${passPills(v, (vst.lastStatus || s).speedLimit)}</small></div>
       <img class="thumb" src="${vst.media(v.snapshot)}" alt="" loading="lazy">
     </a>`;
   const latest = await vst.vehicles({ limit: 5 });

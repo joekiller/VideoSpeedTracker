@@ -121,12 +121,17 @@ export function sheet(content, onOpen) {
     const back = document.createElement('div');
     back.className = 'sheet-backdrop';
     back.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${content.__html}</div>`;
-    const close = (val) => { back.remove(); document.removeEventListener('keydown', onKey); resolve(val); };
+    // Keyboard and screen-reader users land in the sheet, named by its heading, and go back where they were.
+    const opener = document.activeElement;
+    const dlg = back.firstElementChild, title = dlg.querySelector('h2');
+    if (title) { title.id ||= `sheet-title-${Date.now()}`; dlg.setAttribute('aria-labelledby', title.id); }
+    const close = (val) => { back.remove(); document.removeEventListener('keydown', onKey); opener?.focus?.(); resolve(val); };
     const onKey = (e) => e.key === 'Escape' && close();
     back.addEventListener('click', (e) => e.target === back && close());
     document.addEventListener('keydown', onKey);
     document.body.append(back);
-    onOpen?.(back.firstElementChild, close);
+    onOpen?.(dlg, close);
+    dlg.querySelector('.btn.primary, button')?.focus({ preventScroll: true });
   });
 }
 

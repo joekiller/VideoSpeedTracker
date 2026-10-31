@@ -4,7 +4,7 @@ VST Studio is the desktop app for VideoSpeedTracker. It runs the same tracker as
 line, and replaces hand-editing `VST.cfg` with a guided setup: plan the camera position, draw the zones on the
 picture, calibrate with one drive past and check it with a second, then watch vehicles get measured and review the speeders and wrong-way
 drivers. It ships in every release package next to the command-line tools (`VSTStudio`, or **VST Studio** in
-the Linux applications menu).
+the Windows Start menu and the Linux applications menu).
 
 ![Live tracking](images/studio/05-live-tracking.jpg)
 
@@ -38,6 +38,14 @@ verdict and a table of worst-case error by speed. The model:
 - timing zone = visible lane − one car length − 0.2 s of run-up for the tracker to lock on
 - timing error ≈ speed ÷ frames in the zone (a one-frame slip), distance error ≈ speed × distance error ÷ zone
 - blur = speed × shutter time, in pixels at the lane
+
+**Short views.** A narrow street seen from a front window may show only 5 to 7 m (15 to 25 ft) of the lane, too
+little for a car to spend 15 whole frames in the zone. The planner then calls it a short view and offers **Use
+short-view timing**, which turns on `subFrameTiming` and sets the tracker's look-ahead, entry look-back and speed
+lines from the plan. With it, VST fits a line through each car's front-bumper positions and times the crossing to a
+fraction of a frame, so the zone no longer has to hold a whole car. **Narrow street from a front window** fills in a
+typical plan, and *Narrow streets: parked cars, shadows and wrong-way drivers* has tips for that kind of view. At
+30 fps a 20 ft view times cars up to about 50 to 60 mph; 60 fps raises that to about 100 mph.
 
 ![Site planner](images/studio/02-site-planner.jpg)
 
@@ -170,7 +178,7 @@ The **Unattended health** card on this page looks after a camera left running fo
 
 Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
 time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows its snapshot, details and clip.
-**Open csv** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
+**Open CSV** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
 time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
 recordings (`manual_yyyymmddhhmmss`) is when the recording started.
 

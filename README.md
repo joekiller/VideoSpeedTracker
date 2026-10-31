@@ -18,8 +18,9 @@ Video example:
 
 Every release includes **VST Studio**, a desktop app that walks you through the whole job: what camera to get,
 whether your window gives enough view (a site planner), drawing the zones on the picture instead of editing
-`VST.cfg`, calibrating with one drive past, watching vehicles get measured live, and reviewing speeders and
-wrong-way drivers on one-way streets. A phone can pair with it to check the camera and see recent speeders.
+`VST.cfg`, calibrating with one drive past and checking it with a second, watching vehicles get measured live,
+reviewing speeders and wrong-way drivers on one-way streets, and printing a street report for the city. A phone can
+pair with it to check the camera, help calibrate from the curb and see recent speeders.
 See [docs/vst-studio.md](docs/vst-studio.md).
 
 ![VST Studio live tracking](docs/images/studio/05-live-tracking.jpg)
@@ -279,7 +280,7 @@ Where the time comes from depends on the source, and VST says which in its log w
   the modified time is in the future or before 2000, or the video doesn't report its length and frame rate, the time
   is left blank.
 
-Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open csv**
+Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open CSV**
 reads both versions. Spreadsheets that read columns by position are unaffected: the first 13 are unchanged.
 
 Only vehicles timed at `minLoggedSpeed` or faster get a row. This optional `VST.cfg` key is in MPH; the default is 18,

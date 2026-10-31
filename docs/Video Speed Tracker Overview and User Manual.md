@@ -13,6 +13,10 @@ recompile VST then you need to have OpenCV c 2.4.11 installed.
 against OpenCV 4 or 5 on Linux, macOS and Windows, and publishes
 prebuilt packages; see the [README](../README.md#downloads). Notes like
 this one mark where the current build differs from the original text.
+If you are setting up a camera for the first time, start with
+[Getting started](getting-started.md) and the desktop app,
+[VST Studio](vst-studio.md), which do the setup below with a guided
+walk-through instead of editing `VST.cfg` by hand.
 
 The VST software package comprises two components: 1) the **Video Speed
 Tracker** and 2) a **final highlights video processor**. The Video Speed
@@ -610,6 +614,7 @@ a scaled screenshot works unchanged.
 | `dataPathPrefix` | Needs to be set to the root directory containing data directories for VST.  The required directories in this root are:  “IPCam”, “Stats”, “Trace” and “HiLites”.  HiLites should have a subdirectory “forPosting”.  Note: on Windows, do not place any double back slashes in the path name.  They’re not needed here.  (Now: `Stats`, `Trace` and `HiLites` are created if missing, and a per-user config created on first run points here at a data folder it fills with all of them.  Quotes around the path are optional.) |
 | `L2RDirection` | String capturing compass direction of L2R vehicles. |
 | `R2LDirection` | String capturing compass direction of R2L vehicles. |
+| `LegalDirection` | Optional; `Both` (the default), `L2R`, `R2L`, or the compass label of one direction, such as `NE`.  On a one-way street, set it to the direction traffic is allowed to go.  Vehicles going the other way are still timed and logged, and are called out as wrong-way: the command line prints a `WRONG WAY` line for each, and VST Studio, the street report and the phone companion count them.  In VST Studio it is **Your street** on the Zones page. |
 | `obstruction` | Two element vector (`obstruction[]` in the code) holding x coords of left and right side of one obstruction.  Vehicle motion code will dead reckon front bumper between these x values inside analysis box. If you have no obstructions (e.g. a maple tree between camera and street) set second value no larger than the first, e.g. `[0,0]`.  If you have more than one obstruction, you'll need to make obstruction[] two dimensional and change checks in vehicle dynamics to loop over multiple obstructions.  Syntax of RHS value pair is `[<left> , <right>]` |
 | `AnalysisBoxLeft` | x coord of speed analysis box.  Note the origin in OpenCV is top left.  X values go right, Y values go down. |
 | `AnalysisBoxTop` | y coord of top of speed analysis box, with top left as origin. Note the origin in OpenCV is top left.  X values go right, Y values go down. |

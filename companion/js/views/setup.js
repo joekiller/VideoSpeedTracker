@@ -23,7 +23,7 @@ export async function render(ctx, step = '1') {
   const st = await ctx.vst.status();
   ctx.view.innerHTML = html`
     <div class="step-kicker">Step ${n} of 4</div>
-    <nav class="steps" aria-label="Setup steps">${STEPS.map((s, i) => html`<a href="#/setup/${i + 1}" title="${s}" class="${i + 1 < n ? 'done' : i + 1 === n ? 'current' : ''}"></a>`)}</nav>
+    <nav class="steps" aria-label="Setup steps">${STEPS.map((s, i) => html`<a href="#/setup/${i + 1}" title="${s}" aria-label="Step ${i + 1}: ${s}" ${i + 1 === n ? 'aria-current="step"' : ''} class="${i + 1 < n ? 'done' : i + 1 === n ? 'current' : ''}"></a>`)}</nav>
     <div id="step"></div>`.__html;
   const body = $('#step');
   return [spot, mark, rules, drive][n - 1]({ ...ctx, body, cfg, st, n });
@@ -32,7 +32,7 @@ export async function render(ctx, step = '1') {
 /** Prev/next footer shared by steps. */
 const nav = (n, nextLabel = 'Next') => html`
   <div class="btn-row" style="margin-top:20px">
-    ${n > 1 ? html`<a class="btn" href="#/setup/${n - 1}">${icon('back')}Back</a>` : ''}
+    ${n > 1 ? html`<a class="btn back" href="#/setup/${n - 1}">${icon('back')}Back</a>` : ''}
     ${n < 4 ? html`<a class="btn primary" href="#/setup/${n + 1}" id="next">${nextLabel}${icon('next')}</a>` : html`<a class="btn primary" href="#/live">Done${icon('check')}</a>`}
   </div>`;
 
@@ -46,7 +46,9 @@ function zoneSeconds(cfg, speed) {
 
 function spot({ vst, body, cfg, st, n }) {
   const secs = zoneSeconds(cfg, st.speedLimit);
-  const good = secs >= 1;
+  // Short-view timing (subFrameTiming) times the crossing to a fraction of a frame, so a short zone is fine there.
+  const short = !!cfg.subFrameTiming;
+  const good = short || secs >= 1;
   body.innerHTML = html`
     <h1>Point the camera at the street</h1>
     <p class="lede">VST measures speed by timing each vehicle across a stretch of road, so the camera has to see that stretch side-on and steadily.</p>
@@ -56,12 +58,14 @@ function spot({ vst, body, cfg, st, n }) {
     <h3>A good view has</h3>
     <div class="card">
       <div class="check">${icon('compass')}<p><b>The street crossing the picture side to side.</b> Aim straight across, not up or down the road; a window above street level is ideal.</p></div>
-      <div class="check">${icon('ruler')}<p><b>About 100 feet of road in view.</b> A car at the limit should take at least a second to cross the middle of the picture.</p></div>
+      <div class="check">${icon('ruler')}<p><b>About 100 feet of road in view.</b> A car at the limit should take at least a second to cross the middle of the picture. A narrow street with only 20 ft or so in view works too, with short-view timing from VST Studio's site planner.</p></div>
       <div class="check">${icon('camera')}<p><b>A steady 720p or 1080p picture at 30 fps.</b> Any webcam, a phone in webcam mode, or an IP camera (RTSP) works. Mount it so it can't shift.</p></div>
       <div class="check">${icon('sparkle')}<p><b>Little in the way.</b> A post or tree trunk is fine (you'll mark it), but avoid glare: put the lens against the glass and turn off room lights at night.</p></div>
     </div>
     <div class="callout ${good ? '' : 'warn'}" style="margin-top:12px">${icon(good ? 'check' : 'warn')}
-      <p>${good
+      <p>${short
+        ? html`Short-view timing is on, so VST times each car to a fraction of a frame and a short speed zone is fine.`
+        : good
         ? html`With the current calibration a car at ${st.speedLimit} mph spends <b>${secs.toFixed(1)} s</b> in the speed zone. That is enough for a reliable reading.`
         : html`A car at ${st.speedLimit} mph spends only <b>${secs.toFixed(1)} s</b> in the speed zone. Widen the zone in the next step, or move the camera further back, so it is at least 1 s.`}</p></div>
     ${nav(n, 'Looks good')}`.__html;
@@ -96,7 +100,7 @@ function mark({ vst, body, cfg, n }) {
     <div class="callout" id="hint">${icon('info')}<p>Start with the box: drag its top-left and bottom-right corners to the edges of the road.</p></div>
     <div class="list" style="margin-top:12px">
       <div class="item"><div class="label"><b>Something blocks the view</b><small>A post, tree trunk or sign in front of the road</small></div>
-        <label class="switch"><input type="checkbox" id="obs" ${draft.obstruction[1] > draft.obstruction[0] ? 'checked' : ''}><i></i></label></div>
+        <label class="switch"><input type="checkbox" id="obs" aria-label="Something blocks the view" ${draft.obstruction[1] > draft.obstruction[0] ? 'checked' : ''}><i></i></label></div>
     </div>
     <p class="small muted" id="problems" style="margin-top:10px"></p>
     <div class="btn-row" style="margin-top:12px"><button class="btn" id="reset" disabled>Undo changes</button><button class="btn primary" id="save" disabled>${icon('check')}Save</button></div>
@@ -179,8 +183,8 @@ function rules({ vst, body, cfg, n }) {
     <p class="lede">Tell VST which way traffic is allowed to go and how fast, so it can flag speeders and wrong-way drivers.</p>
     <h3>Which way may traffic go?</h3>
     <div class="choice" id="legal">
-      <button data-v="R2L">${street('R2L')}<span><b>One-way, right to left</b><small>Anyone going left to right is wrong-way</small></span></button>
-      <button data-v="L2R">${street('L2R')}<span><b>One-way, left to right</b><small>Anyone going right to left is wrong-way</small></span></button>
+      <button data-v="R2L">${street('R2L')}<span><b>One-way, right to left</b><small>Traffic going left to right is flagged as wrong way</small></span></button>
+      <button data-v="L2R">${street('L2R')}<span><b>One-way, left to right</b><small>Traffic going right to left is flagged as wrong way</small></span></button>
       <button data-v="both">${street('both')}<span><b>Two-way street</b><small>Speeds only, both directions</small></span></button>
     </div>
     <h3>Compass headings</h3>
@@ -191,11 +195,11 @@ function rules({ vst, body, cfg, n }) {
     </div>
     <h3>Speeds</h3>
     <div class="row">
-      <div class="field grow"><span>Posted limit</span><div class="stepper" data-k="speedLimit"><button data-d="-5" aria-label="Lower">−</button><output></output><button data-d="5" aria-label="Higher">+</button></div></div>
-      <div class="field grow"><span>"Way too fast" from</span><div class="stepper" data-k="egregious"><button data-d="-1" aria-label="Lower">−</button><output></output><button data-d="1" aria-label="Higher">+</button></div></div>
+      <div class="field grow"><span>Posted limit</span><div class="stepper" data-k="speedLimit"><button data-d="-5" aria-label="Lower the limit">−</button><output aria-live="polite"></output><button data-d="5" aria-label="Raise the limit">+</button></div></div>
+      <div class="field grow"><span>"Way too fast" from</span><div class="stepper" data-k="egregious"><button data-d="-1" aria-label="Lower">−</button><output aria-live="polite"></output><button data-d="1" aria-label="Higher">+</button></div></div>
     </div>
     <h3>Name for this spot</h3>
-    <label class="field"><input class="input" id="site" maxlength="40" placeholder="e.g. 7½ St SW" value="${d.siteName}"><span class="small muted" style="font-weight:400">Shown in the app, and on shared cards only if you allow it.</span></label>
+    <label class="field"><input class="input" id="site" aria-label="Name for this spot" maxlength="40" placeholder="e.g. 7½ St SW" value="${d.siteName}"><span class="small muted" style="font-weight:400">Shown in the app, and on shared cards only if you allow it.</span></label>
     <p class="small muted" id="problems" style="margin-top:10px"></p>
     ${nav(n, 'Save and continue')}`.__html;
 
@@ -263,13 +267,13 @@ function drive({ vst, body, cfg, st, n }) {
     </div>
     <div id="phase"></div>
     <h3>Speed you will drive</h3>
-    <div class="stepper" style="max-width:240px"><button data-d="-1" aria-label="Slower">−</button><output id="spd"></output><button data-d="1" aria-label="Faster">+</button></div>
-    <div class="row between"><h3>Passes since you opened this</h3><span class="pill rec small" id="listening"><i style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></i>Listening</span></div>
+    <div class="stepper" style="max-width:240px"><button data-d="-1" aria-label="Slower">−</button><output id="spd" aria-live="polite"></output><button data-d="1" aria-label="Faster">+</button></div>
+    <div class="section-head"><h3>Passes since you opened this</h3><span class="pill rec small" id="listening"><i style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></i>Listening</span></div>
     <div id="passes"></div>
     <div id="result"></div>
     <h3>Current calibration</h3>
     <div class="list" id="cal"></div>
-    <details style="margin-top:16px"><summary class="small muted" style="cursor:pointer">No pass showing up? Count it by hand</summary>
+    <details style="margin-top:8px"><summary class="small muted">No pass showing up? Count it by hand</summary>
       <div class="card" style="margin-top:10px">
         <p class="small">Watching the Live view, tap <b>Start</b> as your front bumper crosses the first white line and <b>End</b> at the second. Phone video lags a little, so this is less precise than using a logged pass.</p>
         <div class="seg" id="mdir" style="margin-bottom:10px"><button data-v="R2L" aria-pressed="true">← Right to left</button><button data-v="L2R">Left to right →</button></div>

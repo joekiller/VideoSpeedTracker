@@ -701,7 +701,7 @@ namespace {
 const char* kCss = R"CSS(
 @page { size: auto; margin: 14mm 14mm 15mm; }
 :root {
-  --ink: #15181d; --ink2: #464b55; --muted: #767b85; --rule: #c9ccd2; --hair: #e3e5e9; --tint: #f4f5f7;
+  --ink: #15181d; --ink2: #464b55; --muted: #6b707a; --rule: #c9ccd2; --hair: #e3e5e9; --tint: #f4f5f7;
   --accent: #1d3a5f; --ok: #9aa8b8; --over: #e0a12a; --bad: #c0392b; --cover: #3d6a9e;
 }
 * { box-sizing: border-box; }
@@ -724,6 +724,13 @@ body { margin: 0; color: var(--ink); background: #e9ebee; font: 9.5pt/1.45 "Helv
   .sheet .kpi:nth-child(3) { padding-left: 0; border-left: 0; }
   .sheet .status { flex-direction: column; gap: 1mm; }
   .sheet table { display: block; overflow-x: auto; }
+  .sheet table > tbody { display: table; width: 100%; }   /* still full width when it fits */
+  .sheet th, .sheet td.n { white-space: nowrap; }
+  .sheet td:first-child { min-width: 7.5em; }
+  /* Charts keep a legible text size and scroll sideways instead of shrinking to a phone's width. */
+  .sheet figure { overflow-x: auto; }
+  .sheet figure > svg { min-width: 560px; }
+  .sheet .runhead, .sheet .foot { flex-direction: column; gap: 1mm; }
   .sheet .two, .sheet .snaps { grid-template-columns: 1fr; }
 }
 h1, h2, h3 { font-weight: 600; margin: 0; letter-spacing: -.01em; }
@@ -1231,7 +1238,7 @@ std::string renderHtml(const Study& st) {
 	if (oneWay) {
 		std::string legalC = st.legal == "L2R" ? st.l2rCompass : st.r2lCompass;
 		h << "<h2" << (heat ? " style='margin-top:9mm'" : "") << "><span class='num'>" << ++sec << "</span>Wrong-way drivers</h2>";
-		h << "<p class='lede'>The street is one-way " << esc(legalC) << "-bound (LegalDirection " << esc(st.legal) << "). Every vehicle timed going the other way is counted here. "
+		h << "<p class='lede'>The street is one-way " << esc(legalC) << "-bound (" << (st.legal == "L2R" ? "left to right" : "right to left") << " on camera). Every vehicle timed going the other way is counted here. "
 		  << thousands(st.wrongTotal) << " of " << thousands(st.all.n) << " vehicles (" << pct(st.all.n ? 100.0 * st.wrongTotal / st.all.n : 0) << ") went the wrong way.</p>";
 		h << "<figure>" << wrongSvg(st) << "<figcaption><b>Wrong-way vehicles by hour of day.</b></figcaption></figure>";
 		h << "<table><tr><th style='width:40%'>Hour</th><th class='n'>Vehicles</th><th class='n'>Wrong way</th><th class='n'>Share of traffic</th></tr>";
