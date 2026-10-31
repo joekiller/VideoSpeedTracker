@@ -1186,8 +1186,17 @@ void App::dashcamSpeed(const Vehicle* picked) {
 	ImGui::PushTextWrapPos(0);
 	if (!picked) { dimText(ICON_CAR "  %d dashcam clip%s loaded. Pick your pass above.", int(dashClips_.size()), dashClips_.size() == 1 ? "" : "s"); ImGui::PopTextWrapPos(); return; }
 	const std::string& when = !picked->live && !picked->recorded.empty() ? picked->recorded : picked->time;
-	double end = dashcam::parseIso(when);
-	dashcam::PassSpeed ps = dashcam::speedDuring(dashClips_, end, picked->frames() / std::max(picked->fps, 1.0));
+	double end = dashcam::parseIso(when), crossing = picked->frames() / std::max(picked->fps, 1.0);
+	bool haveSpot = prefs.siteLat != 0 || prefs.siteLon != 0;
+	dashcam::PassSpeed ps = haveSpot ? dashcam::speedAtSpot(dashClips_, prefs.siteLat, prefs.siteLon, end, crossing)
+		: dashcam::speedDuring(dashClips_, end, crossing);
+	if (ps.byGps) {
+		dimText(ICON_LOCATE "  Matched by GPS at your camera spot");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("The car passed your camera's spot %.1f s %s this pass's time on the computer's clock.\n"
+				"GPS matching doesn't depend on the two clocks agreeing.", std::fabs(ps.clockOffset), ps.clockOffset >= 0 ? "after" : "before");
+	}
+	else if (haveSpot) dimText(ICON_INFO "  The car didn't pass your camera spot in these clips; matched by clock.");
 	if (!ps.found) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
 		ImGui::TextWrapped(ICON_WARN "  The dashcam clips don't cover %s, when this pass was measured. Pick the clip from that minute, or check the computer's clock.",
@@ -1214,6 +1223,46 @@ void App::dashcamSpeed(const Vehicle* picked) {
 		}
 	}
 	ImGui::PopTextWrapPos();
+
+	// The camera spot for GPS matching: learnt from a clock-matched pass the car held steady through (its position
+	// mid-zone), or pasted from a map ("38.03021, -78.48362").
+	if (haveSpot) {
+		dimText(ICON_LOCATE "  Camera spot %.5f, %.5f", prefs.siteLat, prefs.siteLon);
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Forget")) { prefs.siteLat = prefs.siteLon = 0; prefs.save(); dashFor_ = 0; }
+		return;
+	}
+	if (ps.found && ps.steady() && !ps.byGps) {
+		if (ghostButton(ICON_LOCATE "  Remember this spot for GPS matching", ImVec2(-FLT_MIN, 0))) {
+			double lat, lon;
+			if (dashcam::positionAt(dashClips_, end + .5 - crossing / 2, lat, lon)) {
+				prefs.siteLat = lat;
+				prefs.siteLon = lon;
+				prefs.save();
+				dashFor_ = 0;
+				toast("Camera spot saved. Later passes are matched by GPS, whatever the clocks say.", c::ok, ICON_CHECK);
+			}
+			else toast("The car had no GPS fix at this pass. Try another pass, or paste the spot from a map.", c::warn, ICON_WARN);
+		}
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Saves where the car was halfway through the zone on this pass. From then on, passes are\n"
+				"matched to the clips by when the car went by that spot, so the clocks needn't agree.");
+	}
+	static char spot[64] = "";
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	if (ImGui::InputTextWithHint("##spot", "Or paste the spot from a map: 38.03021, -78.48362", spot, sizeof spot, ImGuiInputTextFlags_EnterReturnsTrue)) {
+		double lat, lon;
+		if (std::sscanf(spot, "%lf , %lf", &lat, &lon) == 2 && std::fabs(lat) <= 90 && std::fabs(lon) <= 180 && (lat != 0 || lon != 0)) {
+			prefs.siteLat = lat;
+			prefs.siteLon = lon;
+			prefs.save();
+			dashFor_ = 0;
+			spot[0] = 0;
+		}
+		else toast("That isn't a latitude, longitude pair like 38.03021, -78.48362.", c::warn, ICON_WARN);
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("The street in front of the middle of your zone. In most map apps, press and hold (or right-click)\nthere and copy the coordinates. Press Enter to save.");
 }
 
 void App::pageCalibrate() {

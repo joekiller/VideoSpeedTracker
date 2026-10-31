@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <random>
@@ -266,6 +267,7 @@ void AppPrefs::load() {
 	b("guideDone", guideDone); b("remote", remoteEnabled);
 	d("planHfov", planHfov); d("planWidth", planWidth); d("planFps", planFps); d("planShutter", planShutter);
 	d("planDist", planDist); d("planClear", planClear); d("planCalib", planCalib); d("planCarLen", planCarLen);
+	d("siteLat", siteLat); d("siteLon", siteLon);
 	if (remoteToken.empty()) remoteToken = newToken();
 }
 
@@ -288,6 +290,7 @@ void AppPrefs::save() const {
 		<< "\nplanPreset = " << planPreset << "\nplanHfov = " << planHfov << "\nplanWidth = " << planWidth << "\nplanFps = " << planFps
 		<< "\nplanShutter = " << planShutter << "\nplanDist = " << planDist << "\nplanClear = " << planClear
 		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nzonesFor = " << zonesFor
+		<< "\nsiteLat = " << std::setprecision(10) << siteLat << "\nsiteLon = " << siteLon << std::setprecision(6)
 		<< "\ncalibratedFor = " << calibratedFor << "\n";
 	for (auto& r : recent) out << "recent = " << r << "\n";
 	writeAtomic(file(), out.str());   // holds the pairing token: never leave it truncated

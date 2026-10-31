@@ -1,5 +1,6 @@
 #include "DashCam.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -211,9 +212,11 @@ bool readClip(const std::string& path, Clip& clip, std::string& err) {
 	return true;
 }
 
-PassSpeed speedDuring(const std::vector<Clip>& clips, double passEnd, double crossing, double slack) {
+namespace {
+
+// Mean, range and coverage of the car's speed in drive over [from, to].
+PassSpeed speedBetween(const std::vector<Clip>& clips, double from, double to) {
 	PassSpeed r;
-	double from = passEnd - crossing - slack, to = passEnd + 1 + slack;   // +1: the log time is truncated to the second
 	double sum = 0, covered0 = 1e300, covered1 = -1e300;
 	r.minMph = 1e9;
 	for (const Clip& c : clips)
@@ -232,6 +235,72 @@ PassSpeed speedDuring(const std::vector<Clip>& clips, double passEnd, double cro
 	r.found = r.samples > 0 && covered0 <= from + 1 && covered1 >= to - 1;
 	if (r.samples) r.mph = sum / r.samples;
 	else r.minMph = 0;
+	return r;
+}
+
+bool hasFix(const Sample& s) { return s.lat != 0 || s.lon != 0; }
+
+}  // namespace
+
+PassSpeed speedDuring(const std::vector<Clip>& clips, double passEnd, double crossing, double slack) {
+	return speedBetween(clips, passEnd - crossing - slack, passEnd + 1 + slack);   // +1: the log time is truncated to the second
+}
+
+double distanceM(double lat1, double lon1, double lat2, double lon2) {
+	const double kDeg = 3.14159265358979323846 / 180, kEarth = 6371000;
+	double x = (lon2 - lon1) * kDeg * std::cos((lat1 + lat2) / 2 * kDeg), y = (lat2 - lat1) * kDeg;
+	return std::sqrt(x * x + y * y) * kEarth;
+}
+
+bool positionAt(const std::vector<Clip>& clips, double t, double& lat, double& lon) {
+	const Sample *before = nullptr, *after = nullptr;
+	for (const Clip& c : clips)
+		for (const Sample& s : c.samples) {
+			if (!hasFix(s)) continue;
+			if (s.t <= t && (!before || s.t > before->t)) before = &s;
+			if (s.t >= t && (!after || s.t < after->t)) after = &s;
+		}
+	if (!before || !after || after->t - before->t > 2) return false;   // no fix within a second either side
+	double f = after->t > before->t ? (t - before->t) / (after->t - before->t) : 0;
+	lat = before->lat + f * (after->lat - before->lat);
+	lon = before->lon + f * (after->lon - before->lon);
+	return true;
+}
+
+std::vector<double> closestApproaches(const std::vector<Clip>& clips, double lat, double lon, double maxM) {
+	// The samples with a fix, in time order across clips, each with its distance to the spot.  A drive-by is a run of
+	// samples within maxM; its moment is the closest one.  GPS updates slower than the frame rate, so a run of equal
+	// distances is common: take the middle of the closest run.
+	struct D { double t, m; bool drive; };
+	std::vector<D> ds;
+	for (const Clip& c : clips)
+		for (const Sample& s : c.samples)
+			if (hasFix(s)) ds.push_back({ s.t, distanceM(lat, lon, s.lat, s.lon), s.drive });
+	std::sort(ds.begin(), ds.end(), [](const D& a, const D& b) { return a.t < b.t; });
+	std::vector<double> out;
+	for (size_t i = 0; i < ds.size();) {
+		if (ds[i].m > maxM || !ds[i].drive) { i++; continue; }
+		size_t j = i;
+		double best = ds[i].m, first = ds[i].t, last = ds[i].t;
+		for (; j < ds.size() && ds[j].m <= maxM && ds[j].drive && ds[j].t - (j > i ? ds[j - 1].t : ds[j].t) < 2; j++) {
+			if (ds[j].m < best - 1e-9) { best = ds[j].m; first = last = ds[j].t; }
+			else if (ds[j].m <= best + 1e-9) last = ds[j].t;
+		}
+		out.push_back((first + last) / 2);
+		i = j;
+	}
+	return out;
+}
+
+PassSpeed speedAtSpot(const std::vector<Clip>& clips, double lat, double lon, double passEnd, double crossing, double slack) {
+	std::vector<double> near = closestApproaches(clips, lat, lon);
+	if (near.empty()) return speedDuring(clips, passEnd, crossing);
+	// VST's guess at the moment mid-zone: the log time is the second line, truncated to the second.
+	double guess = passEnd + .5 - crossing / 2;
+	double at = *std::min_element(near.begin(), near.end(), [&](double a, double b) { return std::fabs(a - guess) < std::fabs(b - guess); });
+	PassSpeed r = speedBetween(clips, at - crossing / 2 - slack, at + crossing / 2 + slack);
+	r.byGps = true;
+	r.clockOffset = at - guess;
 	return r;
 }
 
