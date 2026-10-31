@@ -20,6 +20,7 @@
 #include "DashCam.h"
 #include "Health.h"
 #include "Media.h"
+#include <imgui.h>
 #include "Report.h"
 #include "Results.h"
 #include "Settings.h"
@@ -168,6 +169,11 @@ public:
 	// now() at the start (-1 = no timer); coneView_ is the picture the Calibrate canvas shows (-1 = the camera itself),
 	// coneTexOf_ the one uploaded to coneTex_.
 	static constexpr double kConeFirstS = 30, kConeGapS = 20;
+	// "Level the picture" on Mark your street: levelTool_ shows two dots (frame coordinates) the user lays along the
+	// curb, and "Level to this line" turns cfg.g.levelDegrees by their slope; levelGrid_ shows the reference rows while
+	// the slider is being dragged (set by the inspector, read by the next frame's canvas).
+	bool levelTool_ = false, levelGrid_ = false;
+	ImVec2 levelDots_[2] = { { 360, 560 }, { 920, 560 } };
 	cv::Mat coneShot_[2];
 	double coneTimerAt_ = -1;
 	int coneView_ = -1, coneTexOf_ = -1;

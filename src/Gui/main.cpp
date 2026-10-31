@@ -7,6 +7,7 @@
 //                                   non-zero if a step timed out or no vehicles were tracked
 //   VSTStudio --write-icon FILE     write the app icon as a 256x256 PNG (packaging/vst-studio.png)
 #include "App.h"
+#include "Canvas.h"
 #include "Icons.h"
 #include "Theme.h"
 #include <GLFW/glfw3.h>
@@ -103,7 +104,17 @@ struct DemoScript {
 			break;
 		case 3:
 			if (frames == 1) { app.page = Page::Zones; app.player.seek(2186); }
-			if (frames == 20) { shot("04-zones.png"); next(); }
+			if (frames == 20) shot("04-zones.png");
+			// Level the picture: the sample's camera is level, so turn it 3° as if the mount were crooked and lay the
+			// dots along the snow line at the street's near edge (frame y ~381 when level), where they'd be dropped.
+			if (frames == 21) {
+				app.cfg.g.levelDegrees = 3;
+				app.levelTool_ = true;
+				app.levelDots_[0] = levelTurn(ImVec2(250, 381), 3);
+				app.levelDots_[1] = levelTurn(ImVec2(1030, 381), 3);
+			}
+			if (frames == 40) shot("04b-zones-level.png");
+			if (frames == 41) { app.cfg.g.levelDegrees = 0; app.levelTool_ = false; next(); }
 			break;
 		case 4:
 			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }
@@ -201,14 +212,15 @@ struct DemoScript {
 			}
 			if (frames == 40) shot("07c-calibrate-check-failed.png");
 			if (frames == 60) shot("07b-calibrate-check.png");
-			// Two cones, 10 ft apart, about where the sample's right-to-left lane runs (~200 px for 10 ft there).
+			// Two cones, one at each white line, on the sample's right-to-left lane (~200 px for 10 ft there, so the
+			// 559 px zone is about 28 ft).
 			if (frames == 61) {
 				const Globals& g = app.cfg.g;
 				app.calibChecking_ = false;
 				app.lastCheck_ = CalCheck();   // the check card belongs to the shots above
 				app.calibMode_ = 2;
-				app.coneFt_ = 10;
-				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 100 + 200 * i); app.coneY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
+				app.coneFt_ = 28;
+				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(g.AnalysisBoxLeft + (i ? g.speedLineRight : g.speedLineLeft)); app.coneY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
 			}
 			if (frames == 80) shot("07d-calibrate-cones.png");
 			// Known car: a parked Camry's bumpers ~250 px apart, 7 ft beyond the lane, as on a narrow one-way street.

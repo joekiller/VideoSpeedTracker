@@ -24,6 +24,7 @@
 
 #include "Globals.h"
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <functional>
 #include <iostream>
@@ -134,6 +135,7 @@ bool Globals::readConfig(const string& path){
 		{ "nextHeight", intKey(nextHeight) },
 		{ "minLoggedSpeed", intKey(minLoggedSpeed) },
 		{ "subFrameTiming", intKey(subFrameTiming) },
+		{ "levelDegrees", dblKey(levelDegrees) },
 	};
 	map<string, size_t> byName;  // lower-cased key -> index into keys
 	for (size_t i = 0; i < keys.size(); i++) byName[lower(keys[i].first)] = i;
@@ -209,6 +211,8 @@ vector<string> Globals::problems(){
 		bad("subFrameTiming must be 0 (whole frames) or 1 (short view: sub-frame timing), got " + to_string(subFrameTiming));
 	else if (subFrameTiming && (maxL2RDistOnEntry <= 0 || maxR2LDistOnEntry <= 0))
 		bad("subFrameTiming = 1 scales its pixel margins by maxL2RDistOnEntry and maxR2LDistOnEntry, so both must be > 0");
+	if (!(std::fabs(levelDegrees) <= kMaxLevelDegrees))
+		bad("levelDegrees must be between -" + to_string(int(kMaxLevelDegrees)) + " and " + to_string(int(kMaxLevelDegrees)) + " (a bigger tilt is better fixed at the mount), got " + to_string(levelDegrees));
 	// LegalDirection: Both, L2R, R2L, or the compass name given for one of the two directions.
 	string legal = lower(trim(LegalDirection));
 	if (legal == "both" || legal.empty()) LegalDirection = "Both";

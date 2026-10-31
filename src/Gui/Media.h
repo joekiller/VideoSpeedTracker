@@ -83,18 +83,26 @@ public:
 	bool tick(double now);
 	bool playing = false;
 	int position() const { return pos_; }
+	// The shown frame, at 1280x720 and turned by the level angle: the same pixels the tracker will see (Level.h).
 	const cv::Mat& frame() const { return frame_; }
 	Texture& texture() { return tex_; }
+	// Sets the software level angle (Globals::levelDegrees).  Call every GUI frame with the config's value; when it
+	// changes, the current frame is re-turned from its unturned copy at once, so a paused video or a photo follows a
+	// drag on the level slider.
+	void setLevel(double degrees);
 	std::string error;
 private:
 	bool readInto();
 	bool tickLive();
+	void show(const cv::Mat& working);   // keeps `working` (1280x720, unturned) as raw_, levels it into frame_, uploads it
 	std::shared_ptr<LiveReader> live_;   // the reader thread's shared state, while opening and for cameras and streams
 	std::uint64_t liveSeq_ = 0;          // the newest live frame already taken
 	std::unique_ptr<FrameSource> cap_;   // files, once the reader has opened them (FrameSource: VideoCapture or a Pi camera)
 	SourceInfo info_;
 	bool opened_ = false;
+	cv::Mat raw_;                        // the current frame before levelling, so a new angle needn't wait for a new frame
 	cv::Mat frame_;
+	double level_ = 0;
 	Texture tex_;
 	int pos_ = -1;
 	double lastTick_ = 0, carry_ = 0;

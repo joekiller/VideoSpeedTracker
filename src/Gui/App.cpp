@@ -526,6 +526,7 @@ void App::frame(float w, float h) {
 		// Never waits: a live source's frames come from its reader thread.  A connection that fails, or a picture that
 		// is lost, ends here: say why and drop the source, so nothing stale stays on screen.
 		bool live = player.opening() || (player.isOpen() && player.info().kind != SourceInfo::File && player.info().kind != SourceInfo::Image);
+		player.setLevel(cfg.g.levelDegrees);   // the preview shows the picture turned as the tracker will see it
 		player.tick(now());
 		if (live && !player.opening() && !player.isOpen() && !player.error.empty()) {
 			toast(player.error, c::bad, ICON_WARN);
@@ -1212,9 +1213,13 @@ void App::pageZones() {
 	View v = drawFrame(player.isOpen() ? player.texture().imguiId() : nullptr, ImGui::GetContentRegionAvail(),
 		"Open a video, camera or photo of your street to draw on");
 	OverlayStyle st;
-	st.editable = true;
 	const char* hovered = nullptr;
+	st.editable = !levelTool_;   // the level dots get the mouse while they're out
 	if (player.isOpen()) zoneOverlay(v, cfg.g, st, &hovered);   // with no picture, the lines would only cover the hint
+	if (player.isOpen() && (levelTool_ || levelGrid_)) {
+		levelGuide(v, levelDots_, levelTool_);
+		if (levelTool_) hovered = "Lay the line along the curb or a lane stripe, then press Level it";
+	}
 	ImGui::EndChild();
 
 	// Scrub bar under the canvas: play/step for files, a status line for live sources.
@@ -1246,15 +1251,18 @@ void App::pageZones() {
 	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("legend", nullptr, nullptr, ImVec2(canvasW, 0));
 	struct Key { ImU32 col; const char* name; const char* what; };
+	const bool oneWay = cfg.g.LegalDirection == "L2R" || cfg.g.LegalDirection == "R2L";
 	const Key keys[] = {
 		{ c::accent2, "Analysis box", "the only part of the picture the tracker looks at" },
 		{ c::rgb(0xFFFFFF), "Speed lines", "timing runs from one to the other" },
 		{ c::obstruction, "Obstruction", "the tracker coasts through it" },
-		{ c::l2r, "→ Lane", "hubcap height of cars going right" },   // the two lanes share a row
+		// A one-way street has one lane line; a two-way street's two lanes share the legend's second row.
+		oneWay ? Key{ cfg.g.LegalDirection == "L2R" ? c::l2r : c::r2l, "Lane", "hubcap height of cars, either way" }
+		       : Key{ c::l2r, "→ Lane", "hubcap height of cars going right" },
 		{ c::r2l, "← Lane", "hubcap height of cars going left" },
 	};
 	float kw = (canvasW - px(36)) / 3;
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < (oneWay ? 4 : 5); i++) {
 		if (i % 3) ImGui::SameLine(px(18) + kw * (i % 3));
 		ImGui::BeginGroup();
 		ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1291,11 +1299,50 @@ void App::zoneInspector() {
 		if (help && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", help);
 	};
 
+	beginCard("level", ICON_ROTATE, "Level the picture");
+	dimText("Camera a little crooked on its mount? Turn the picture until the curb runs straight across. Do it before you calibrate.");
+	{
+		float deg = float(g.levelDegrees), lim = float(Globals::kMaxLevelDegrees);
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::SliderFloat("##level", &deg, -lim, lim, deg == 0 ? "level (0°)" : "%.1f°"))
+			g.levelDegrees = std::round(std::clamp(double(deg), -double(lim), double(lim)) * 10) / 10;
+		levelGrid_ = ImGui::IsItemActive();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("Ctrl+click to type an angle. Positive turns the picture counter-clockwise.");
+	}
+	float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
+	if (!levelTool_) {
+		ImGui::BeginDisabled(!player.isOpen());
+		if (ghostButton(ICON_CROSSHAIRS "  Use the curb", ImVec2(half, 0))) levelTool_ = true;
+		ImGui::EndDisabled();
+	} else if (primaryButton(ICON_CHECK "  Level it", ImVec2(half, 0))) {
+		double turn = levelCorrection(levelDots_[0], levelDots_[1]);
+		double next = std::clamp(g.levelDegrees + turn, -Globals::kMaxLevelDegrees, Globals::kMaxLevelDegrees);
+		next = std::round(next * 10) / 10;
+		for (ImVec2& d : levelDots_) d = levelTurn(d, next - g.levelDegrees);   // keep the dots on the curb as it turns
+		g.levelDegrees = next;
+		levelTool_ = false;
+		if (std::fabs(turn) > Globals::kMaxLevelDegrees) toast("That's more tilt than software should fix. Straighten the camera on its mount, then level again.", c::warn, ICON_WARN);
+	}
+	ImGui::SameLine();
+	if (levelTool_) { if (ghostButton("Cancel", ImVec2(half, 0))) levelTool_ = false; }
+	else {
+		ImGui::BeginDisabled(g.levelDegrees == 0);
+		if (ghostButton(ICON_UNDO "  Straight", ImVec2(half, 0))) g.levelDegrees = 0;
+		ImGui::EndDisabled();
+	}
+	endCard();
+
+	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("street", ICON_ROAD, "Your street");
 	dimText("Which way may traffic go? On a one-way street VST calls out everyone driving the other way.");
 	int legal = g.LegalDirection == "L2R" ? 1 : g.LegalDirection == "R2L" ? 2 : 0;
 	static const char* const legalLabels[] = { "Two-way", "→ only", "← only" };
-	if (segmented("legal", &legal, legalLabels, 3)) g.LegalDirection = legal == 1 ? "L2R" : legal == 2 ? "R2L" : "Both";
+	if (segmented("legal", &legal, legalLabels, 3)) {
+		g.LegalDirection = legal == 1 ? "L2R" : legal == 2 ? "R2L" : "Both";
+		// One-way: one lane, so the wrong-way line joins the legal one (the canvas then shows and drags just that).
+		if (legal == 1) g.R2LStreetY = g.L2RStreetY;
+		if (legal == 2) g.L2RStreetY = g.R2LStreetY;
+	}
 	ImGui::Dummy(ImVec2(0, px(2)));
 	static const char* compass[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
 	auto compassCombo = [&](const char* label, std::string& value, ImU32 col2) {
@@ -1333,11 +1380,20 @@ void App::zoneInspector() {
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
-	beginCard("lanes", ICON_ARROWS_LR, "Lanes");
-	dimText("Put each dashed line at hubcap height for cars in that lane.");
-	intRow("← lane", &g.R2LStreetY, 1, g.AnalysisBoxHeight);
-	intRow("→ lane", &g.L2RStreetY, 1, g.AnalysisBoxHeight);
-	endCard();
+	if (g.LegalDirection == "L2R" || g.LegalDirection == "R2L") {
+		beginCard("lanes", ICON_ARROWS_LR, "Lane");
+		dimText("Put the line at hubcap height for cars in the lane. Anyone driving against the arrows is logged as wrong-way.");
+		int& legalY = g.LegalDirection == "L2R" ? g.L2RStreetY : g.R2LStreetY;
+		intRow("Lane", &legalY, 1, g.AnalysisBoxHeight);
+		g.L2RStreetY = g.R2LStreetY = legalY;
+		endCard();
+	} else {
+		beginCard("lanes", ICON_ARROWS_LR, "Lanes");
+		dimText("Put each dashed line at hubcap height for cars in that lane.");
+		intRow("← lane", &g.R2LStreetY, 1, g.AnalysisBoxHeight);
+		intRow("→ lane", &g.L2RStreetY, 1, g.AnalysisBoxHeight);
+		endCard();
+	}
 
 	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("obs", ICON_BAN, "Obstruction");
@@ -1792,7 +1848,7 @@ void App::pageCalibrate() {
 		// No car needed: the zone's length from two cones a taped distance apart.  It's only as good as where the cones
 		// stand (the cars' near side, at the lane's depth), so it counts as a rough start until a drive past checks it.
 		beginCard("cones", ICON_RULER, "Two spots a measured distance apart");
-		stepLine(1, "Chalk two spots 10 ft or more apart along the lane, where cars' near wheels run, near the two white lines. "
+		stepLine(1, "Chalk two spots 10 ft or more apart along the lane, where cars' near wheels run, one at each white line. "
 			"Stand a cone on each, or have one person hold a pole (or a broom) upright on one spot, then the other.");
 		stepLine(2, "With no car in the way, mark each spot on the picture, here or on the phone companion from the street. "
 			"Any point on an upright pole will do, so it works even where the road surface is hidden.");
@@ -1870,6 +1926,17 @@ void App::pageCalibrate() {
 			ImGui::PopTextWrapPos();
 		}
 		else if (tooClose) dimText(ICON_WARN "  The two spots are too close together on the picture. Space them further apart.");
+		// Spots well inside the zone still work, but the zone's length is scaled up from them: a marking error grows by
+		// zonePx / markPx, and with the camera off square a stretch of street doesn't take up the same pixels everywhere
+		// across the frame.  Spots at the white lines measure the zone itself, so nudge toward them below about 60%.
+		if (framesD > 0 && !tooClose && markPx < .6 * zonePx) {
+			ImGui::PushTextWrapPos(0);
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+			ImGui::TextWrapped(ICON_INFO "  Your spots span %.0f%% of the zone. That works, but spots right at the two white lines are more "
+				"accurate, especially with the camera at an angle to the street.", markPx / zonePx * 100);
+			ImGui::PopStyleColor();
+			ImGui::PopTextWrapPos();
+		}
 		ImGui::BeginDisabled(framesD <= 0 || tooClose);
 		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD);
 		ImGui::EndDisabled();

@@ -33,6 +33,17 @@ struct OverlayStyle {
 // description of what's under the mouse (for the status line), or stays empty.
 bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& style, const char** hovered = nullptr);
 
+// The level tool (Mark your street, "Level the picture").  Draws reference rows across the frame and, with showDots,
+// two draggable dots (frame coordinates) joined by a line the user lays along the curb or a lane stripe.  Returns true
+// while a dot is being dragged.
+bool levelGuide(const View& v, ImVec2 dots[2], bool showDots);
+// The extra Globals::levelDegrees that makes the line p-q level: its slope angle in frame coordinates (y down), so a
+// line running downhill to the right gives a positive (counter-clockwise) turn, as levelFrame() applies it.
+double levelCorrection(ImVec2 p, ImVec2 q);
+// Where frame point p lands after levelFrame() turns the picture a further `degrees` about its centre, so the dots can
+// stay on the curb they were laid on.
+ImVec2 levelTurn(ImVec2 p, double degrees);
+
 // Draws the tracker's live boxes with speed tags.
 void trackOverlay(const View& v, const Globals& g, const cv::Rect& analysisBox, const std::vector<vst::TrackBox>& boxes,
 	int speedLimit, int egregious);
