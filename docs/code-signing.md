@@ -2,7 +2,7 @@
 
 Release packages build and publish unsigned until signing is configured. Each platform's signing steps turn on
 by themselves once that platform's secrets exist (repo **Settings → Secrets and variables → Actions**). Only tag
-builds (`v*`) are signed; master and branch builds stay unsigned and never touch the signing services.
+builds (`v*`) are signed; main and branch builds stay unsigned and never touch the signing services.
 
 ## Windows: Azure Artifact Signing
 

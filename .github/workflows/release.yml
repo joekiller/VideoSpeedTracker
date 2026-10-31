@@ -5,8 +5,8 @@
 # The release is created with generated notes if it doesn't exist yet, otherwise the
 # assets are uploaded to it, replacing any with the same name.
 #
-# Master pushes that touch the build run everything except the publish step, so a broken platform shows up
-# before the tag does (master's run also keeps the OpenCV caches warm). Pull requests don't run this matrix:
+# Main pushes that touch the build run everything except the publish step, so a broken platform shows up
+# before the tag does (main's run also keeps the OpenCV caches warm). Pull requests don't run this matrix:
 # they get build.yml's single Linux job, and contributors run .githooks/pre-commit locally. To try the full
 # matrix on a branch before merging, start this workflow by hand (Actions > release > Run workflow, or
 # `gh workflow run release.yml --ref <branch>`); a manual run on a tag also publishes.
@@ -33,11 +33,11 @@ name: release
 on:
   push:
     tags: ['v[0-9]*']
-    # Master runs too, for the same paths: Actions caches are scoped to the ref that saved them, and a
-    # branch or tag can only restore its own or the default branch's. Without a master run nothing ever
+    # Main runs too, for the same paths: Actions caches are scoped to the ref that saved them, and a
+    # branch or tag can only restore its own or the default branch's. Without a main run nothing ever
     # saved the OpenCV builds where tags and manual branch runs could see them (4-6 min a job to rebuild).
     # Path filters don't apply to tag pushes, so releases still always build.
-    branches: [master]
+    branches: [main]
     # Only what changes a package or its tests; docs and the companion don't.
     paths:
       - .github/workflows/release.yml
@@ -163,7 +163,7 @@ jobs:
       id-token: write      # OIDC login to Azure for Artifact Signing
     env:
       # Authenticode signing runs on tag builds once the Azure Artifact Signing secrets/variables are set
-      # (see docs/code-signing.md); without them the zip ships unsigned as before. Master and manual
+      # (see docs/code-signing.md); without them the zip ships unsigned as before. Main and manual
       # builds are never published, and their OIDC subjects don't match the tag-scoped federated credential.
       SIGN_WINDOWS: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
     defaults:
@@ -232,7 +232,7 @@ jobs:
           # azure/login leaves an Azure CLI session; skip the environment credential that DefaultAzureCredential
           # would otherwise try first.
           exclude-environment-credential: true
-          # Signing runs only on tags, and a tag can restore only its own or master's caches, so the action's
+          # Signing runs only on tags, and a tag can restore only its own or main's caches, so the action's
           # cache of its tools (saved under this tag) would never be read again. The tools stay on disk for the
           # installer's signing step below either way.
           cache-dependencies: false
@@ -331,7 +331,7 @@ jobs:
       # Not HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: Homebrew answers it with a ##[warning] annotation on every run.
       # Developer ID signing + notarization runs on tag builds once the Apple secrets are set (see
       # docs/code-signing.md); without them the binaries keep the linker's ad-hoc signature.
-      # Unpublished master and manual builds skip it rather than wait on Apple's notary service.
+      # Unpublished main and manual builds skip it rather than wait on Apple's notary service.
       SIGN_MACOS: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
       - uses: actions/checkout@v7
