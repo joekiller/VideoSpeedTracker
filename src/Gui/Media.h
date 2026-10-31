@@ -3,6 +3,7 @@
 #pragma once
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
+#include "PiCamera.h"
 #include <string>
 
 // An RGBA OpenGL texture that follows a BGR/BGRA/gray Mat; reallocated only when the size changes.
@@ -27,7 +28,7 @@ private:
 // What a source is, as the rest of the app talks about it.
 struct SourceInfo {
 	enum Kind { None, File, Camera, Stream, Image } kind = None;
-	std::string path;          // file path, camera index ("0") or URL
+	std::string path;          // file path, camera index ("0"), Pi camera ("picam:0?...", see PiCamera.h) or URL
 	std::string label;         // short name for the UI
 	int width = 0, height = 0;
 	double fps = 0;
@@ -36,6 +37,7 @@ struct SourceInfo {
 	double seconds() const { return fps > 0 && frames > 0 ? frames / fps : 0; }
 };
 
+// A Raspberry Pi camera ("picam...") is a Camera like a USB one: live, and shown with the camera icon.
 SourceInfo::Kind classifySource(const std::string& path);
 std::string displayName(const std::string& path);
 bool isVideoPath(const std::string& path);
@@ -61,7 +63,7 @@ public:
 	std::string error;
 private:
 	bool readInto();
-	cv::VideoCapture cap_;
+	FrameSource cap_;          // a cv::VideoCapture, or rpicam-vid for a Raspberry Pi camera
 	SourceInfo info_;
 	bool opened_ = false;
 	cv::Mat frame_;

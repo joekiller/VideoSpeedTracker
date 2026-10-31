@@ -69,6 +69,7 @@ bool isImagePath(const std::string& path) {
 
 SourceInfo::Kind classifySource(const std::string& path) {
 	if (path.empty()) return SourceInfo::None;
+	if (picam::isName(path)) return SourceInfo::Camera;
 	if (path.size() < 4 && std::all_of(path.begin(), path.end(), [](char c) { return isdigit((unsigned char)c) != 0; }))
 		return SourceInfo::Camera;
 	if (path.find("://") != std::string::npos) return SourceInfo::Stream;
@@ -78,7 +79,7 @@ SourceInfo::Kind classifySource(const std::string& path) {
 
 std::string displayName(const std::string& path) {
 	switch (classifySource(path)) {
-	case SourceInfo::Camera: return "Camera " + path;
+	case SourceInfo::Camera: return picam::isName(path) ? picam::label(path) : "Camera " + path;
 	case SourceInfo::Stream: {
 		// Hide credentials in rtsp://user:pass@host/... when showing a URL.
 		std::string s = path;
@@ -114,9 +115,11 @@ bool Player::open(const std::string& path) {
 		pos_ = 0;
 		return true;
 	}
-	bool ok = info_.kind == SourceInfo::Camera ? cap_.open(std::stoi(path)) : cap_.open(path);
+	bool pi = picam::isName(path);
+	bool ok = pi ? cap_.openPiCamera(path) : info_.kind == SourceInfo::Camera ? cap_.cap.open(std::stoi(path)) : cap_.cap.open(path);
 	if (!ok || !cap_.isOpened()) {
-		error = info_.kind == SourceInfo::Camera ? "Can't open " + info_.label + " yet. Check it's plugged in (for a phone, that its webcam app is running) and that no other app, like a video call, is using it. Or try another number."
+		error = pi ? cap_.pi.error()
+			: info_.kind == SourceInfo::Camera ? "Can't open " + info_.label + " yet. Check it's plugged in (for a phone, that its webcam app is running) and that no other app, like a video call, is using it. Or try another number."
 			: info_.kind == SourceInfo::Stream ? "Can't connect to " + info_.label + ". Check the address, user name and password, and that the camera is on this network."
 			: "Can't open " + info_.label + ". It may be damaged or in a format VST can't read; converting it to MP4 usually helps (ffmpeg -i in.ext -c:v libx264 out.mp4).";
 		return false;

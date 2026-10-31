@@ -76,6 +76,7 @@
 #include "Snapshot.h"
 #include "UserPaths.h"
 #include "Engine.h"
+#include "PiCamera.h"
 
 #ifndef VST_VERSION
 #define VST_VERSION "dev"  // CMake stamps the release version in; it goes into the run manifest's "vst"
@@ -102,7 +103,7 @@ bool bailing = false;
 // ........................................................ Globals shared between setup() and main() ................................................
 ofstream traceFile;
 ofstream statsFile;
-VideoCapture capture;  //video capture object.
+FrameSource capture;  // video capture object: a cv::VideoCapture, or a Raspberry Pi camera (PiCamera.h)
 vector<string> filesToDo;  // Full paths of the videos main() processes, in order.  One entry unless "*" was chosen in interactive mode.
 string fileName;  // Name (no directory) of the video currently being processed.  Foscam names "manual_yyyymmddhhmmss.avi" supply the csv Date/Time columns (see setTimeBase()).
 int objDelay = 50;  // ms per frame pair while a vehicle is on screen (about real time).  "s" slows it to 250 then 1250 ms for close inspection, "f" speeds it up.  Was 1250; 50 is from piki's 2017 fork.
@@ -152,7 +153,7 @@ const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, 
 
 // Reads the next frame and scales it to the 1280x720 canvas every config coordinate refers to, so cameras that record
 // 1080p, 4K or 640x480 work with the same VST.cfg geometry.  Returns false at end of video or on a read error.
-bool readFrame(VideoCapture& cap, Mat& frame){
+bool readFrame(FrameSource& cap, Mat& frame){
 	if (!cap.read(frame) || frame.empty()) return false;
 	if (frame.cols != Globals::FrameWidth || frame.rows != Globals::FrameHeight)
 		cv::resize(frame, frame, Size(Globals::FrameWidth, Globals::FrameHeight), 0, 0, INTER_AREA);
@@ -164,19 +165,35 @@ bool isCameraIndex(const string& name){
 	return !name.empty() && name.size() < 4 && all_of(name.begin(), name.end(), [](char c){ return isdigit((unsigned char)c) != 0; });
 }
 
+// "picam", "picam:1", "picam:0?fps=60&shutter=1000": a Raspberry Pi ribbon camera, read through rpicam-vid (PiCamera.h).
+bool isPiCamera(const string& name){ return picam::isName(name); }
+
+// A camera of either kind: always live, and named "camera" in the run manifest.
+bool isLiveCamera(const string& name){ return isCameraIndex(name) || isPiCamera(name); }
+
 bool isStreamUrl(const string& name){ return name.find("://") != string::npos; }
 
-// Opens a video file, a stream URL (rtsp://, http://, anything FFmpeg reads), or, for an all-digit name like "0",
-// that local camera.
-bool openSource(VideoCapture& cap, const string& name){
-	if (isCameraIndex(name)) return cap.open(stoi(name));
+// Opens a video file, a stream URL (rtsp://, http://, anything FFmpeg reads), for an all-digit name like "0" that local
+// camera, or for "picam..." a Raspberry Pi camera.  A Pi camera that can't start says why on stderr (once per distinct
+// reason, so a reconnect loop doesn't repeat it every attempt), and once it starts, its settings go in the log.
+string lastPiError;  // cleared before each video's first open, so every run reports its own reason
+bool openSource(FrameSource& cap, const string& name){
+	if (isPiCamera(name)){
+		bool ok = cap.openPiCamera(name);
+		if (!ok && cap.pi.error() != lastPiError) cerr << cap.pi.error() << endl;
+		lastPiError = ok ? "" : cap.pi.error();
+		if (ok) for (const string& note : cap.pi.notes()) cout << note << endl;
+		return ok;
+	}
+	cap.pi.release();
+	if (isCameraIndex(name)) return cap.cap.open(stoi(name));
 #if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 6)
 	// FFmpeg waits 30 s by default on a camera that doesn't answer or a stream that stalls.  Shorter limits let a dropout be
 	// noticed and retried sooner (see readFramePair()), and keep Stop in VST Studio from hanging on a dead camera.
 	if (isStreamUrl(name) && videoio_registry::hasBackend(CAP_FFMPEG))
-		return cap.open(name, CAP_FFMPEG, { CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, CAP_PROP_READ_TIMEOUT_MSEC, 10000 });
+		return cap.cap.open(name, CAP_FFMPEG, { CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, CAP_PROP_READ_TIMEOUT_MSEC, 10000 });
 #endif
-	return cap.open(name);
+	return cap.cap.open(name);
 }
 
 // A source name that is safe to write down (the log, the run manifest).  A URL loses any user:password@ in front of the host,
@@ -211,6 +228,7 @@ string withoutPassword(const string& name){
 // A source for the log: "camera 0", or the file or URL without any password it carries.
 string sourceLabel(const string& name){
 	if (isCameraIndex(name)) return "camera " + name;
+	if (isPiCamera(name)) return picam::label(name);
 	return withoutPassword(name);
 }
 
@@ -225,7 +243,7 @@ string outputStem(const string& videoName){
 // ............................................ When each vehicle passed: the csv Date, Time and Timestamp columns ............................................
 // A report for a city council has to say when each vehicle went by, not just which frame of which video it was in.  Every
 // logged vehicle gets a time from the best clock available for its source:
-//   - live sources (camera index or stream URL): this computer's clock at the moment the vehicle is logged;
+//   - live sources (camera index, Pi camera or stream URL): this computer's clock at the moment the vehicle is logged;
 //   - Foscam recordings (manual_yyyymmddhhmmss.avi): the start time in the name plus the vehicle's frame offset;
 //   - other recordings: the file's modification time (when the camera finished writing it) minus the video's length,
 //     plus the frame offset.  That fails for copies (copying resets the time), so it's only used when it looks sane.
@@ -613,7 +631,7 @@ void setup(){
 
 	// Do a one-time setup of region of interest, obstructions and speed posts
 	Mat frame;
-	capture.open(filesToDo[0]);
+	openSource(capture, filesToDo[0]);
 	if (!capture.isOpened() || !readFrame(capture, frame)){
 		cerr << "Can't read video from " << filesToDo[0] << endl;
 		exit(EXIT_FAILURE);
@@ -686,6 +704,25 @@ void setup(){
 }
 
 
+// --list-pi-cameras: what `rpicam-vid --list-cameras` found, in VST's terms (the --input name for each camera, its model,
+// and the frame rate it will run at with the defaults).  Exit status 0 when at least one camera is attached.
+int listPiCameras(){
+	bool ok = false;
+	string error;
+	vector<picam::Camera> cams = picam::list(ok, error);
+	if (!ok){ cerr << error << endl; return EXIT_FAILURE; }
+	if (cams.empty()){
+		cout << "No Raspberry Pi camera found. Check the ribbon cable is pushed fully into both connectors with the contacts" << endl
+			<< "facing the right way (a Pi 5 needs the 22-pin to 15-pin cable), then reboot." << endl;
+		return EXIT_FAILURE;
+	}
+	picam::Settings defaults;
+	for (const picam::Camera& c : cams)
+		cout << "picam:" << c.index << "    " << c.model << " (" << c.sensor << "), " << picam::chooseFps(defaults, &c) << " fps at "
+			<< defaults.width << "x" << defaults.height << (c.autofocus ? ", focus locked at 0.25 dioptres unless focus= says otherwise" : "") << endl;
+	return EXIT_SUCCESS;
+}
+
 void printUsage(){
 	cout << "Usage: VideoSpeedTracker [options]        (no options = original interactive mode)" << endl
 		<< "  --demo                analyze the bundled 2016 sample video with the settings it was recorded with" << endl
@@ -700,6 +737,10 @@ void printUsage(){
 		<< "  --hl-min N --hl-max N speed range for highlights [35..100]" << endl
 		<< "  --hl-area N           minimum profile area for large-vehicle highlights [100]" << endl
 		<< "  --headless            no windows; runs as fast as the CPU allows" << endl
+		<< "  --list-pi-cameras     list the Raspberry Pi cameras attached, then exit" << endl
+		<< "Inputs: a video file, a stream URL (rtsp://, http://), a USB camera number (0, 1, ...), or a Raspberry Pi camera:" << endl
+		<< "  picam, picam:1, or picam:0?fps=60&shutter=1000&gain=0&focus=0.25&size=1280x720&rotate=180 (quote it in a shell)." << endl
+		<< "  Defaults: 60 fps, 1/1000 s shutter, automatic gain, Camera Module 3 focus locked at 0.25 dioptres (4 m)." << endl
 		<< "Video of any size or frame rate is accepted: frames are scaled to 1280x720 (the size VST.cfg coordinates" << endl
 		<< "refer to) and speeds are scaled by CalibrationFPS.  Exit status is 0 on success, 1 on any error." << endl
 		<< "First time?  Try --demo, then see GETTING-STARTED.md to set VST up for your own camera." << endl;
@@ -742,6 +783,7 @@ bool setupFromArgs(int argc, char** argv){
 		else if (a == "--hl-area") minimumProfileArea = nextInt();
 		else if (a == "--headless") headless = true;
 		else if (a == "--demo") demo = true;
+		else if (a == "--list-pi-cameras"){ quit(listPiCameras()); }
 		else if (a == "--help" || a == "-h"){ printUsage(); quit(EXIT_SUCCESS); }
 		else { cerr << "Unknown option: " << a << endl; printUsage(); return false; }
 	}
@@ -784,7 +826,12 @@ bool setupFromArgs(int argc, char** argv){
 	egregiousSpeedLowerBound = max(egregiousSpeedLowerBound, speedLimit);
 	crazySpeed = egregiousSpeedLowerBound + 20;
 
-	if (statsPath.empty()) statsPath = "stats_" + fs::path(fileName).stem().string() + ".csv";
+	if (statsPath.empty()){
+		picam::Settings pi;
+		string piError;
+		string stem = isPiCamera(inputPath) && picam::parse(inputPath, pi, piError) ? "picam" + to_string(pi.camera) : fs::path(fileName).stem().string();
+		statsPath = "stats_" + stem + ".csv";
+	}
 	statsFile.open(statsPath);
 	if (!statsFile.is_open()){ cerr << "Can't write stats file " << statsPath << endl; return false; }
 	statsFile << statsHeader << endl;
@@ -798,9 +845,17 @@ bool setupFromArgs(int argc, char** argv){
 
 	highLightsPlease = !hiLitePath.empty();
 	if (highLightsPlease){
-		VideoCapture probe;
-		openSource(probe, inputPath);
-		double fps = probe.isOpened() ? probe.get(CAP_PROP_FPS) : 30.0;
+		// A Pi camera isn't started just to ask its rate (that takes a couple of seconds, and only one reader may
+		// have it): the rate it will be asked for is known from its name.
+		double fps = 30.0;
+		picam::Settings pi;
+		string piError;
+		if (isPiCamera(inputPath)){ if (picam::parse(inputPath, pi, piError)) fps = picam::chooseFps(pi, nullptr); }
+		else {
+			FrameSource probe;
+			openSource(probe, inputPath);
+			if (probe.isOpened()) fps = probe.get(CAP_PROP_FPS);
+		}
 		hiLiteVideo.open(hiLitePath, VideoWriter::fourcc('m', 'p', '4', 'v'), fps > 0 ? fps : 30.0, Size(Globals::FrameWidth, Globals::FrameHeight), true);
 		if (!hiLiteVideo.isOpened()){ cerr << "Can't write highlights video " << hiLitePath << endl; return false; }
 	}
@@ -1801,7 +1856,7 @@ int vstMain(int argc, char** argv){
 	// What the run manifest says was analyzed: the file's name, the URL without passwords, or the camera index.  A "*" run
 	// in interactive mode (all the videos of one folder into one csv) is named by its folder.
 	const string& first = filesToDo[0];
-	manifestKind = isCameraIndex(first) ? "camera" : isStreamUrl(first) ? "stream" : "file";
+	manifestKind = isLiveCamera(first) ? "camera" : isStreamUrl(first) ? "stream" : "file";
 	if (filesToDo.size() > 1) manifestInput = fs::path(first).parent_path().filename().string();
 	else manifestInput = manifestKind == "file" ? fs::path(first).filename().string() : withoutPassword(first);
 
@@ -1821,10 +1876,12 @@ int vstMain(int argc, char** argv){
 		loggedVehicles = speeders = wrongWayVehicles = 0;
 		cout << endl << "Now processing " << withoutPassword(FName) << endl;
 		if (pleaseTrace) traceFile << endl << "Now processing cam input file: " << fileName << endl;
+		lastPiError.clear();
 		openSource(capture, FName);
 
 		if (!capture.isOpened()){
-			cerr << "Can't open video " << withoutPassword(FName) << endl
+			if (isPiCamera(FName)) cerr << "Can't start " << sourceLabel(FName) << " (the reason is above)." << endl;
+			else cerr << "Can't open video " << withoutPassword(FName) << endl
 				<< "Check the path, and that this OpenCV build can decode it (try converting with: ffmpeg -i in.ext -c:v libx264 out.mp4)." << endl;
 			return EXIT_FAILURE;
 		}
@@ -1848,7 +1905,7 @@ int vstMain(int argc, char** argv){
 		g.videoFPS = FPS;
 		// Live means a camera, or a URL that doesn't report a length.  A URL that does (an http:// link to a recorded file)
 		// is a file: it ends at its end instead of being reopened and played again.
-		liveSource = isCameraIndex(FName) || (isStreamUrl(FName) && !(capture.get(CAP_PROP_FRAME_COUNT) > 0));
+		liveSource = isLiveCamera(FName) || (isStreamUrl(FName) && !(capture.get(CAP_PROP_FRAME_COUNT) > 0));
 		reconnectAttempts = 0;
 		stoppedWhileReconnecting = false;
 		setTimeBase(FName, fpsReported);

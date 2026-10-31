@@ -31,7 +31,7 @@ static ImTextureID tid(Texture& t) { return (ImTextureID)(intptr_t)t.imguiId(); 
 const FlowStep kFlow[kFlowSteps] = {
 	{ "What you need", ICON_FLAG, "Everything you need to measure traffic on your street, in the order you'll use it", Page::Guide, 0 },
 	{ "Pick your spot", ICON_LOCATE, "See what your window can measure, before you buy or mount anything", Page::Guide, 1 },
-	{ "Connect the camera", ICON_CAMERA, "A phone or USB camera, a network camera, or video you've already recorded", Page::Source, -1 },
+	{ "Connect the camera", ICON_CAMERA, "A phone, USB or Raspberry Pi camera, a network camera, or video you've already recorded", Page::Source, -1 },
 	{ "Mark your street", ICON_VECTOR, "Drag the lines on the picture; the tracker only looks inside the box", Page::Zones, -1 },
 	{ "Calibrate", ICON_RULER, "Teach VST how long a car at a known speed takes to cross the zone", Page::Calibrate, -1 },
 };
@@ -98,6 +98,10 @@ void App::init(bool fresh, const std::string& configPath) {
 		&& (classifySource(prefs.lastSource) == SourceInfo::Stream || fs::exists(prefs.lastSource)))
 		openSource(prefs.lastSource);
 	if (prefs.remoteEnabled) setRemote(true);
+#ifndef _WIN32
+	if (!picam::findTool().empty())
+		piListing_ = std::async(std::launch::async, [] { bool ok = false; std::string error; return picam::list(ok, error); });
+#endif
 }
 
 void App::shutdown() {
@@ -193,6 +197,13 @@ bool App::openSource(const std::string& path) {
 	if (tracker.running()) { toast("Stop tracking before changing the source", c::warn, ICON_WARN); return false; }
 	if (!player.open(path)) { toast(player.error, c::bad, ICON_WARN); return false; }
 	source = path;
+	// A Pi camera reopened from Recent brings its settings back into the camera card's settings popup.
+	picam::Settings pi;
+	std::string piError;
+	if (picam::isName(path) && picam::parse(path, pi, piError)) {
+		piSettings_ = pi;
+		for (int i = 0; i < int(piCams_.size()); i++) if (piCams_[i].index == pi.camera) piChoice_ = i;
+	}
 	prefs.lastSource = path;
 	prefs.addRecent(path);
 	return true;
@@ -824,6 +835,67 @@ void App::drawToasts(float w, float h) {
 // Source
 // ======================================================================================================
 
+// The Pi camera settings popup on the camera card.  Defaults suit a street seen from the side (PiCamera.h): 60 fps, a
+// 1/1000 s shutter so cars don't smear, and Camera Module 3's focus locked so it never hunts as cars pass.
+void App::piCameraSettings() {
+	const picam::Camera& cam = piCams_[piChoice_];
+	ImGui::PushFont(fonts.strong);
+	ImGui::Text("%s  (%s)", cam.model.c_str(), cam.sensor.c_str());
+	ImGui::PopFont();
+	ImGui::PushTextWrapPos(px(340));
+
+	picam::Settings best = piSettings_;
+	best.fps = 0;
+	double top = picam::chooseFps(best, &cam);
+	char buf[96];
+	snprintf(buf, sizeof buf, "Best it can do (%.0f fps)", top);
+	ImGui::TextUnformatted("Frame rate");
+	if (ImGui::RadioButton(buf, piSettings_.fps == 0)) piSettings_.fps = 0;
+	if (top > 30) {
+		ImGui::SameLine();
+		if (ImGui::RadioButton("30 fps", piSettings_.fps == 30)) piSettings_.fps = 30;
+	}
+	dimText("More frames per second times fast cars better, especially on a short view.");
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::TextUnformatted("Shutter");
+	static const struct { int us; const char* label; } shutters[] = {
+		{ 500, "1/2000 s" }, { 1000, "1/1000 s (recommended)" }, { 2000, "1/500 s" }, { 4000, "1/250 s" }, { 0, "Automatic" },
+	};
+	const char* current = "Custom";
+	for (auto& sh : shutters) if (sh.us == piSettings_.shutterUs) current = sh.label;
+	ImGui::SetNextItemWidth(px(220));
+	if (ImGui::BeginCombo("##shutter", current)) {
+		for (auto& sh : shutters) if (ImGui::Selectable(sh.label, sh.us == piSettings_.shutterUs)) piSettings_.shutterUs = sh.us;
+		ImGui::EndCombo();
+	}
+	dimText("A short shutter keeps cars sharp; the camera turns its gain up to make up the light. At night, a longer one or "
+		"automatic still counts cars, with blurrier pictures.");
+
+	if (cam.autofocus) {
+		ImGui::Dummy(ImVec2(0, px(4)));
+		ImGui::TextUnformatted("Focus (locked, so it never hunts as cars pass)");
+		float feet = float(1 / (std::max(piSettings_.focus, 0.01) * 0.3048));
+		ImGui::SetNextItemWidth(px(220));
+		if (ImGui::SliderFloat("##focus", &feet, 5, 100, "%.0f ft to the lane", ImGuiSliderFlags_Logarithmic)) {
+			piSettings_.focus = 1 / (feet * 0.3048);
+			piSettings_.focusGiven = true;
+		}
+		dimText("The distance from the camera to the middle of the street. The default (13 ft) keeps about 7 ft to 100 ft sharp.");
+	}
+	else {
+		ImGui::Dummy(ImVec2(0, px(4)));
+		dimText("This camera focuses by hand: turn the lens until a parked car's number plate is crisp in the preview, then "
+			"tighten the lens's lock screw.");
+	}
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	bool flipped = piSettings_.rotation == 180;
+	if (ImGui::Checkbox("Mounted upside down", &flipped)) piSettings_.rotation = flipped ? 180 : 0;
+	ImGui::PopTextWrapPos();
+	dimText("Press Connect to start the camera with these settings.");
+}
+
 void App::pageSource() {
 	flowStepper();
 	float avail = ImGui::GetContentRegionAvail().x;
@@ -865,20 +937,53 @@ void App::pageSource() {
 			}
 		});
 		ImGui::SameLine(0, px(16));
-		sourceCard("srccam", ICON_CAMERA, c::ok, "USB camera or phone", "A webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
-			ImGui::SetNextItemWidth(px(110));
-			char camLabel[48];
-			snprintf(camLabel, sizeof camLabel, ICON_CAMERA "  %d", cameraIndex_);
-			if (ImGui::BeginCombo("##cam", camLabel)) {
+		if (piListing_.valid() && piListing_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+			piCams_ = piListing_.get();
+			piListed_ = true;
+			if (!piCams_.empty()) piChoice_ = 0;
+		}
+		sourceCard("srccam", ICON_CAMERA, c::ok, "USB, phone or Pi camera",
+			piCams_.empty() ? "A webcam, a phone in USB webcam mode, or a Raspberry Pi camera. Tracks live, in real time."
+				: "A Raspberry Pi camera, a webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
+			bool pi = piChoice_ >= 0 && piChoice_ < int(piCams_.size());
+			ImGui::SetNextItemWidth(px(pi ? 92 : 110));
+			char camLabel[96];
+			if (pi) snprintf(camLabel, sizeof camLabel, ICON_CAMERA " Pi %d", piCams_[piChoice_].index);
+			else snprintf(camLabel, sizeof camLabel, ICON_CAMERA "  %d", cameraIndex_);
+			if (ImGui::BeginCombo("##cam", camLabel, ImGuiComboFlags_HeightLarge)) {
+				for (int i = 0; i < int(piCams_.size()); i++) {
+					snprintf(camLabel, sizeof camLabel, "Pi camera %d: %s", piCams_[i].index, piCams_[i].model.c_str());
+					if (ImGui::Selectable(camLabel, piChoice_ == i)) piChoice_ = i;
+				}
+				// Never a dead end: on a Pi where none was found, say what usually fixes it.
+				if (piListed_ && piCams_.empty() && picam::onRaspberryPi()) {
+					ImGui::BeginDisabled();
+					ImGui::Selectable("No Pi camera found: reseat the ribbon cable, then restart");
+					ImGui::EndDisabled();
+				}
+				if (!piCams_.empty() || (piListed_ && picam::onRaspberryPi())) ImGui::Separator();
 				for (int i = 0; i < 6; i++) {
-					snprintf(camLabel, sizeof camLabel, "Camera %d%s", i, i == 0 ? " (usually built-in)" : "");
-					if (ImGui::Selectable(camLabel, cameraIndex_ == i)) cameraIndex_ = i;
+					snprintf(camLabel, sizeof camLabel, "USB camera %d%s", i, i == 0 ? " (usually built-in)" : "");
+					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == i)) { cameraIndex_ = i; piChoice_ = -1; }
 				}
 				ImGui::EndCombo();
 			}
-			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Which camera to use: 0 is usually the built-in or first one plugged in.");
-			ImGui::SameLine(0, px(8));
-			if (primaryButton(ICON_LINK " Connect", ImVec2(-FLT_MIN, 0), c::ok)) { batch.clear(); openSource(std::to_string(cameraIndex_)); }
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+				ImGui::SetTooltip("Which camera to use. USB camera 0 is usually the built-in or first one plugged in.");
+			if (pi) {
+				ImGui::SameLine(0, px(4));
+				if (iconButton(ICON_SLIDERS, "Pi camera settings: frame rate, shutter, focus")) ImGui::OpenPopup("##pisettings");
+				if (ImGui::BeginPopup("##pisettings")) { piCameraSettings(); ImGui::EndPopup(); }
+			}
+			ImGui::SameLine(0, px(pi ? 6 : 8));
+			if (primaryButton(ICON_LINK " Connect", ImVec2(-FLT_MIN, 0), c::ok)) {
+				batch.clear();
+				if (pi) {
+					piSettings_.camera = piCams_[piChoice_].index;
+					openSource(picam::name(piSettings_));
+				}
+				else openSource(std::to_string(cameraIndex_));
+			}
 		});
 		ImGui::SameLine(0, px(16));
 		sourceCard("srcnet", ICON_BROADCAST, c::accent2, "Network camera", "An IP or PoE camera's RTSP or HTTP address, as its manual gives it.", [&] {

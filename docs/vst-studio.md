@@ -65,15 +65,19 @@ use 60 fps, a fixed shutter of 1/1000 s (1/500 at most), and a lens that frames 
 
 ### 3 Connect the camera
 
-Open recorded video (several files run as a batch), a USB camera or a phone in USB webcam mode, or a network
-camera's RTSP/HTTP URL. A photo of the view also works for planning zones before the camera is installed. The
+Open recorded video (several files run as a batch), a USB camera or a phone in USB webcam mode, a Raspberry Pi
+camera, or a network camera's RTSP/HTTP URL. On a Raspberry Pi with a ribbon-cable camera attached, the camera card's
+menu starts on it (for example "Pi camera 0: Global Shutter Camera"), and the sliders button beside it sets the frame
+rate (60 fps by default), the shutter (1/1000 s, so cars don't smear), Camera Module 3's locked focus distance, and
+upside-down mounting. If the Pi finds no camera, the menu says to reseat the ribbon cable. A photo of the view also works for planning zones before the camera is installed. The
 preview lists resolution, frame rate, length and codec, with plain-language checks against what the tracker
 needs. Without a camera, **Use the sample** opens the 2016 Locust Avenue clip. **Aim it like this** shows where
 to point the camera and how to keep it still.
 
 ![Connect the camera](images/studio/03-source.jpg)
 
-The command line takes the same sources: `--input 0` opens the first camera and `--input rtsp://...` a stream.
+The command line takes the same sources: `--input 0` opens the first camera, `--input picam` the Raspberry Pi camera
+(README, [Raspberry Pi camera](../README.md#raspberry-pi-camera)), and `--input rtsp://...` a stream.
 
 ### 4 Mark your street
 

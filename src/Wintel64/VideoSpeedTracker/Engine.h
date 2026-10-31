@@ -66,9 +66,9 @@ struct Hooks {
 };
 
 // Runs the tracker as if from the command line, e.g. {"--input", "a.mp4", "--config", "VST.cfg", "--stats", "s.csv"}.
-// --headless is implied.  An --input of all digits opens that camera index; URLs (rtsp://, http://) work as
-// files do, except that a camera, or a URL that reports no length, is reopened after a dropout instead of ending the
-// run (see SourceStatus).  Returns the process exit status the CLI would have returned.
+// --headless is implied.  An --input of all digits opens that camera index, and "picam[:N][?settings]" a Raspberry Pi
+// camera (PiCamera.h); URLs (rtsp://, http://) work as files do, except that a camera, or a URL that reports no length,
+// is reopened after a dropout instead of ending the run (see SourceStatus).  Returns the process exit status the CLI would have returned.
 int run(const std::vector<std::string>& args, const Hooks& hooks);
 
 // The run manifest written beside a stats csv: the same folder and stem, with "stats_" swapped for "run_" (or "run_" put in
