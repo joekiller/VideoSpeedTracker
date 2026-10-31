@@ -1,0 +1,171 @@
+// Tesla dashcam telemetry (src/Gui/DashCam.cpp) unit test.
+//
+//   dashcam_test <scratch dir>
+//
+// Builds TeslaCam-style MP4s byte by byte (ftyp, mdat of length-prefixed NAL units with one SEI SeiMetadata message
+// per frame between the pictures, moov/mvhd with the clip's duration) and checks that the reader finds every
+// message, undoes H.264's emulation-prevention bytes, skips fields it doesn't use, times the samples from the file
+// name and duration, and that a pass's speed is read from the right seconds.  Also the user-facing errors: not an
+// MP4, no telemetry (older firmware), no TeslaCam timestamp in the name.
+#include "DashCam.h"
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+using Bytes = std::vector<unsigned char>;
+
+static int failures = 0, checks = 0;
+#define CHECK(cond) do { checks++; if (!(cond)) { failures++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } } while (0)
+
+static void put32(Bytes& b, uint32_t v) { for (int s = 24; s >= 0; s -= 8) b.push_back(uint8_t(v >> s)); }
+static void putVarint(Bytes& b, uint64_t v) { do { b.push_back(uint8_t((v & 0x7F) | (v > 0x7F ? 0x80 : 0))); v >>= 7; } while (v); }
+static void putRaw(Bytes& b, const void* p, size_t n) { auto c = static_cast<const unsigned char*>(p); b.insert(b.end(), c, c + n); }
+
+static Bytes box(const char* type, const Bytes& body) {
+	Bytes b;
+	put32(b, uint32_t(body.size() + 8));
+	putRaw(b, type, 4);
+	b.insert(b.end(), body.begin(), body.end());
+	return b;
+}
+
+// A SeiMetadata message as Tesla's dashcam.proto encodes it, with fields the reader must skip in between.
+static Bytes message(uint64_t seq, float mps, bool drive, double lat, double lon) {
+	Bytes m;
+	putVarint(m, 1 << 3); putVarint(m, 1);                        // version
+	if (drive) { putVarint(m, 2 << 3); putVarint(m, 1); }        // gear_state DRIVE (PARK = 0 is left out)
+	putVarint(m, 3 << 3); putVarint(m, seq);                      // frame_seq_no
+	if (mps != 0) { putVarint(m, 4 << 3 | 5); putRaw(m, &mps, 4); }
+	float pedal = .2f;
+	putVarint(m, 5 << 3 | 5); putRaw(m, &pedal, 4);               // accelerator_pedal_position
+	putVarint(m, 11 << 3 | 1); putRaw(m, &lat, 8);
+	putVarint(m, 12 << 3 | 1); putRaw(m, &lon, 8);
+	double accel = 0;                                             // linear_acceleration_mps2_x: eight zero bytes
+	putVarint(m, 14 << 3 | 1); putRaw(m, &accel, 8);
+	return m;
+}
+
+// Wraps a message in an SEI NAL the way Tesla does (06 05 size 42.. 69 payload 80), escaping any 00 00 0x run.
+static Bytes seiNal(const Bytes& msg) {
+	Bytes n = { 0x06, 0x05, uint8_t(msg.size() + 4), 0x42, 0x42, 0x69 };
+	int zeros = 0;
+	for (unsigned char c : msg) {
+		if (zeros >= 2 && c <= 3) { n.push_back(3); zeros = 0; }
+		n.push_back(c);
+		zeros = c == 0 ? zeros + 1 : 0;
+	}
+	n.push_back(0x80);
+	return n;
+}
+
+// A clip of `frames` frames over `seconds`, the speed of frame i given by `speed(i)` (m/s).  Each frame is an SEI
+// unit followed by a stand-in picture NAL, as in a real clip.
+static void writeClip(const fs::path& p, int frames, double seconds, const std::function<float(int)>& speed, bool withSei = true) {
+	Bytes mdat;
+	for (int i = 0; i < frames; i++) {
+		if (withSei) {
+			Bytes nal = seiNal(message(1000 + i, speed(i), speed(i) > 0, 38.0302, -78.4836));
+			put32(mdat, uint32_t(nal.size()));
+			mdat.insert(mdat.end(), nal.begin(), nal.end());
+		}
+		Bytes pic(300, uint8_t(i));
+		pic[0] = 0x65;   // IDR slice
+		put32(mdat, uint32_t(pic.size()));
+		mdat.insert(mdat.end(), pic.begin(), pic.end());
+	}
+	Bytes mvhd(100, 0);
+	uint32_t scale = 1000, dur = uint32_t(seconds * 1000);
+	for (int s = 0; s < 4; s++) { mvhd[12 + s] = uint8_t(scale >> (24 - 8 * s)); mvhd[16 + s] = uint8_t(dur >> (24 - 8 * s)); }
+	Bytes ftyp = { 'i', 's', 'o', 'm', 0, 0, 2, 0, 'i', 's', 'o', 'm' };
+	Bytes file = box("ftyp", ftyp), d = box("mdat", mdat), m = box("moov", box("mvhd", mvhd));
+	file.insert(file.end(), d.begin(), d.end());
+	file.insert(file.end(), m.begin(), m.end());
+	std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(file.data()), std::streamsize(file.size()));
+}
+
+int main(int argc, char** argv) {
+	if (argc < 2) { std::printf("usage: dashcam_test <scratch dir>\n"); return 2; }
+	fs::path out = argv[1];
+	fs::create_directories(out);
+	const double mps25 = 25 / 2.2369362920544;
+
+	// Names and times.
+	double t0 = dashcam::startFromName("2026-10-31_14-03-10-front.mp4");
+	CHECK(t0 > 0);
+	CHECK(dashcam::parseIso("2026-10-31T14:03:40") - t0 == 30);
+	CHECK(dashcam::startFromName("front.mp4") == 0);
+	CHECK(dashcam::parseIso("14:03:40") == 0);
+
+	// A one-minute clip at 36 fps: parked for 5 s, then accelerating to 25 mph by 15 s, steady at 25 until 45 s,
+	// then braking.
+	const int fps = 36, n = 60 * fps;
+	auto speed = [&](int i) {
+		double t = double(i) / fps;
+		if (t < 5) return 0.f;
+		if (t < 15) return float(mps25 * (t - 5) / 10);
+		if (t < 45) return float(mps25 + (i % 2 ? .05 : -.05));   // speedometer noise, ±0.1 mph
+		return float(std::max(0.0, mps25 * (55 - t) / 10));
+	};
+	fs::path clipPath = out / "2026-10-31_14-03-10-front.mp4";
+	writeClip(clipPath, n, 60, speed);
+	dashcam::Clip clip;
+	std::string err;
+	CHECK(dashcam::readClip(clipPath.string(), clip, err));
+	std::printf("  read %zu samples over %.1f s (%s)\n", clip.samples.size(), clip.duration, err.c_str());
+	CHECK(int(clip.samples.size()) == n);
+	CHECK(std::fabs(clip.duration - 60) < 1e-9);
+	CHECK(clip.start == t0);
+	if (int(clip.samples.size()) == n) {
+		CHECK(!clip.samples[0].drive && clip.samples[0].mps == 0);       // parked: proto3 leaves out gear and speed
+		CHECK(clip.samples[30 * fps].drive);
+		CHECK(std::fabs(clip.samples[30 * fps].mps - mps25) < .1);
+		CHECK(std::fabs(clip.samples[30 * fps].lat - 38.0302) < 1e-12);  // a double full of zero bytes, escaped
+		CHECK(std::fabs(clip.samples[30 * fps].lon + 78.4836) < 1e-12);
+		CHECK(std::fabs(clip.samples[n - 1].t - (t0 + 60.0 * (n - 1) / n)) < 1e-6);
+	}
+
+	// A pass logged 30 s into the clip after 0.8 s in the zone: 25 mph and steady.
+	std::vector<dashcam::Clip> clips = { clip };
+	dashcam::PassSpeed p = dashcam::speedDuring(clips, t0 + 30, .8);
+	std::printf("  pass at 30 s: %.2f mph (%.2f..%.2f, %d samples)\n", p.mph, p.minMph, p.maxMph, p.samples);
+	CHECK(p.found && p.steady());
+	CHECK(std::fabs(p.mph - 25) < .1);
+	// While accelerating: found, but not steady, so Studio warns rather than trusting it.
+	p = dashcam::speedDuring(clips, t0 + 10, .8);
+	CHECK(p.found && !p.steady());
+	// Outside the clip, or only touching its end: not found.
+	CHECK(!dashcam::speedDuring(clips, t0 + 120, .8).found);
+	CHECK(!dashcam::speedDuring(clips, t0 + 60, .8).found);
+	CHECK(!dashcam::speedDuring({}, t0 + 30, .8).found);
+
+	// A pass that straddles two clips is covered by the pair.
+	fs::path next = out / "2026-10-31_14-04-10-front.mp4";
+	writeClip(next, n, 60, [&](int) { return float(mps25); });
+	dashcam::Clip clip2;
+	CHECK(dashcam::readClip(next.string(), clip2, err));
+	clips.push_back(clip2);
+	p = dashcam::speedDuring(clips, t0 + 60, .8);
+	CHECK(p.found && p.steady());
+
+	// Errors a user can act on.
+	fs::path old = out / "2025-06-01_09-00-00-front.mp4";
+	writeClip(old, 100, 3, speed, false);
+	CHECK(!dashcam::readClip(old.string(), clip, err) && err.find("2025.44.25") != std::string::npos);
+	fs::path renamed = out / "my drive.mp4";
+	fs::copy_file(clipPath, renamed, fs::copy_options::overwrite_existing);
+	CHECK(!dashcam::readClip(renamed.string(), clip, err) && err.find("date and time") != std::string::npos);
+	fs::path text = out / "notes.mp4";
+	std::ofstream(text) << "not a video";
+	CHECK(!dashcam::readClip(text.string(), clip, err) && err.find("isn't an MP4") != std::string::npos);
+	CHECK(!dashcam::readClip((out / "missing.mp4").string(), clip, err) && err.find("Can't open") != std::string::npos);
+
+	std::printf("%d checks, %d failed\n", checks, failures);
+	return failures ? 1 : 0;
+}

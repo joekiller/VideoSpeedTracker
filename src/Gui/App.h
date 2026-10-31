@@ -14,6 +14,7 @@
 //   Companion                pairing a phone with the local API (QR code)
 #pragma once
 #include "Calibration.h"
+#include "DashCam.h"
 #include "Health.h"
 #include "Media.h"
 #include "Report.h"
@@ -91,6 +92,8 @@ public:
 	// A check pass: what the calibration in force says a pass at a known speed was, without changing anything.
 	// Appends a "check" row to the history and returns the comparison.
 	CalCheck checkCalibration(bool l2r, double mph, int frames, double fps);
+	void dashcamSpeed(const Vehicle* picked);   // Calibrate: fill the driven speed from a Tesla dashcam clip
+	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
 	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
 	// was made against) and the check pass imply; recorded as an apply.
 	void averageCalibration(const CalCheck& check);
@@ -190,6 +193,9 @@ private:
 	int calibSpeed_ = 25;
 	bool calibChecking_ = false;        // the Calibrate page's pass picker is choosing a check pass, not a calibration
 	int calibAppliedId_ = 0;            // the session vehicle the latest calibration came from (not a fair check)
+	std::vector<dashcam::Clip> dashClips_;   // Tesla dashcam clips loaded on the Calibrate page
+	int dashFor_ = 0;                   // the vehicle dashMph_ was read for, while calibSpeed_ still shows it rounded
+	double dashMph_ = 0;                // the car's own speed through the zone, to 0.1 mph
 	CalCheck lastCheck_;                // the latest check pass, for the result card
 	std::vector<CalEvent> calHistory_;  // calibration-history.csv rows for calHistoryFor_
 	std::string calHistoryFor_;

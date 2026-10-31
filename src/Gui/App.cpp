@@ -1148,6 +1148,74 @@ static void speedStepper(const char* id, int* mph) {
 	*mph = std::clamp(*mph, 5, 80);
 }
 
+double App::drivenMph(int vehicleId) const {
+	return dashFor_ == vehicleId && calibSpeed_ == int(std::lround(dashMph_)) ? dashMph_ : calibSpeed_;
+}
+
+// Under "I drove at" on the pass picker: load the car's dashcam clips and read its speed through the zone for the
+// picked pass, so the driver needn't hold a cruise-control speed.  The pass's log time (wall clock for a live
+// camera, or the recording's own time) is matched against the clips' times from their TeslaCam names; the two
+// clocks only need to agree to a second or two, and the speed must have held steady over that slack for the
+// reading to be used as is.
+void App::dashcamSpeed(const Vehicle* picked) {
+	if (ghostButton(ICON_CAR "  Read my speed from a Tesla dashcam clip", ImVec2(-FLT_MIN, 0))) {
+		auto files = pfd::open_file("Tesla dashcam clips from the drive past (the -front.mp4 ones)", "",
+			{ "TeslaCam clips", "*.mp4", "All files", "*" }, pfd::opt::multiselect).result();
+		if (!files.empty()) {
+			std::vector<dashcam::Clip> clips;
+			std::string lastErr;
+			for (const std::string& f : files) {
+				dashcam::Clip c;
+				std::string err;
+				if (dashcam::readClip(f, c, err)) clips.push_back(std::move(c));
+				else lastErr = err;
+			}
+			if (clips.empty()) toast(lastErr, c::bad, ICON_WARN);
+			else {
+				dashClips_ = std::move(clips);
+				dashFor_ = 0;
+				if (!lastErr.empty()) toast("Skipped a clip: " + lastErr, c::warn, ICON_WARN);
+			}
+		}
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Drive past at any steady speed with TeslaCam recording, then pick the clips from the\n"
+			"USB drive's TeslaCam folder. Needs Tesla software 2025.44.25 or later (HW3 and newer).");
+	if (dashClips_.empty()) return;
+
+	ImGui::PushTextWrapPos(0);
+	if (!picked) { dimText(ICON_CAR "  %d dashcam clip%s loaded. Pick your pass above.", int(dashClips_.size()), dashClips_.size() == 1 ? "" : "s"); ImGui::PopTextWrapPos(); return; }
+	const std::string& when = !picked->live && !picked->recorded.empty() ? picked->recorded : picked->time;
+	double end = dashcam::parseIso(when);
+	dashcam::PassSpeed ps = dashcam::speedDuring(dashClips_, end, picked->frames() / std::max(picked->fps, 1.0));
+	if (!ps.found) {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+		ImGui::TextWrapped(ICON_WARN "  The dashcam clips don't cover %s, when this pass was measured. Pick the clip from that minute, or check the computer's clock.",
+			when.substr(11).c_str());
+		ImGui::PopStyleColor();
+	}
+	else {
+		if (dashFor_ != picked->id) {
+			dashFor_ = picked->id;
+			dashMph_ = std::round(ps.mph * 10) / 10;
+			calibSpeed_ = int(std::lround(dashMph_));
+		}
+		if (ps.steady()) {
+			// The stepper shows whole mph; the tenths are what's applied, so say so.
+			dimText(ICON_CHECK "  Dashcam: %.1f mph, steady", dashMph_);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Your car read %.1f to %.1f mph through the zone. %.1f mph is used for this pass\nunless you change the speed above.", ps.minMph, ps.maxMph, dashMph_);
+		}
+		else {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+			ImGui::TextWrapped(ICON_WARN "  Your car was speeding up or slowing down here (%.1f to %.1f mph), so %.1f mph is only roughly right. A steadier pass calibrates better.",
+				ps.minMph, ps.maxMph, ps.mph);
+			ImGui::PopStyleColor();
+		}
+	}
+	ImGui::PopTextWrapPos();
+}
+
 void App::pageCalibrate() {
 	Globals& g = cfg.g;
 	float avail = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
@@ -1280,8 +1348,8 @@ void App::pageCalibrate() {
 		}
 		else {
 			stepLine(1, "Start tracking (live, or record a video). The zones should already be set.");
-			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph. Once each way on a two-way street.");
-			stepLine(3, "Pick your pass below, enter the speed you drove, and apply.");
+			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph, or at any steady speed with a Tesla's dashcam recording. Once each way on a two-way street.");
+			stepLine(3, "Pick your pass below, enter the speed you drove (or read it from the dashcam clip), and apply.");
 		}
 		ImGui::Dummy(ImVec2(0, px(2)));
 		auto vs = tracker.vehiclesSince(0);
@@ -1305,17 +1373,18 @@ void App::pageCalibrate() {
 		speedStepper("##spd", &calibSpeed_);
 		Vehicle picked;
 		bool have = calibPickId_ > 0 && tracker.vehicle(calibPickId_, picked);
+		dashcamSpeed(have ? &picked : nullptr);
 		if (calibChecking_) {
 			const char* why = have ? whyNoCheck(picked.ev.leftToRight, picked.id) : nullptr;
 			ImGui::BeginDisabled(!have || why);
-			if (primaryButton(ICON_BULLSEYE "  Check this pass", ImVec2(-FLT_MIN, 0))) checkCalibration(picked.ev.leftToRight, calibSpeed_, picked.frames(), picked.fps);
+			if (primaryButton(ICON_BULLSEYE "  Check this pass", ImVec2(-FLT_MIN, 0))) checkCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
 			ImGui::EndDisabled();
 			if (why) { ImGui::PushTextWrapPos(0); dimText("%s", why); ImGui::PopTextWrapPos(); }
 		}
 		else {
 			ImGui::BeginDisabled(!have);
 			if (primaryButton(ICON_CHECK "  Use this pass", ImVec2(-FLT_MIN, 0))) {
-				applyCalibration(picked.ev.leftToRight, calibSpeed_, picked.frames(), picked.fps);
+				applyCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
 				calibAppliedId_ = picked.id;
 			}
 			ImGui::EndDisabled();

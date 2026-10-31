@@ -172,6 +172,13 @@ if(TARGET vst_report)
   target_link_libraries(health_test PRIVATE vst_report)
   add_test(NAME unattended_health
     COMMAND health_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/health-test)
+
+  # Calibrating from a Tesla dashcam clip (src/Gui/DashCam.cpp): reads per-frame speed from synthetic TeslaCam MP4s
+  # and picks a pass's speed out of them.
+  add_executable(dashcam_test tests/dashcam_test.cpp)
+  target_link_libraries(dashcam_test PRIVATE vst_report)
+  add_test(NAME dashcam_calibration
+    COMMAND dashcam_test ${CMAKE_BINARY_DIR}/dashcam-test)
 endif()
 
 # Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back
