@@ -370,7 +370,7 @@ void setTimeBase(const string& source, bool fpsReported){
 //     "complete": <false while a live run is still going>, "frames": <frames analyzed>, "fps": <video fps>,
 //     "outages": [ { "from": <last frame before a dropout>, "to": <frames again> } ],
 //     "config": { CalibrationSpeed, CalibrationFPS, CalibrationFramesL2R/R2L, LegalDirection, L2RDirection, R2LDirection,
-//                 speedLineLeft, speedLineRight, minLoggedSpeed },
+//                 speedLineLeft, speedLineRight, minLoggedSpeed, subFrameTiming, levelDegrees, streetEdge },
 //     "counts": { "logged", "belowMinSpeed", "untimed" } }                        (see countVehicle())
 // It's rewritten whole each time, to a temp file that is then renamed over it, so a reader never sees half a file: at the end
 // of each video and of the run, and for a live source also when its first frames arrive, after each reconnect, and every
@@ -462,7 +462,7 @@ void writeManifest(bool complete){
 		<< ", \"R2LDirection\": " << jsonString(g.R2LDirection) << ",\n"
 		<< "    \"speedLineLeft\": " << g.speedLineLeft << ", \"speedLineRight\": " << g.speedLineRight << ",\n"
 		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << ", \"subFrameTiming\": " << g.subFrameTiming << ",\n"
-		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << "\n"
+		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << ", \"streetEdge\": [" << g.streetEdge[0] << ", " << g.streetEdge[1] << "]\n"
 		<< "  },\n"
 		<< "  \"counts\": { \"logged\": " << runLogged << ", \"belowMinSpeed\": " << runBelowMinSpeed << ", \"untimed\": " << runUntimed << " }\n"
 		<< "}\n";
@@ -647,8 +647,13 @@ void setup(){
 	cv::line(frame, Point(g.AnalysisBoxLeft + g.speedLineRight, 85 + g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.speedLineRight, 160 + g.AnalysisBoxTop), Scalar(CVWhite), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft + g.obstruction[0], 85 + g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.obstruction[0], 160 + g.AnalysisBoxTop), Scalar(CVYellow), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft + g.obstruction[1], 85 + g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.obstruction[1], 160 + g.AnalysisBoxTop), Scalar(CVYellow), 2);
-	cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + g.R2LStreetY), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + g.R2LStreetY), Scalar(CVOrange), 2);
-	cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + g.L2RStreetY), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + g.L2RStreetY), Scalar(CVPurple), 2);
+	for (bool l2r : { false, true }) {  // hubcap lines, at their angle if they have one
+		perspective::Line l = g.lane(l2r);
+		cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + int(lround(l.at(10)))),
+			Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + int(lround(l.at(g.AnalysisBoxWidth - 20)))), l2r ? Scalar(CVPurple) : Scalar(CVOrange), 2);
+	}
+	if (g.hasStreetEdge())
+		cv::line(frame, Point(g.AnalysisBoxLeft, g.AnalysisBoxTop + g.streetEdge[0]), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth, g.AnalysisBoxTop + g.streetEdge[1]), Scalar(CVCyan), 1);
 	double fps = capture.get(CAP_PROP_FPS);
 	capture.release();
 
@@ -1300,6 +1305,21 @@ OverlapType doesR2LOverlapAnyL2R(int R2LIndex, vector<Projection> vehiclesR2L, v
 //
 //  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  * 
 
+// The part of the motion image one direction's cars are looked for in: everything above that direction's hubcap line.  A
+// level line (the usual case) is just the top rows, a view with no copy.  A line at an angle (L2RStreetYRight /
+// R2LStreetYRight, Perspective.h) takes the rows down to its lower end and blacks out what lies below the slant, so the
+// sidewalk under the line's high end can't join a car the way it would under a level line drawn at the low end.
+static Mat laneView(const Mat& thresh, bool leftToRight){
+	int bottom = min(g.laneBottom(leftToRight), thresh.rows);
+	Mat view = thresh(Rect(0, 0, thresh.cols, bottom));
+	if (!g.laneTilted(leftToRight)) return view;
+	perspective::Line l = g.lane(leftToRight);
+	Mat masked = view.clone();
+	Point below[4] = { Point(0, int(lround(l.yLeft))), Point(thresh.cols, int(lround(l.at(thresh.cols)))), Point(thresh.cols, bottom), Point(0, bottom) };
+	fillConvexPoly(masked, below, 4, Scalar(0));
+	return masked;
+}
+
 bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 
 /// < < < < < < < < < < < < < < < < < < < < < < < < < < G e t   P r o j e c t i o n s   f o r   v e h s   a l r e a d y   i n   t r a c k  > > > > > > > > > > > > > > > > 
@@ -1425,8 +1445,10 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 	vector< vector<Point> > contours; // for findContours output
 	vector<Vec4i> hierarchy;  // for findContours output
 
+	// Each direction looks only above its own hubcap line (see laneView()).
+	const Mat threshL2R = laneView(wholeScenethreshImage, true), threshR2L = laneView(wholeScenethreshImage, false);
 	int numOKSizeObjectsL2R = 0; // Used to count how many detected objects are in selected region of interest
-	Mat tempForL2R = wholeScenethreshImage(Rect(g.pixelLeft, 0, g.pixelRight, g.L2RStreetY)); // L2RStreetY is the lowest needed to go to see a rightbound vehicle
+	Mat tempForL2R = threshL2R(Rect(g.pixelLeft, 0, g.pixelRight, threshL2R.rows)); // L2RStreetY is the lowest needed to go to see a rightbound vehicle
 	Rect objectBoundingRectangleL2R[MAX_NUM_OBJECTS]; // bounding rectangles, from top of ROI to L2R lane, captured in a given frame
 
 	findContours(tempForL2R, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
@@ -1451,7 +1473,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 
 
 	int numOKSizeObjectsR2L = 0; // Used to count how many detected objects are in selected region of interest
-	Mat tempForR2L = wholeScenethreshImage(Rect(g.pixelLeft, 0, g.pixelRight, g.R2LStreetY)); // R2LStreetY is the lowest needed to go for leftbound vehicle
+	Mat tempForR2L = threshR2L(Rect(g.pixelLeft, 0, g.pixelRight, threshR2L.rows)); // R2LStreetY is the lowest needed to go for leftbound vehicle
 	Rect objectBoundingRectangleR2L[MAX_NUM_OBJECTS]; // bounding rectangles captured in a given frame
 
 	contours.erase(contours.begin(), contours.end()); // Clear contours vector
@@ -1607,7 +1629,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				hierarchy.erase(hierarchy.begin(), hierarchy.end());  // Clear hierarchy vector
 				int tempX = max(projectedL2R[index].getBox().x - g.margin(80, true), g.pixelLeft);  // look behind the predicted rear bumper
 				int tempWidth = min(projectedL2R[index].getBox().width + g.margin(100, true), g.pixelRight - tempX); // Look a little beyond the front bumper;
-				Mat ROIL2R = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.L2RStreetY));
+				Mat ROIL2R = threshL2R(Rect(tempX, 0, tempWidth, threshL2R.rows));
 				findContours(ROIL2R, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeL2RObjects = 0; // Used to count how many detected objects are in selected region of interest
 				// found some objects?
@@ -1676,7 +1698,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				hierarchy.erase(hierarchy.begin(), hierarchy.end());  // Clear hierarchy vector
 				int tempX = max(projectedR2L[index].getBox().x - g.margin(20, false), g.pixelLeft);  // look a little ahead of the predicted front bumper
 				int tempWidth = min(projectedR2L[index].getBox().width + g.margin(100, false), g.pixelRight - tempX); // Look behind the rear bumper;
-				Mat ROIR2L = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.R2LStreetY));
+				Mat ROIR2L = threshR2L(Rect(tempX, 0, tempWidth, threshR2L.rows));
 				findContours(ROIR2L, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeR2LObjects = 0; // Used to count how many detected objects are in selected region of interest
 				// found some objects?

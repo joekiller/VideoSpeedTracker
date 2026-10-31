@@ -78,6 +78,7 @@ struct DemoScript {
 	bool done = false;
 	std::string pendingShot;
 	std::vector<std::string> failures;   // steps that gave up; any of these makes --shots exit non-zero
+	int laneBefore_[2] = {};             // the sample's lane rows, put back after the angled-lane shot
 
 	void shot(const char* name) { pendingShot = (fs::path(dir) / name).string(); }
 	void fail(const std::string& why) { std::fprintf(stderr, "--shots: %s\n", why.c_str()); failures.push_back(why); }
@@ -114,11 +115,32 @@ struct DemoScript {
 				app.levelDots_[1] = levelTurn(ImVec2(1030, 381), 3);
 			}
 			if (frames == 40) shot("04b-zones-level.png");
-			if (frames == 41) { app.cfg.g.levelDegrees = 0; app.levelTool_ = false; }
+			// Or leave the picture as it is and angle the lane line to follow the street instead: the same 3° turn, the lane
+			// line's two ends on the turned lane, and the street edge laid along the snow line (parallel to the lane here, so
+			// the card says there's no receding to correct for).
+			if (frames == 41) {
+				app.levelTool_ = false;
+				Globals& g = app.cfg.g;
+				laneBefore_[0] = g.R2LStreetY; laneBefore_[1] = g.L2RStreetY;
+				auto turnedRow = [&](float row, float x) { return int(std::lround(levelTurn(ImVec2(g.AnalysisBoxLeft + x, g.AnalysisBoxTop + row), 3).y)) - g.AnalysisBoxTop; };
+				float w = float(g.AnalysisBoxWidth);
+				setLane(g, false, true, turnedRow(float(g.R2LStreetY), 0), turnedRow(float(g.R2LStreetY), w));
+				g.streetEdge[0] = turnedRow(150, 0); g.streetEdge[1] = turnedRow(150, w);
+				app.inspectorScroll_ = 900;   // down to the Lane card
+			}
+			if (frames == 60) shot("04c-zones-angle.png");
+			if (frames == 61) {
+				Globals& g = app.cfg.g;
+				app.inspectorScroll_ = 0;
+				g.levelDegrees = 0;
+				setLane(g, false, false, laneBefore_[0], laneBefore_[0]);
+				setLane(g, true, false, laneBefore_[1], laneBefore_[1]);
+				g.streetEdge[0] = g.streetEdge[1] = 0;
+			}
 			// Back on Pick your spot with a picture: the "Zero in on it" card's car-length ruler over the sample.
-			if (frames == 42) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
-			if (frames == 61) shot("02b-zero-in.png");
-			if (frames == 63) next();
+			if (frames == 62) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
+			if (frames == 81) shot("02b-zero-in.png");
+			if (frames == 83) next();
 			break;
 		case 4:
 			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }

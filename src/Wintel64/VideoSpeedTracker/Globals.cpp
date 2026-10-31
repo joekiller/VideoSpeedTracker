@@ -100,18 +100,20 @@ bool Globals::readConfig(const string& path){
 	auto intKey = [](int& field){ return [&field](const string& v){ return parseInt(v, field); }; };
 	auto dblKey = [](double& field){ return [&field](const string& v){ return parseDouble(v, field); }; };
 	auto strKey = [](string& field){ return [&field](const string& v){ field = unquote(v); return true; }; };
+	auto pairKey = [](int (&field)[2]){ return [&field](const string& v){  // [a,b]
+		string inner = trim(v);
+		if (inner.size() < 2 || inner.front() != '[' || inner.back() != ']') return false;
+		inner = inner.substr(1, inner.size() - 2);
+		size_t comma = inner.find(',');
+		return comma != string::npos && parseInt(inner.substr(0, comma), field[0]) && parseInt(inner.substr(comma + 1), field[1]);
+	}; };
 	const vector<pair<string, function<bool(const string&)>>> keys = {
 		{ "dataPathPrefix", strKey(dataPathPrefix) },
 		{ "L2RDirection", strKey(L2RDirection) },
 		{ "R2LDirection", strKey(R2LDirection) },
 		{ "LegalDirection", strKey(LegalDirection) },
-		{ "obstruction", [this](const string& v){  // [left,right]; use left >= right (e.g. [0,0]) for no obstruction
-			string inner = trim(v);
-			if (inner.size() < 2 || inner.front() != '[' || inner.back() != ']') return false;
-			inner = inner.substr(1, inner.size() - 2);
-			size_t comma = inner.find(',');
-			return comma != string::npos && parseInt(inner.substr(0, comma), obstruction[0]) && parseInt(inner.substr(comma + 1), obstruction[1]);
-		} },
+		{ "obstruction", pairKey(obstruction) },  // [left,right]; use left >= right (e.g. [0,0]) for no obstruction
+		{ "streetEdge", pairKey(streetEdge) },    // [left,right]; [0,0] = off
 		{ "AnalysisBoxLeft", intKey(AnalysisBoxLeft) },
 		{ "AnalysisBoxTop", intKey(AnalysisBoxTop) },
 		{ "AnalysisBoxWidth", intKey(AnalysisBoxWidth) },
@@ -132,6 +134,8 @@ bool Globals::readConfig(const string& path){
 		{ "SLOP", intKey(SLOP) },
 		{ "R2LStreetY", intKey(R2LStreetY) },
 		{ "L2RStreetY", intKey(L2RStreetY) },
+		{ "R2LStreetYRight", intKey(R2LStreetYRight) },
+		{ "L2RStreetYRight", intKey(L2RStreetYRight) },
 		{ "nextHeight", intKey(nextHeight) },
 		{ "minLoggedSpeed", intKey(minLoggedSpeed) },
 		{ "subFrameTiming", intKey(subFrameTiming) },
@@ -201,6 +205,21 @@ vector<string> Globals::problems(){
 		bad("speed lines must satisfy 0 <= speedLineLeft < speedLineRight <= AnalysisBoxWidth (they are relative to AnalysisBoxLeft)");
 	if (R2LStreetY <= 0 || R2LStreetY > AnalysisBoxHeight || L2RStreetY <= 0 || L2RStreetY > AnalysisBoxHeight)
 		bad("R2LStreetY and L2RStreetY must be between 1 and AnalysisBoxHeight (they are relative to AnalysisBoxTop)");
+	if (R2LStreetYRight < 0 || R2LStreetYRight > AnalysisBoxHeight || L2RStreetYRight < 0 || L2RStreetYRight > AnalysisBoxHeight)
+		bad("R2LStreetYRight and L2RStreetYRight must be between 1 and AnalysisBoxHeight, or 0 for a level lane line");
+	if (streetEdge[0] != 0 || streetEdge[1] != 0) {
+		if (streetEdge[0] <= 0 || streetEdge[1] <= 0 || streetEdge[0] > AnalysisBoxHeight || streetEdge[1] > AnalysisBoxHeight)
+			bad("streetEdge must be [0,0] (off) or two rows between 1 and AnalysisBoxHeight, where a line along the curb crosses the box's left and right edges");
+		else for (bool l2r : { true, false }) {
+			// A one-way street's two lane lines are the same line; check each distinct one.
+			if (!l2r && lane(true).yLeft == lane(false).yLeft && lane(true).yRight == lane(false).yRight) break;
+			if (!perspective::vanishingUsable(vanishingX(l2r), AnalysisBoxWidth, speedLineLeft, speedLineRight)) {
+				bad(string("streetEdge and the ") + (l2r ? "L2R" : "R2L") + " lane line meet inside the picture or nearly so (the far end would be over "
+					+ to_string(int(perspective::kMaxDepthRatio)) + " times farther away); lay the street edge along the curb, roughly parallel to the lane");
+				break;
+			}
+		}
+	}
 	if (CalibrationFramesL2R <= 0 || CalibrationFramesR2L <= 0 || CalibrationSpeed <= 0 || CalibrationFPS <= 0)
 		bad("CalibrationFramesL2R, CalibrationFramesR2L, CalibrationSpeed and CalibrationFPS must all be > 0");
 	if (BLUR_SIZE <= 0)

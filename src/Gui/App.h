@@ -191,6 +191,7 @@ public:
 	// curb, and "Level to this line" turns cfg.g.levelDegrees by their slope; levelGrid_ shows the reference rows while
 	// the slider is being dragged (set by the inspector, read by the next frame's canvas).
 	bool levelTool_ = false, levelGrid_ = false;
+	float inspectorScroll_ = -1;   // --shots: scroll Mark your street's inspector here on its next frame (-1 = leave it)
 	ImVec2 levelDots_[2] = { { 360, 560 }, { 920, 560 } };
 	cv::Mat coneShot_[2];
 	double coneTimerAt_ = -1;

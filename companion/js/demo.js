@@ -57,7 +57,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     AnalysisBoxLeft: 10, AnalysisBoxTop: 220, AnalysisBoxWidth: 1269, AnalysisBoxHeight: 190,
     speedLineLeft: 350, speedLineRight: 909,
     obstruction: [251, 311],
-    R2LStreetY: 122, L2RStreetY: 158,
+    R2LStreetY: 122, L2RStreetY: 158, R2LStreetYRight: 0, L2RStreetYRight: 0, streetEdge: [0, 0],
     L2RDirection: 'SW', R2LDirection: 'NE',
     CalibrationFramesL2R: 35, CalibrationFramesR2L: 40, CalibrationSpeed: 25, CalibrationFPS: 30,
     legalDirection: 'R2L',

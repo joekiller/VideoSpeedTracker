@@ -135,13 +135,32 @@ Drag the slider while the reference rows are on the picture, or press **Use the 
 the curb, a lane stripe or the bottom of a fence, and press **Level it**. The tracker then turns
 every frame the same way before it looks at it (`levelDegrees` in `VST.cfg`, up to 15° either way; positive turns
 the picture counter-clockwise), and the preview shows the turned picture so the lines you draw land on the same
-pixels. Level first, then mark the lines and calibrate: a new angle moves the street under them. Aiming the camera
-along the street at an angle (yaw) or looking down at it (pitch) needs no fix, because calibration measures speed in
-the perspective the camera sees. A tilt past 15° is better fixed at the mount.
+pixels. Level first, then mark the lines and calibrate: a new angle moves the street under them. A tilt past 15° is
+better fixed at the mount.
+
+**A street at an angle.** A window that doesn't face the street squarely sees it run at a slant and get smaller
+toward the far end. Levelling isn't the fix there (it would tip the cars over); instead drag either end of the lane
+line so it follows the street (`R2LStreetYRight` / `L2RStreetYRight`). Each direction's cars are looked for only
+above its lane line, so a line that follows the street keeps whole cars in and the sidewalk out at both ends. The
+grips at the ends of the line are what to drag; an end within 2 pixels of level snaps level.
+
+Timing between the white lines needs nothing more: calibration timed a car between the same two lines in the same
+view, so the slant and the perspective are already in it. Short-view timing is the exception. It fits a straight
+line to the front bumper's position frame by frame, and on a street that recedes, a car at a steady speed moves
+more pixels per frame at the near end than at the far. Tick **The street gets farther away across the picture**
+and lay the green dashed street edge along the curb (or a lane stripe, or the tops of a row of parked cars). Where
+it closes in on the lane line is the street's vanishing point; VST then measures each car along the ground, and the
+card says how much farther away one speed line is than the other. Left parallel to the lane line it changes
+nothing. On the 2016 sample's 20 ft short view, warped so the street recedes (the far speed line 1.5 times as far
+away as the near one), short-view timing without it timed 37 of 61 cars, up to 6 mph off and 1.4 mph fast on
+average; with it, 57, nine in ten within 1 mph and none more than 2 off. With a gentle recede (1.2 times) it made
+no real difference, which is why it stays off unless you need it.
 
 ![Mark your street](images/studio/04-zones.jpg)
 
 ![Level the picture](images/studio/04b-zones-level.jpg)
+
+![A lane line angled to follow the street, with the street edge along the curb](images/studio/04c-zones-angle.jpg)
 
 ### 5 Calibrate
 

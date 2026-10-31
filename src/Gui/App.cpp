@@ -1256,17 +1256,18 @@ void App::pageZones() {
 	beginCard("legend", nullptr, nullptr, ImVec2(canvasW, 0));
 	struct Key { ImU32 col; const char* name; const char* what; };
 	const bool oneWay = cfg.g.LegalDirection == "L2R" || cfg.g.LegalDirection == "R2L";
-	const Key keys[] = {
+	std::vector<Key> keys = {
 		{ c::accent2, "Analysis box", "the only part of the picture the tracker looks at" },
 		{ c::rgb(0xFFFFFF), "Speed lines", "timing runs from one to the other" },
 		{ c::obstruction, "Obstruction", "the tracker coasts through it" },
 		// A one-way street has one lane line; a two-way street's two lanes share the legend's second row.
-		oneWay ? Key{ cfg.g.LegalDirection == "L2R" ? c::l2r : c::r2l, "Lane", "hubcap height of cars, either way" }
+		oneWay ? Key{ cfg.g.LegalDirection == "L2R" ? c::l2r : c::r2l, "Lane", "hubcap height of cars; drag an end to follow the street" }
 		       : Key{ c::l2r, "→ Lane", "hubcap height of cars going right" },
-		{ c::r2l, "← Lane", "hubcap height of cars going left" },
 	};
+	if (!oneWay) keys.push_back({ c::r2l, "← Lane", "hubcap height of cars going left" });
+	if (cfg.g.hasStreetEdge()) keys.push_back({ c::streetEdge, "Street edge", "along the curb: how the street recedes" });
 	float kw = (canvasW - px(36)) / 3;
-	for (int i = 0; i < (oneWay ? 4 : 5); i++) {
+	for (int i = 0; i < int(keys.size()); i++) {
 		if (i % 3) ImGui::SameLine(px(18) + kw * (i % 3));
 		ImGui::BeginGroup();
 		ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1294,6 +1295,7 @@ void App::pageZones() {
 
 void App::zoneInspector() {
 	Globals& g = cfg.g;
+	if (inspectorScroll_ >= 0) { ImGui::SetScrollY(px(inspectorScroll_)); inspectorScroll_ = -1; }
 	const float col = px(150);
 	auto intRow = [&](const char* label, int* v, int lo, int hi, const char* help = nullptr) {
 		formLabel(label, col);
@@ -1344,8 +1346,8 @@ void App::zoneInspector() {
 	if (segmented("legal", &legal, legalLabels, 3)) {
 		g.LegalDirection = legal == 1 ? "L2R" : legal == 2 ? "R2L" : "Both";
 		// One-way: one lane, so the wrong-way line joins the legal one (the canvas then shows and drags just that).
-		if (legal == 1) g.R2LStreetY = g.L2RStreetY;
-		if (legal == 2) g.L2RStreetY = g.R2LStreetY;
+		if (legal == 1) { g.R2LStreetY = g.L2RStreetY; g.R2LStreetYRight = g.L2RStreetYRight; }
+		if (legal == 2) { g.L2RStreetY = g.R2LStreetY; g.L2RStreetYRight = g.R2LStreetYRight; }
 	}
 	ImGui::Dummy(ImVec2(0, px(2)));
 	static const char* compass[] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
@@ -1395,18 +1397,67 @@ void App::zoneInspector() {
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
-	if (g.LegalDirection == "L2R" || g.LegalDirection == "R2L") {
-		beginCard("lanes", ICON_ARROWS_LR, "Lane");
-		dimText("Put the line at hubcap height for cars in the lane. Anyone driving against the arrows is logged as wrong-way.");
-		int& legalY = g.LegalDirection == "L2R" ? g.L2RStreetY : g.R2LStreetY;
-		intRow("Lane", &legalY, 1, g.AnalysisBoxHeight);
-		g.L2RStreetY = g.R2LStreetY = legalY;
-		endCard();
-	} else {
-		beginCard("lanes", ICON_ARROWS_LR, "Lanes");
-		dimText("Put each dashed line at hubcap height for cars in that lane.");
-		intRow("← lane", &g.R2LStreetY, 1, g.AnalysisBoxHeight);
-		intRow("→ lane", &g.L2RStreetY, 1, g.AnalysisBoxHeight);
+	{
+		// A lane line has two ends, so it can follow a street that runs at an angle across the picture (Perspective.h);
+		// setLane() keeps a level line stored the way it always was.  One-way: one line for both directions.
+		const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L", legalL2R = g.LegalDirection == "L2R";
+		auto laneRows = [&](const char* leftLabel, const char* rightLabel, bool l2r, bool both) {
+			perspective::Line l = g.lane(l2r);
+			int left = int(l.yLeft), right = int(l.yRight);
+			intRow(leftLabel, &left, 1, g.AnalysisBoxHeight);
+			intRow(rightLabel, &right, 1, g.AnalysisBoxHeight, "Different from the left end when the street runs at an angle across the picture");
+			setLane(g, l2r, both, left, right);
+		};
+		if (oneWay) {
+			beginCard("lanes", ICON_ARROWS_LR, "Lane");
+			dimText("Put the line at hubcap height for cars in the lane. Street at an angle? Drag either end of the line so it follows the street. "
+				"Anyone driving against the arrows is logged as wrong-way.");
+			laneRows("Left end", "Right end", legalL2R, true);
+		} else {
+			beginCard("lanes", ICON_ARROWS_LR, "Lanes");
+			dimText("Put each dashed line at hubcap height for cars in that lane. Drag an end to follow a street that runs at an angle.");
+			laneRows("← left end", "← right end", false, false);
+			laneRows("→ left end", "→ right end", true, false);
+		}
+
+		// Advanced: how the street recedes.  A second line along the curb meets the lane line at the street's vanishing
+		// point; short-view timing then measures each car along the ground rather than in pixels (Perspective.h).  Off by
+		// default: on the sample's view it changes nothing, and it pays off only where the far end is clearly smaller.
+		ImGui::Dummy(ImVec2(0, px(2)));
+		bool recedes = g.hasStreetEdge();
+		if (ImGui::Checkbox("The street gets farther away across the picture", &recedes)) {
+			if (recedes) {
+				// Start parallel to the lane line, a little below it (or above, near the box's bottom): no effect until the
+				// user lays it on the curb.
+				perspective::Line l = g.lane(oneWay ? legalL2R : true);
+				int off = std::max(l.yLeft, l.yRight) + 40 <= g.AnalysisBoxHeight - 2 ? 40 : -40;
+				g.streetEdge[0] = std::clamp(int(l.yLeft) + off, 1, g.AnalysisBoxHeight);
+				g.streetEdge[1] = std::clamp(int(l.yRight) + off, 1, g.AnalysisBoxHeight);
+			}
+			else g.streetEdge[0] = g.streetEdge[1] = 0;
+		}
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+			ImGui::SetTooltip("Advanced, for a camera aimed partly along the street.\nLay the green dashed line along the curb; where it closes in on the lane line\n"
+				"tells VST how the street recedes, and short-view timing then measures along the ground.");
+		if (recedes) {
+			dimText("Drag the ends of the green dashed line onto the curb, or any line that runs along the street (a lane stripe, a row of parked cars).");
+			intRow("Edge left", &g.streetEdge[0], 1, g.AnalysisBoxHeight);
+			intRow("Edge right", &g.streetEdge[1], 1, g.AnalysisBoxHeight);
+			bool l2r = oneWay ? legalL2R : true;
+			double xV = g.vanishingX(l2r);
+			double ratio = perspective::depthRatio(g.speedLineLeft, g.speedLineRight, xV);
+			if (std::isnan(xV)) dimText(ICON_INFO "  The two lines are parallel, so there's no receding to correct for. That's fine: the speeds are already right.");
+			else if (perspective::vanishingUsable(xV, g.AnalysisBoxWidth, g.speedLineLeft, g.speedLineRight)) {
+				bool rightFar = ratio > 1;
+				int pct = int(std::lround((rightFar ? ratio : 1 / ratio) * 100 - 100));
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
+				ImGui::TextWrapped(ICON_CHECK_CIRCLE "  The %s speed line is about %d%% farther away than the %s one; speeds are measured along the ground.",
+					rightFar ? "right" : "left", pct, rightFar ? "left" : "right");
+				ImGui::PopStyleColor();
+			}
+			if (!g.subFrameTiming)
+				dimText(ICON_INFO "  Short-view timing (Detection tuning) is what uses this. Whole-frame timing already gets it right through calibration.");
+		}
 		endCard();
 	}
 

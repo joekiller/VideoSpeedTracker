@@ -2,7 +2,8 @@
 //
 // All geometry is in VST's 1280x720 frame coordinates (what VST.cfg uses); View maps it to screen pixels.
 // The zone editor lets every value that used to be typed into VST.cfg be dragged on the picture instead:
-// analysis box (edges, corners, move tab), the two speed lines, the obstruction band and the two lane lines.
+// analysis box (edges, corners, move tab), the two speed lines, the obstruction band, the lane lines (whole, or by an end
+// to tilt one along a street that runs at an angle) and the optional street edge (Perspective.h).
 #pragma once
 #include "Engine.h"
 #include "Globals.h"
@@ -47,6 +48,11 @@ ImVec2 levelTurn(ImVec2 p, double degrees);
 // Draws the tracker's live boxes with speed tags.
 void trackOverlay(const View& v, const Globals& g, const cv::Rect& analysisBox, const std::vector<vst::TrackBox>& boxes,
 	int speedLimit, int egregious);
+
+// Sets a lane line's two ends (rows relative to AnalysisBoxTop, at the box's left and right edges) for one direction, or
+// both for a one-way street's single lane.  A line whose ends agree is stored level (right end 0, as VST.cfg always had
+// it), so only a line that really runs at an angle writes L2RStreetYRight / R2LStreetYRight (Perspective.h).
+void setLane(Globals& g, bool l2r, bool both, int left, int right);
 
 // Arrow along a lane with a label, used by the overlay and the guide.
 void laneArrow(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float thickness);
