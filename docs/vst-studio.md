@@ -95,14 +95,29 @@ compass label of one direction, such as `NE`); the command line prints a `WRONG 
 
 ### 5 Calibrate
 
-VST counts frames rather than measuring distance, so it needs one pass at a known speed.
+VST counts frames rather than measuring distance, so it needs one pass at a known speed, or a measured distance it
+can turn into one.
 
 - **Drive-through:** run tracking, drive past on cruise control, pick your pass from the list and enter the
   speed you drove. From the Results page, **This was me** on a selected vehicle does the same.
 - **Count frames:** step through a calibration video (←/→, Shift for 10 frames, Space to play), mark the frame
   where the front bumper touches each line, and enter the speed.
+- **Cones or pole:** no car needed. Chalk two spots a taped distance apart along the lane (10 ft or more), stand
+  a cone on each or hold a pole (a range pole, a broom, PVC pipe with tape bands) upright on one and then the other,
+  click each on the picture and enter the distance. Only the left-right position counts, so any point on an upright
+  pole will do, even where a porch roof or parked car hides the road surface, and one person can do it with one pole.
+  VST works out how long the speed zone is (zone width ÷ spot spacing on the picture × feet) and the frames a car at
+  `CalibrationSpeed` takes over it (`feet ÷ (CalibrationSpeed × 5280 / 3600) × CalibrationFPS`), for both directions
+  or just one. It is only as good as the spots' depth: put them on the line the cars' near side runs along, because
+  the far lane crosses more road between the lines. The page shows the zone length and how much rounding to whole
+  frames costs; this calibration is marked **Not checked** until a drive past checks it.
 
-Both keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
+  The phone companion has the same step (Setup › Calibration drive › *No car handy?*), so you can stand on the
+  street with the phone on your Wi-Fi, see yourself and the pole on the live picture, tap it and apply there.
+
+![Cones or pole](images/studio/07d-calibrate-cones.jpg)
+
+All three keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
 `CalibrationFPS`. The page shows what crossing times read as which speeds.
 
 ![Calibrate](images/studio/07-calibrate.jpg)
@@ -156,8 +171,9 @@ again.
 #### Calibration history
 
 Every calibration and every check is appended to `calibration-history.csv` in the config folder (next to
-`vst-studio.ini`), from the drive-through, **Count frames**, **This was me** on the Results page, and the phone
-companion. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
+`vst-studio.ini`), from the drive-through, **Count frames**, **Cones or pole**, **This was me** on the Results page,
+and the phone companion. A cones-or-pole calibration is recorded as an apply at `CalibrationSpeed` and `CalibrationFPS`
+with the computed frames. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
 was made, from what pass, and how a second pass agreed with it. The per-direction state on the page is worked out
 from it, so it survives restarts.
 

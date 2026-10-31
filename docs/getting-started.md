@@ -128,6 +128,11 @@ speed = CalibrationSpeed × CalibrationFrames × (video fps / CalibrationFPS) / 
 then **Check it with a second drive**, which shows the error and calls it **Verified** within ±2 mph. Every
 calibration and check it makes is appended to `calibration-history.csv` in the config folder, as that record.
 
+No car handy yet? **Cones or pole** on the same page calibrates from a measured distance instead: chalk two spots a
+taped distance apart along the lane, stand a cone on each or hold a pole upright on one and then the other, click
+(or, from the phone companion on the street, tap) each, and enter the distance. It's a good start and only as
+accurate as where the spots are, so check it with a drive past when you can.
+
 If a direction can't be calibrated, a rough value is the other direction's frame count scaled by how much shorter
 or longer the zone looks in that lane.
 

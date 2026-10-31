@@ -288,6 +288,27 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         if (r.ok) history.push({ time: localIso(now()), kind: 'apply', dir, calFrames: cal, error: null });
         return ok(r);
       }
+      case 'POST /api/calibration/distance': {
+        // Like VST Studio: the zone's length from two cones `feet` apart on the picture, then the frames a car at
+        // CalibrationSpeed takes over it (src/Gui/Calibration.h framesForDistance), for one direction or both.
+        const { cones, feet, dir = 'both' } = body || {};
+        const shaped = Array.isArray(cones) && cones.length === 2 && cones.every((c) => Array.isArray(c) && c.length === 2
+          && c.every(Number.isFinite) && c[0] >= 0 && c[0] <= 1280 && c[1] >= 0 && c[1] <= 720);
+        const markPx = shaped ? Math.abs(cones[1][0] - cones[0][0]) : 0;
+        const zonePx = config.speedLineRight - config.speedLineLeft;
+        const problem = !shaped ? 'mark both spots on the picture first'
+          : !(Number(feet) > 0) ? 'enter the distance between the spots in feet'
+          : !['both', 'L2R', 'R2L'].includes(dir) ? 'dir must be both, L2R or R2L'
+          : markPx < 40 ? 'the two spots are too close together on the picture; space them further apart' : null;
+        if (problem) return ok({ ok: false, problems: [problem], config });
+        const zoneFeet = zonePx / markPx * Number(feet);
+        const frames = zoneFeet / (config.CalibrationSpeed * 5280 / 3600) * config.CalibrationFPS;
+        const cal = Math.max(1, Math.round(frames));
+        const dirs = dir === 'both' ? DIRS : [dir];
+        const r = setConfig(Object.fromEntries(dirs.map((d) => [`CalibrationFrames${d}`, cal])));
+        if (r.ok) for (const d of dirs) history.push({ time: localIso(now()), kind: 'apply', dir: d, calFrames: cal, error: null });
+        return ok({ ...r, zoneFeet: Math.round(zoneFeet * 10) / 10, frames: Math.round(frames * 10) / 10 });
+      }
       case 'POST /api/calibration/check': {
         const pass = calibrationPass(body);
         if (pass.problem) return ok({ ok: false, problems: [pass.problem] });

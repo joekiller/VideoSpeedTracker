@@ -106,6 +106,9 @@ public:
 	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
 	// was made against) and the check pass imply; recorded as an apply.
 	void averageCalibration(const CalCheck& check);
+	// Sets CalibrationFrames for one or both directions from the two-cone measurement (calib::framesForDistance),
+	// recorded in the history as the equivalent pass: CalibrationFrames frames at CalibrationSpeed.
+	void applyDistanceCalibration(bool l2r, bool r2l, double calFrames);
 	// Not calibrated / not checked / verified / check failed, from the history rows for the current VST.cfg.
 	CalState calibrationState(bool l2r);
 	void loadResultsCsv(const std::string& path);
@@ -150,6 +153,13 @@ public:
 	std::vector<ResultRow> rows;
 	std::string rowsFrom;               // "" = this session, else the csv path
 	int calibMarks[2][2] = { { -1, -1 }, { -1, -1 } };   // [l2r?0:1][start/end] frame numbers marked by hand
+	// The Calibrate page's "Cones or pole" mode: each cone's base on the picture (1280-wide grid, -1 = not marked), which
+	// one the next click on the picture places (-1 = none), the measured distance between them, and the directions
+	// it applies to (0 both, 1 left to right, 2 right to left).
+	float coneX_[2] = { -1, -1 }, coneY_[2] = { -1, -1 };
+	int conePlacing_ = -1;
+	double coneFt_ = 10;
+	int coneDir_ = 0;
 	std::unique_ptr<Server> server;
 	bool screenshotMode = false;        // documentation captures (main.cpp --shots)
 	bool persist = true;                // save preferences on exit

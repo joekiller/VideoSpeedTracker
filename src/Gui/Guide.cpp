@@ -470,7 +470,7 @@ void App::pageGuide() {
 			"Drag a box around the moving lane and two lines to time between. Say which way a one-way street runs.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g5", ICON_CAR, c::l2r, "One drive past", "Step 5 · Calibrate",
-			"You or a friend drive past at a known speed: on cruise control, or at any steady speed with a Tesla or VST Ride-along recording.", ImVec2(cw, ch));
+			"You or a friend drive past at a known speed: on cruise control, or with a Tesla or VST Ride-along recording. No car yet? A pole or two cones, a taped distance apart.", ImVec2(cw, ch));
 		ImGui::Dummy(ImVec2(0, px(8)));
 		beginCard("need2", ICON_CHECK_CIRCLE, "What makes a good setup", ImVec2(avail, 0));
 		float half = (ImGui::GetContentRegionAvail().x - px(20)) * .5f;

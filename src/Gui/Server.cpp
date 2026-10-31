@@ -565,6 +565,45 @@ void Server::routes() {
 		sendPosted(res, out);   // 200 either way, as for PUT /api/config
 	}));
 
+	// Calibration from two cones a measured distance apart (the Calibrate page's "Cones or pole" mode, from the street):
+	// {"cones": [[x, y], [x, y]] in the 1280x720 grid, "feet": 12, "dir": "both"|"L2R"|"R2L"}.  Refusals are 200
+	// {ok: false, problems}, as for apply.  The cones also show on VST Studio's Calibrate page.
+	http_->Post("/api/calibration/distance", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
+		json in;
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
+		std::string out = app.post([&app, in] {
+			std::string err, dir = in.value("dir", "both");
+			double feet = in.contains("feet") && in["feet"].is_number() ? in["feet"].get<double>() : 0;
+			double xy[2][2] = { { -1, -1 }, { -1, -1 } };
+			const json* cones = in.contains("cones") ? &in["cones"] : nullptr;
+			bool shaped = cones && cones->is_array() && cones->size() == 2;
+			for (int i = 0; shaped && i < 2; i++) {
+				const json& c = (*cones)[i];
+				shaped = c.is_array() && c.size() == 2 && c[0].is_number() && c[1].is_number();
+				if (shaped) { xy[i][0] = c[0].get<double>(); xy[i][1] = c[1].get<double>(); }
+				shaped = shaped && xy[i][0] >= 0 && xy[i][0] <= 1280 && xy[i][1] >= 0 && xy[i][1] <= 720;
+			}
+			const Globals& g = app.cfg.g;
+			double markPx = shaped ? std::fabs(xy[1][0] - xy[0][0]) : 0;
+			double frames = calib::framesForDistance(markPx, feet, g.speedLineRight - g.speedLineLeft, g.CalibrationSpeed, g.CalibrationFPS);
+			if (!shaped) err = "mark both spots on the picture first";
+			else if (!(feet > 0)) err = "enter the distance between the spots in feet";
+			else if (dir != "both" && dir != "L2R" && dir != "R2L") err = "dir must be both, L2R or R2L";
+			else if (markPx < 40) err = "the two spots are too close together on the picture; space them further apart";
+			else if (!(frames > 0)) err = "the speed lines aren't set yet";
+			if (shaped)
+				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(xy[i][0]); app.coneY_[i] = float(xy[i][1]); }
+			if (err.empty()) {
+				app.applyDistanceCalibration(dir != "R2L", dir != "L2R", frames);
+				if (!app.cfg.save()) err = app.cfg.error;
+			}
+			json r{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) }, { "config", configJson(app) } };
+			if (frames > 0) { r["zoneFeet"] = std::round((g.speedLineRight - g.speedLineLeft) / markPx * feet * 10) / 10; r["frames"] = std::round(frames * 10) / 10; }
+			return r.dump();
+		});
+		sendPosted(res, out);   // 200 either way, as for apply
+	}));
+
 	// A check pass: the same inputs as apply (a logged pass, or the hand-marked span), but nothing changes except a
 	// "check" row in calibration-history.csv.  The answer says what the calibration in force makes of the pass.
 	http_->Post("/api/calibration/check", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {

@@ -56,6 +56,17 @@ double impliedFrames(double mph, int frames, double fps, double calSpeed, double
 // speed = CalibrationSpeed × CalibrationFrames × (fps / CalibrationFPS) / frames.
 double measuredMph(int calFrames, int frames, double fps, double calSpeed, double calFps);
 
+// Calibration from a measured distance instead of a pass (the Calibrate page's "Cones or pole" mode): two marks
+// `markPx` apart on the picture (1280-wide grid, the same as the speed lines) are `markFt` apart on the street, so the
+// zone between the speed lines, `zonePx` wide, is zonePx / markPx × markFt feet, and a car at CalibrationSpeed crosses
+// it in that many feet ÷ (CalibrationSpeed in ft/s) seconds, × CalibrationFPS frames.  Unrounded; 0 when the marks
+// or the distance can't give an answer.  Only as good as the marks' depth: they must be where the cars' near side runs.
+inline double framesForDistance(double markPx, double markFt, double zonePx, double calSpeed, double calFps) {
+	if (markPx <= 0 || markFt <= 0 || zonePx <= 0 || calSpeed <= 0 || calFps <= 0) return 0;
+	double zoneFt = zonePx / markPx * markFt;
+	return zoneFt / (calSpeed * 5280.0 / 3600.0) * calFps;
+}
+
 // A direction's state from its history.  `currentFrames` is the CalibrationFrames<dir> now in VST.cfg and
 // `calibratedOffRecord` says whether the setup counts as calibrated without a history row (a v1.1 calibration made
 // before the history existed, or the bundled sample's VST.cfg).

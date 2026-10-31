@@ -200,7 +200,17 @@ struct DemoScript {
 				}
 			}
 			if (frames == 40) shot("07c-calibrate-check-failed.png");
-			if (frames == 60) { shot("07b-calibrate-check.png"); next(); }
+			if (frames == 60) shot("07b-calibrate-check.png");
+			// Two cones, 10 ft apart, about where the sample's right-to-left lane runs (~200 px for 10 ft there).
+			if (frames == 61) {
+				const Globals& g = app.cfg.g;
+				app.calibChecking_ = false;
+				app.lastCheck_ = CalCheck();   // the check card belongs to the shots above
+				app.calibMode_ = 2;
+				app.coneFt_ = 10;
+				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 100 + 200 * i); app.coneY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
+			}
+			if (frames == 80) { shot("07d-calibrate-cones.png"); next(); }
 			break;
 		case 9:
 			if (frames == 1) { app.page = Page::Companion; app.setRemote(true); }
