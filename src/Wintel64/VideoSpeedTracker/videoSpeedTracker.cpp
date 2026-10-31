@@ -751,7 +751,7 @@ bool setupFromArgs(int argc, char** argv){
 		fs::path sample = userpaths::sampleVideo();
 		if (sample.empty()){
 			cerr << "The sample video isn't installed next to this program (looked for sample/manual_20160130172251.avi)." << endl
-				<< "Get it from https://github.com/joekiller/VideoSpeedTracker/tree/master/sampleData/IPCam/20160130 and pass it with --input." << endl;
+				<< "Get it from https://github.com/joekiller/VideoSpeedTracker/tree/main/sampleData/IPCam/20160130 and pass it with --input." << endl;
 			return false;
 		}
 		if (!inputPath.empty()){ cerr << "--demo and --input can't be used together" << endl; return false; }

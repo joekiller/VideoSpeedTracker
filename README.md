@@ -179,7 +179,7 @@ only).
 ### Pre-commit hook and CI
 
 Pull requests get one CI job (Linux, `.github/workflows/build.yml`), and only when they touch code, tests or config.
-The full release matrix (six Linux packages, Windows and macOS) runs only after a merge to master, so a change that
+The full release matrix (six Linux packages, Windows and macOS) runs only after a merge to main, so a change that
 breaks a platform shows up there rather than on the PR. Catch what you can before committing by turning on the repo's hook once per clone:
 
 ```

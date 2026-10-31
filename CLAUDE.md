@@ -5,4 +5,4 @@
   `git config core.hooksPath .githooks` so it runs on every commit). The C++ part needs OpenCV:
   `sudo apt-get install -y libopencv-dev cmake g++` is enough (see README "Building from source").
 - Code you can't build here (Windows-only `#ifdef _WIN32` paths, `packaging/windows`, macOS signing) is checked only
-  on master; say so in the PR when a change touches it, so Joe can run `gh workflow run release.yml --ref <branch>`.
+  on main; say so in the PR when a change touches it, so Joe can run `gh workflow run release.yml --ref <branch>`.
