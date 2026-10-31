@@ -41,21 +41,25 @@ A site planner, for before anything is bought or mounted. Start with the street 
 the distance to the moving lane and how long a stretch of it is clear, in feet, and the speed limit. The camera
 starts as a phone; pick another from the list once you know which one you'll use, and open **Camera details** for
 field of view, resolution, frame rate and shutter. It shows a to-scale top view and works out the usable timing
-zone, the frames a car spends in it, the timing and distance error, and motion blur, with a verdict and a table of
+zone, the frames a car spends in it, the timing and calibration error, and motion blur, with a verdict and a table of
 worst-case error by speed. The model:
 
 - lane in frame = 2 × distance × tan(field of view / 2), limited by the clear stretch
 - timing zone = visible lane − one car length − 0.2 s of run-up for the tracker to lock on
-- timing error ≈ speed ÷ frames in the zone (a one-frame slip), distance error ≈ speed × distance error ÷ zone
+- timing error ≈ speed ÷ frames in the zone (a one-frame slip); in a short view, the error of a line fitted
+  through the bumper positions
+- calibration error = the timing error of the calibration drive (at the speed limit), as a share of every speed
 - blur = speed × shutter time, in pixels at the lane
 
-**Short views.** A narrow street seen from a front window may show only 15 to 25 ft of the lane, too
+**Short views.** A narrow street seen from a front window may show only 14 to 25 ft of the lane, too
 little for a car to spend 15 whole frames in the zone. The planner then calls it a short view and offers **Use
 short-view timing**, which turns on `subFrameTiming` and sets the tracker's look-ahead, entry look-back and speed
 lines from the plan. With it, VST fits a line through each car's front-bumper positions and times the crossing to a
 fraction of a frame, so the zone no longer has to hold a whole car. **Narrow street from a front window** fills in a
 typical plan, and *Narrow streets: parked cars, shadows and wrong-way drivers* has tips for that kind of view. At
-30 fps a 20 ft view times cars up to about 50 to 60 mph; 60 fps raises that to about 100 mph.
+30 fps a 15 ft view times cars up to about 45 mph and a 20 ft view up to about 60; at 60 fps both time cars over
+70 mph, and the planner says which for your view. About 14 ft is the shortest view it plans for. For a short view
+use 60 fps, a fixed shutter of 1/1000 s (1/500 at most), and a lens that frames just the clear stretch.
 
 ![Site planner](images/studio/02-site-planner.jpg)
 

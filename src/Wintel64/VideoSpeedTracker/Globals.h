@@ -106,7 +106,7 @@ public:
 	int L2RStreetY = 158;			// Hubcap line for L2R vehicles on flat street.Purple. Locust Ave. Relative to AnalysisBoxTop...pixels
 	int nextHeight = 85;			// Initial best guess for height of entering vehicles...pixels.
 	int minLoggedSpeed = 18;		// MPH.  Vehicles timed slower than this (walkers, cyclists, cars turning in) are counted in the run manifest's belowMinSpeed but not written to the csv.  0 = log every timed vehicle.  18 was hard-coded until v1.2.
-	int subFrameTiming = 0;			// 1 for a short view (about 20 ft of street, a car filling most of the frame): time the front bumper to a fraction of a frame and scale the tracker's pixel margins (see margin()).  0 = whole frames, as before v1.3.
+	int subFrameTiming = 0;			// 1 for a short view (about 14-25 ft of street, a car filling most of the frame): time the front bumper to a fraction of a frame and scale the tracker's pixel margins (see margin()).  0 = whole frames, as before v1.3.
 
 	// A pixel margin tuned for the 2016 Locust Avenue view, where maxL2RDistOnEntry and maxR2LDistOnEntry are 75.  With
 	// subFrameTiming it grows in proportion to that direction's maxDistOnEntry, so a short view, where a car moves hundreds of

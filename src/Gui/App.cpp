@@ -1188,7 +1188,7 @@ void App::zoneInspector() {
 		intRow("Vehicle height", &g.nextHeight, 10, 300, "First guess at a vehicle's height in pixels.");
 		intRow("Large vehicle", &g.largeVehicleArea, 1, 1000, "Area above which a vehicle counts as a truck or bus.");
 		bool shortView = g.subFrameTiming != 0;
-		if (ImGui::Checkbox("Short view (about 20 ft of street in the picture)", &shortView)) g.subFrameTiming = shortView;
+		if (ImGui::Checkbox("Short view (about 14-25 ft of street in the picture)", &shortView)) g.subFrameTiming = shortView;
 		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Times each car's front bumper to a fraction of a frame, for views where a car fills most of the frame.\nThe site planner in step 2, Pick your spot, can set this and the steps below for you.");
 		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");

@@ -78,7 +78,7 @@ In short:
 
 - The street should cross the frame left to right, about halfway up.
 - The speed zone, the stretch between the two white lines, should take a car at least one second to cross at
-  the speed limit. At 25 mph that is about 37 ft. A narrow street where you can only see about 20 ft works too,
+  the speed limit. At 25 mph that is about 37 ft. A narrow street where you can only see 14 to 25 ft works too,
   with short-view timing (see [the example below](#example-a-narrow-view-of-a-one-way-street)).
 - Use 720p or better at 25 to 30 fps. Any size and frame rate is accepted: frames are scaled to 1280x720, and
   every pixel value in `VST.cfg` uses that 1280x720 grid.
@@ -173,12 +173,13 @@ On a one-lane street both directions use the same lane, so the two hubcap lines 
 VST was built for two-lane, two-way streets, so expect to tune `maxL2RDistOnEntry`, `maxR2LDistOnEntry` and `SLOP`
 for a narrow view.
 
-If the view is shorter still, about 20 ft of street with a car filling most of the frame, a zone that takes a full
+If the view is shorter still, 14 to 25 ft of street with a car filling most or all of the frame, a zone that takes a full
 second isn't possible. Set `subFrameTiming = 1` (short-view timing): VST then times each car's front bumper to a
 fraction of a frame instead of counting whole frames. It also needs a much larger `maxL2RDistOnEntry`,
 `maxR2LDistOnEntry` and `entryLookBack` (several hundred pixels). The [manual's appendix](Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)
 explains each one, and VST Studio's site planner sets all four for you when it sees a short view (**Use short-view
-timing**). Record at 60 fps if you can: at 30 fps a 20 ft view tops out at about 50 to 60 mph.
+timing**). Record at 60 fps with a 1/1000 s shutter if you can: at 30 fps a 15 ft view times cars up to about
+45 mph and a 20 ft view up to about 60; at 60 fps both time cars over 70. Below about 14 ft, cars start to be missed.
 
 ## When something goes wrong
 
