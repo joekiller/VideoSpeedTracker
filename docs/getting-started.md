@@ -21,10 +21,12 @@ go before you mount anything.
 3. **Follow the five setup steps.** What you need, Pick your spot, Connect the camera, Mark your street and
    Calibrate, numbered the same in the side rail and across the top of each step. The header's main button always
    names the next step, then becomes Start tracking. No camera yet? Step 3 offers the bundled sample video, so you
-   can watch cars get measured first.
+   can watch cars get measured first. Not calibrated yet? Tracking still runs; speeds firm up once you calibrate.
 4. **Leave it running.** VST Studio reconnects to a camera that drops out and keeps video under a disk budget.
    It warns if the camera gets knocked out of line, and logs each day to `Stats/health.csv`.
-5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb.
+5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb. Phone busy being
+   the camera? Pair a second phone or a tablet, or skip it: every step works on the computer, and Calibrate can take
+   timed pictures while you stand the pole outside.
 6. **Make a street report** from Results when you have a week or two of data.
 
 Everything in VST Studio is described in [VST Studio](vst-studio.md). The rest of this guide covers the same
@@ -78,7 +80,7 @@ In short:
 
 - The street should cross the frame left to right, about halfway up.
 - The speed zone, the stretch between the two white lines, should take a car at least one second to cross at
-  the speed limit. At 25 mph that is about 37 ft. A narrow street where you can only see about 20 ft works too,
+  the speed limit. At 25 mph that is about 37 ft. A narrow street where you can only see 14 to 25 ft works too,
   with short-view timing (see [the example below](#example-a-narrow-view-of-a-one-way-street)).
 - Use 720p or better at 25 to 30 fps. Any size and frame rate is accepted: frames are scaled to 1280x720, and
   every pixel value in `VST.cfg` uses that 1280x720 grid.
@@ -128,6 +130,11 @@ speed = CalibrationSpeed × CalibrationFrames × (video fps / CalibrationFPS) / 
 then **Check it with a second drive**, which shows the error and calls it **Verified** within ±2 mph. Every
 calibration and check it makes is appended to `calibration-history.csv` in the config folder, as that record.
 
+No car handy yet? **Cones or pole** on the same page calibrates from a measured distance instead: chalk two spots a
+taped distance apart along the lane, stand a cone on each or hold a pole upright on one and then the other, click
+(or, from the phone companion on the street, tap) each, and enter the distance. It's a good start and only as
+accurate as where the spots are, so check it with a drive past when you can.
+
 If a direction can't be calibrated, a rough value is the other direction's frame count scaled by how much shorter
 or longer the zone looks in that lane.
 
@@ -176,12 +183,13 @@ On a one-lane street both directions use the same lane, so the two hubcap lines 
 VST was built for two-lane, two-way streets, so expect to tune `maxL2RDistOnEntry`, `maxR2LDistOnEntry` and `SLOP`
 for a narrow view.
 
-If the view is shorter still, about 20 ft of street with a car filling most of the frame, a zone that takes a full
+If the view is shorter still, 14 to 25 ft of street with a car filling most or all of the frame, a zone that takes a full
 second isn't possible. Set `subFrameTiming = 1` (short-view timing): VST then times each car's front bumper to a
 fraction of a frame instead of counting whole frames. It also needs a much larger `maxL2RDistOnEntry`,
 `maxR2LDistOnEntry` and `entryLookBack` (several hundred pixels). The [manual's appendix](Video%20Speed%20Tracker%20Overview%20and%20User%20Manual.md#appendix)
 explains each one, and VST Studio's site planner sets all four for you when it sees a short view (**Use short-view
-timing**). Record at 60 fps if you can: at 30 fps a 20 ft view tops out at about 50 to 60 mph.
+timing**). Record at 60 fps with a 1/1000 s shutter if you can: at 30 fps a 15 ft view times cars up to about
+45 mph and a 20 ft view up to about 60; at 60 fps both time cars over 70. Below about 14 ft, cars start to be missed.
 
 ## When something goes wrong
 

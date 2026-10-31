@@ -41,21 +41,25 @@ A site planner, for before anything is bought or mounted. Start with the street 
 the distance to the moving lane and how long a stretch of it is clear, in feet, and the speed limit. The camera
 starts as a phone; pick another from the list once you know which one you'll use, and open **Camera details** for
 field of view, resolution, frame rate and shutter. It shows a to-scale top view and works out the usable timing
-zone, the frames a car spends in it, the timing and distance error, and motion blur, with a verdict and a table of
+zone, the frames a car spends in it, the timing and calibration error, and motion blur, with a verdict and a table of
 worst-case error by speed. The model:
 
 - lane in frame = 2 × distance × tan(field of view / 2), limited by the clear stretch
 - timing zone = visible lane − one car length − 0.2 s of run-up for the tracker to lock on
-- timing error ≈ speed ÷ frames in the zone (a one-frame slip), distance error ≈ speed × distance error ÷ zone
+- timing error ≈ speed ÷ frames in the zone (a one-frame slip); in a short view, the error of a line fitted
+  through the bumper positions
+- calibration error = the timing error of the calibration drive (at the speed limit), as a share of every speed
 - blur = speed × shutter time, in pixels at the lane
 
-**Short views.** A narrow street seen from a front window may show only 15 to 25 ft of the lane, too
+**Short views.** A narrow street seen from a front window may show only 14 to 25 ft of the lane, too
 little for a car to spend 15 whole frames in the zone. The planner then calls it a short view and offers **Use
 short-view timing**, which turns on `subFrameTiming` and sets the tracker's look-ahead, entry look-back and speed
 lines from the plan. With it, VST fits a line through each car's front-bumper positions and times the crossing to a
 fraction of a frame, so the zone no longer has to hold a whole car. **Narrow street from a front window** fills in a
 typical plan, and *Narrow streets: parked cars, shadows and wrong-way drivers* has tips for that kind of view. At
-30 fps a 20 ft view times cars up to about 50 to 60 mph; 60 fps raises that to about 100 mph.
+30 fps a 15 ft view times cars up to about 45 mph and a 20 ft view up to about 60; at 60 fps both time cars over
+70 mph, and the planner says which for your view. About 14 ft is the shortest view it plans for. For a short view
+use 60 fps, a fixed shutter of 1/1000 s (1/500 at most), and a lens that frames just the clear stretch.
 
 ![Site planner](images/studio/02-site-planner.jpg)
 
@@ -95,14 +99,34 @@ compass label of one direction, such as `NE`); the command line prints a `WRONG 
 
 ### 5 Calibrate
 
-VST counts frames rather than measuring distance, so it needs one pass at a known speed.
+VST counts frames rather than measuring distance, so it needs one pass at a known speed, or a measured distance it
+can turn into one.
 
 - **Drive-through:** run tracking, drive past on cruise control, pick your pass from the list and enter the
   speed you drove. From the Results page, **This was me** on a selected vehicle does the same.
 - **Count frames:** step through a calibration video (←/→, Shift for 10 frames, Space to play), mark the frame
   where the front bumper touches each line, and enter the speed.
+- **Cones or pole:** no car needed. Chalk two spots a taped distance apart along the lane (10 ft or more), stand
+  a cone on each or hold a pole (a range pole, a broom, PVC pipe with tape bands) upright on one and then the other,
+  click each on the picture and enter the distance. Only the left-right position counts, so any point on an upright
+  pole will do, even where a porch roof or parked car hides the road surface, and one person can do it with one pole.
+  VST works out how long the speed zone is (zone width ÷ spot spacing on the picture × feet) and the frames a car at
+  `CalibrationSpeed` takes over it (`feet ÷ (CalibrationSpeed × 5280 / 3600) × CalibrationFPS`), for both directions
+  or just one. It is only as good as the spots' depth: put them on the line the cars' near side runs along, because
+  the far lane crosses more road between the lines. The page shows the zone length and how much rounding to whole
+  frames costs; this calibration is marked **Not checked** until a drive past checks it.
 
-Both keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
+  The phone companion has the same step (Setup › Calibration drive › *No car handy?*), so you can stand on the
+  street with the phone on your Wi-Fi, see yourself and the pole on the live picture, tap it and apply there.
+
+  On your own, or with the phone busy being the camera, **Take two timed pictures**: press it, walk out, and hold
+  the pole on spot 1 for the first picture (30 s later) and on spot 2 for the second (20 s after that). A countdown on
+  the picture says which is next. Back at the computer, click the pole in each picture. With a recorded video instead
+  of a live camera, step to where the pole stands on each spot and mark it there.
+
+![Cones or pole](images/studio/07d-calibrate-cones.jpg)
+
+All three keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
 `CalibrationFPS`. The page shows what crossing times read as which speeds.
 
 ![Calibrate](images/studio/07-calibrate.jpg)
@@ -156,8 +180,9 @@ again.
 #### Calibration history
 
 Every calibration and every check is appended to `calibration-history.csv` in the config folder (next to
-`vst-studio.ini`), from the drive-through, **Count frames**, **This was me** on the Results page, and the phone
-companion. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
+`vst-studio.ini`), from the drive-through, **Count frames**, **Cones or pole**, **This was me** on the Results page,
+and the phone companion. A cones-or-pole calibration is recorded as an apply at `CalibrationSpeed` and `CalibrationFPS`
+with the computed frames. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
 was made, from what pass, and how a second pass agreed with it. The per-direction state on the page is worked out
 from it, so it survives restarts.
 

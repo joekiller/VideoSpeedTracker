@@ -6,7 +6,8 @@ A phone app for VideoSpeedTracker. Point your phone at the QR code in VST Studio
 * **See every pass**: speeders and wrong-way drivers called out, with a snapshot and a short clip of each.
 * **Set up and calibrate from the street**: a four-step guide (point the camera, mark the street, set the rules,
   do a calibration drive, then a second drive that checks it) that you can follow while standing at the window or
-  sitting in the car.
+  sitting in the car. No car handy? Chalk two spots a taped distance apart in the lane, stand a cone on each or
+  walk one pole between them, and tap them on the live picture from the street.
 * **Bring numbers to the meeting**: the 85th percentile speed, the share over the limit, speeds by time of day,
   and a one-tap report card image.
 * **Share, if you choose**: sharing is off until you turn it on, and then only goes through your phone's own share sheet.
@@ -15,9 +16,9 @@ A phone app for VideoSpeedTracker. Point your phone at the QR code in VST Studio
 |---|---|---|---|---|
 | ![](../docs/images/companion/live.jpg) | ![](../docs/images/companion/passes.jpg) | ![](../docs/images/companion/setup-zones.jpg) | ![](../docs/images/companion/setup-drive.jpg) | ![](../docs/images/companion/stats.jpg) |
 
-| A pass | Shared card | Report card |
-|---|---|---|
-| ![](../docs/images/companion/pass-detail.jpg) | ![](../docs/images/companion/card-pass.jpg) | ![](../docs/images/companion/card-report.jpg) |
+| Cones or pole (no car) | A pass | Shared card | Report card |
+|---|---|---|---|
+| ![](../docs/images/companion/setup-cones.jpg) | ![](../docs/images/companion/pass-detail.jpg) | ![](../docs/images/companion/card-pass.jpg) | ![](../docs/images/companion/card-report.jpg) |
 
 ## Using it
 

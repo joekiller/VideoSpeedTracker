@@ -33,6 +33,10 @@ the speed limit. For a speed limit of 25 MPH, that’s about 37 feet. My speed m
 1-1/3 seconds wide, which translates to about 50 feet for a vehicle going 25 MPH. I’ve been
 able to track vehicles up to 71 MPH (Blue line on the front bumper the whole way!).
 
+   *Note:* that's for whole-frame timing. A narrow street seen from a front window works too: with short-view timing
+   (one click in VST Studio's site planner) about 14 ft of clear street is enough. At 30 fps a 15 ft view times cars up
+   to about 45 mph; at 60 fps, over 70.
+
 2. You need an HD (1280 x 720) video input stream for the stretch of street you want to analyze.
 That requires a camera. I’m using the Foscam FI9803EP outdoor, HD, power over ethernet
 camera. It’s about $90 online. I have no particular loyalty to Foscam, but I can say I’ve had

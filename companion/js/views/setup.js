@@ -5,7 +5,8 @@
  *   1. Camera & spot   - what a good view looks like, checked against the live frame;
  *   2. Mark the street - drag the analysis box, speed lines, lane lines and obstruction on the frame;
  *   3. Rules           - which way is legal, compass headings, limit, "way too fast", site name;
- *   4. Calibration drive - drive through at a known speed, tap your pass, then drive once more to check it.
+ *   4. Calibration drive - drive through at a known speed, tap your pass, then drive once more to check it;
+ *      or, with no car handy, tap two spots a measured distance apart (cones, or one pole moved between them).
  *
  * Steps 2 and 3 edit a draft and save it with PUT /api/config; VST validates and the problems it
  * reports are shown in plain words. Step 4 uses POST /api/calibration/apply with the chosen pass,
@@ -58,16 +59,16 @@ function spot({ vst, body, cfg, st, n }) {
     <h3>A good view has</h3>
     <div class="card">
       <div class="check">${icon('compass')}<p><b>The street crossing the picture side to side.</b> Aim straight across, not up or down the road; a window above street level is ideal.</p></div>
-      <div class="check">${icon('ruler')}<p><b>About 100 feet of road in view.</b> A car at the limit should take at least a second to cross the middle of the picture. A narrow street with only 20 ft or so in view works too, with short-view timing from VST Studio's site planner.</p></div>
-      <div class="check">${icon('camera')}<p><b>A steady 720p or 1080p picture at 30 fps.</b> Any webcam, a phone in webcam mode, or an IP camera (RTSP) works. Mount it so it can't shift.</p></div>
+      <div class="check">${icon('ruler')}<p><b>Any clear stretch of road from about 14 ft.</b> A narrow street seen from a front window works, with short-view timing (one click in VST Studio's site planner). More road lets it time faster cars.</p></div>
+      <div class="check">${icon('camera')}<p><b>Whatever camera you have, held still.</b> A webcam, a phone in webcam mode or an IP camera all work; 720p at 30 fps is plenty to start. A clamp or tripod keeps it from shifting.</p></div>
       <div class="check">${icon('sparkle')}<p><b>Little in the way.</b> A post or tree trunk is fine (you'll mark it), but avoid glare: put the lens against the glass and turn off room lights at night.</p></div>
     </div>
-    <div class="callout ${good ? '' : 'warn'}" style="margin-top:12px">${icon(good ? 'check' : 'warn')}
+    <div class="callout" style="margin-top:12px">${icon(good ? 'check' : 'info')}
       <p>${short
         ? html`Short-view timing is on, so VST times each car to a fraction of a frame and a short speed zone is fine.`
         : good
         ? html`With the current calibration a car at ${st.speedLimit} mph spends <b>${secs.toFixed(1)} s</b> in the speed zone. That is enough for a reliable reading.`
-        : html`A car at ${st.speedLimit} mph spends only <b>${secs.toFixed(1)} s</b> in the speed zone. Widen the zone in the next step, or move the camera further back, so it is at least 1 s.`}</p></div>
+        : html`A car at ${st.speedLimit} mph spends <b>${secs.toFixed(1)} s</b> in the speed zone, which is short for whole-frame timing. That's fine: turn on short-view timing in VST Studio's site planner (step 2, one click), or widen the zone in the next step.`}</p></div>
     ${nav(n, 'Looks good')}`.__html;
   $('#refresh').onclick = () => { $('#frame').src = vst.frameUrl(); };
 }
@@ -265,6 +266,19 @@ function drive({ vst, body, cfg, st, n }) {
       <div class="check"><b class="num" style="color:var(--accent)">3</b><p><b>Tap your pass</b> and confirm.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">4</b><p><b>Drive once more to check.</b> Ideally at a different speed; VST says how close it gets.</p></div>
     </div>
+    <details id="cones" class="card" style="margin-top:12px"><summary><b>No car handy? Calibrate with cones or a pole</b><br><small class="muted">Stand on the street with this phone, see yourself on the camera, and set it up there.</small></summary>
+      <div style="margin-top:10px">
+        <div class="check"><b class="num" style="color:var(--accent)">a</b><p><b>Chalk two spots</b> 10 ft or more apart along the lane, where the cars' near wheels run. Stand a cone on each, or hold a pole (or a broom) upright on one spot, then the other.</p></div>
+        <div class="check"><b class="num" style="color:var(--accent)">b</b><p><b>Tap each spot</b> on the live picture below. Any point on an upright pole will do, so one person can tap spot 1, walk the pole to spot 2 and tap again.</p></div>
+        <div class="check"><b class="num" style="color:var(--accent)">c</b><p><b>Enter the taped distance</b> and apply. Then drive past once to check it when you can.</p></div>
+        <div class="editor" id="ced" style="margin-top:10px"><span id="clive"></span><svg viewBox="0 0 ${W} ${H}" id="csvg"></svg></div>
+        <div class="seg" id="cwhich" style="margin-top:10px"><button data-v="0" aria-pressed="true">Spot 1</button><button data-v="1">Spot 2</button></div>
+        <label class="field" style="margin-top:10px"><span>Spots apart (ft)</span><input class="input" id="cft" type="number" inputmode="decimal" min="1" step="0.5" value="10"></label>
+        <div class="seg" id="cdir" style="margin-top:10px"><button data-v="both" aria-pressed="true">Both ways</button><button data-v="R2L">← only</button><button data-v="L2R">→ only</button></div>
+        <p class="small muted" id="cprev" style="margin-top:10px"></p>
+        <div class="btn-row"><button class="btn" id="cclear">Clear spots</button><button class="btn primary" id="capply" disabled>Apply</button></div>
+      </div>
+    </details>
     <div id="phase"></div>
     <h3>Speed you will drive</h3>
     <div class="stepper" style="max-width:240px"><button data-d="-1" aria-label="Slower">−</button><output id="spd" aria-live="polite"></output><button data-d="1" aria-label="Faster">+</button></div>
@@ -375,6 +389,60 @@ function drive({ vst, body, cfg, st, n }) {
     else choose(v);
   };
 
+  /**
+   * Two spots a measured distance apart (POST /api/calibration/distance): two cones, or one pole moved from the first
+   * spot to the second, for setting up from the street with no car. Only x counts, so any point on an upright pole works.
+   * The live picture plays only while the section is open, so it doesn't hold one of Studio's few stream slots.
+   * Taps land in frame coordinates (1280×720, like the speed lines); each tap places the selected cone and moves the
+   * selection to the other one. The preview repeats the server's arithmetic (Calibration.h framesForDistance) so the
+   * zone length and frames are visible before applying.
+   */
+  const cones = [null, null];
+  let cone = 0, cdir = 'both';
+  const csvg = $('#csvg');
+  const paintCones = () => {
+    const g = geometry(current), k = W / ($('#ced').clientWidth || 360);
+    const marks = cones.map((c, i) => c && html`
+      <line x1="${c[0]}" y1="0" x2="${c[0]}" y2="${H}" stroke="#4ade80" stroke-width="${2 * k}" stroke-dasharray="${8 * k} ${6 * k}"/>
+      <path d="M${c[0]} ${c[1] - 26 * k} L${c[0] - 12 * k} ${c[1]} L${c[0] + 12 * k} ${c[1]} Z" fill="#fb923c" stroke="#000" stroke-width="${1.5 * k}"/>
+      <text x="${c[0] + 14 * k}" y="${c[1] - 8 * k}" fill="#fff" stroke="#000" stroke-width="${3 * k}" paint-order="stroke" font-size="${16 * k}" font-weight="700">${i + 1}</text>`.__html).join('');
+    csvg.innerHTML = zonesSvg(current, { k }) + marks;
+    const feet = Number($('#cft').value), markPx = cones[0] && cones[1] ? Math.abs(cones[1][0] - cones[0][0]) : 0;
+    const zoneFt = markPx && feet > 0 ? (g.sr - g.sl) / markPx * feet : 0;
+    const frames = zoneFt / (current.CalibrationSpeed * 5280 / 3600) * current.CalibrationFPS;
+    $('#cprev').textContent = !(cones[0] && cones[1]) ? `Tap spot ${cone + 1} on the picture.`
+      : markPx < 40 ? 'The two spots are too close together on the picture; space them further apart.'
+      : !(feet > 0) ? 'Enter the distance between the spots.'
+      : `Zone between the speed lines: ${zoneFt.toFixed(1)} ft, ${frames.toFixed(1)} frames at ${current.CalibrationSpeed} mph (${current.CalibrationFPS} fps).`;
+    $('#capply').disabled = !(cones[0] && cones[1] && markPx >= 40 && feet > 0);
+    $$('#cwhich button').forEach((b) => b.setAttribute('aria-pressed', Number(b.dataset.v) === cone));
+  };
+  const live = () => {
+    const src = vst.liveSource();
+    $('#clive').innerHTML = src.kind === 'video'
+      ? html`<video src="${src.src}" autoplay muted loop playsinline style="position:absolute;inset:0;width:100%;height:100%;object-fit:fill"></video>`.__html
+      : html`<img src="${src.src}" alt="Live camera view">`.__html;
+  };
+  const stopLive = () => { const m = $('#clive img, #clive video'); if (m) { m.removeAttribute('src'); m.remove(); } };
+  $('#cones').ontoggle = () => { if ($('#cones').open) { live(); paintCones(); } else stopLive(); };
+  csvg.addEventListener('pointerdown', (e) => {
+    const r = csvg.getBoundingClientRect();
+    cones[cone] = [Math.round((e.clientX - r.left) / r.width * W), Math.round((e.clientY - r.top) / r.height * H)];
+    if (!cones[1 - cone]) cone = 1 - cone;
+    paintCones();
+    e.preventDefault();
+  });
+  $('#cwhich').onclick = (e) => { const v = e.target.closest('[data-v]')?.dataset.v; if (v != null) { cone = Number(v); paintCones(); } };
+  $('#cdir').onclick = (e) => { const v = e.target.closest('[data-v]')?.dataset.v; if (v) { cdir = v; $$('#cdir button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.v === v)); } };
+  $('#cft').oninput = paintCones;
+  $('#cclear').onclick = () => { cones[0] = cones[1] = null; cone = 0; paintCones(); };
+  $('#capply').onclick = async () => {
+    const r = await vst.calibrationDistance({ cones, feet: Number($('#cft').value), dir: cdir });
+    if (!r.ok) { toast(r.problems.join('. ')); return; }
+    toast(html`${icon('check')}<span>Calibrated from the measured spots: ${r.frames} frames for a ${r.zoneFeet} ft zone. Check it with one drive past.</span>`);
+    calibrated(r, 0);
+  };
+
   // Manual marking fallback.
   let mdir = 'R2L';
   $('#mdir').onclick = (e) => { const v = e.target.closest('[data-v]')?.dataset.v; if (v) { mdir = v; $$('#mdir button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.v === v)); } };
@@ -402,5 +470,5 @@ function drive({ vst, body, cfg, st, n }) {
   })();
 
   paintSpeed(); paintCal(cfg, st.calibration); paintPhase(); paintPasses();
-  return () => vst.removeEventListener('vehicle', onVehicle);
+  return () => { vst.removeEventListener('vehicle', onVehicle); stopLive(); };
 }

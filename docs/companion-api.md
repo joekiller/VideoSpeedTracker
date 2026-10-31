@@ -215,7 +215,7 @@ companion-facing settings:
 stats csv; slower ones are only counted in the run manifest. 0 logs every timed vehicle; negative values
 are refused.
 
-`subFrameTiming` (0 or 1) turns on short-view timing for a view of about 20 ft of street, where a car
+`subFrameTiming` (0 or 1) turns on short-view timing for a view of about 14 to 25 ft of street, where a car
 fills most of the frame. `maxL2RDistOnEntry` and `maxR2LDistOnEntry` are the tracker's look-ahead, the
 pixels a car moves in two frames at the fastest speed it tracks, and `entryLookBack` is how far back it
 looks for a car entering the box. A short view needs several hundred pixels for each; Studio's site
@@ -252,7 +252,7 @@ decline to start (no source chosen, zones that don't validate); `ok` is still tr
 ### Calibration
 
 The tracker turns frames-in-the-zone into speed by comparison with a vehicle driven at a known
-speed. Two ways to record it:
+speed. Three ways to record it:
 
 * **From a logged pass (preferred).** Drive through at a known speed, find the pass, then
   `POST /api/calibration/apply {"dir": "L2R"|"R2L", "speed": 25, "vehicleId": 1042}`. VST sets
@@ -265,9 +265,20 @@ speed. Two ways to record it:
   answers `{"ok": true, "frame": 2161, "marks": [start, end]}` (`-1` for an edge not marked yet);
   `POST /api/calibration/apply {"dir", "speed"}` (no `vehicleId`) then uses the marked span.
 
-Both ways of applying return `{"ok": true, "problems": [], "config": { … }}`, or `200`
-`{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked or `speed` isn't
-positive.
+* **From two spots a measured distance apart (no car): cones, or one pole moved between them.**
+  `POST /api/calibration/distance {"cones": [[x1, y1], [x2, y2]], "feet": 10, "dir": "both"|"L2R"|"R2L"}`.
+  `cones` are the two spots in frame coordinates (1280×720, like the speed
+  lines) and `feet` is the taped distance between them; `dir` defaults to `"both"`. The zone between
+  the speed lines is `(speedLineRight - speedLineLeft) / |x2 - x1| × feet` long, and VST sets
+  `CalibrationFrames<dir>` to the frames a car at `CalibrationSpeed` takes to cross it at
+  `CalibrationFPS`: `zoneFeet / (CalibrationSpeed × 5280 / 3600) × CalibrationFPS`, rounded. The answer
+  adds `"zoneFeet"` and the unrounded `"frames"` (both to 0.1). Refusals: cones missing or off the
+  picture, `feet` not positive, an unknown `dir`, spots less than 40 px apart across the picture, or
+  speed lines not set. The calibration shows as Not checked until a check pass (below).
+
+Every way of applying returns `{"ok": true, "problems": [], "config": { … }}`, or `200`
+`{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked, `speed` isn't
+positive, or (for the spots) one of the refusals above. A body that isn't a JSON object is a `400`.
 
 **Checking it.** One pass at a speedometer reading is easy to get wrong, so after calibrating, drive past
 once more (ideally at a different speed) and send that pass to

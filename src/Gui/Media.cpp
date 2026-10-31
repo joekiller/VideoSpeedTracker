@@ -119,7 +119,7 @@ bool Player::open(const std::string& path) {
 	bool ok = pi ? cap_.openPiCamera(path) : info_.kind == SourceInfo::Camera ? cap_.cap.open(std::stoi(path)) : cap_.cap.open(path);
 	if (!ok || !cap_.isOpened()) {
 		error = pi ? cap_.pi.error()
-			: info_.kind == SourceInfo::Camera ? "Can't open " + info_.label + ". Check it's plugged in and not in use by another app, or pick another number."
+			: info_.kind == SourceInfo::Camera ? "Can't open " + info_.label + " yet. Check it's plugged in (for a phone, that its webcam app is running) and that no other app, like a video call, is using it. Or try another number."
 			: info_.kind == SourceInfo::Stream ? "Can't connect to " + info_.label + ". Check the address, user name and password, and that the camera is on this network."
 			: "Can't open " + info_.label + ". It may be damaged or in a format VST can't read; converting it to MP4 usually helps (ffmpeg -i in.ext -c:v libx264 out.mp4).";
 		return false;
