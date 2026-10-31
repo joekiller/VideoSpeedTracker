@@ -37,6 +37,14 @@ The API is plain HTTP on the local network on purpose. To check in from elsewher
 private network such as [Tailscale](https://tailscale.com); `tailscale serve` also gives the companion an https
 address, which lets the browser cache it for offline start-up.
 
+## VST Ride-along (`ride/`)
+
+A separate one-page app for calibration drives: it records the phone's GPS (time, position, GPS speed, accuracy)
+while you drive past the camera and saves it as a CSV that VST Studio reads on the Calibrate page, alone or with a
+Tesla dashcam clip of the same drive. Browsers only give GPS to https pages, so it doesn't run from VST Studio's
+plain-http server: `.github/workflows/pages.yml` publishes just this folder on GitHub Pages, and it works offline
+once added to the home screen. It never talks to VST; the file is the hand-off.
+
 ## How it's built
 
 Static HTML, CSS and JavaScript modules: no build step, no framework, no third-party code, so VST Studio can serve

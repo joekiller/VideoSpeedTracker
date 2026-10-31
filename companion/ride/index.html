@@ -1,0 +1,267 @@
+<!doctype html>
+<!--
+  VST Ride-along: a phone GPS recorder for calibrating VideoSpeedTracker without cruise control or a Tesla.
+
+  Browsers only give GPS to https pages, and VST Studio serves the companion over plain http on the home network,
+  so this page is published on its own (GitHub Pages, see .github/workflows/pages.yml) and never talks to VST.
+  It records the phone's position fixes (time, position, GPS speed, accuracy) while you drive past the camera,
+  keeps them on the phone, and saves them as a small CSV that VST Studio reads on the Calibrate page, matching the
+  pass by GPS at the camera spot or by clock exactly as it does a Tesla dashcam clip (src/Gui/DashCam.cpp).
+
+  File format (one fix per line, times in ms since the Unix epoch; speed empty when the phone didn't report one):
+    # VST ride-along recording v1
+    time_ms,lat,lon,speed_mps,accuracy_m,heading_deg
+  Works offline once opened (sw.js), keeps the screen awake while recording (Wake Lock), and survives a reload:
+  the recording in progress is saved to localStorage every few fixes.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>VST Ride-along</title>
+<meta name="description" content="Record your car's GPS speed on your phone to calibrate VideoSpeedTracker.">
+<meta name="theme-color" content="#0b0d10">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d10; --surface: #13161b; --surface-2: #1a1e25; --line: rgba(255, 255, 255, .08);
+    --text: #eef1f5; --text-2: #b4bcc7; --muted: #7d8794;
+    --accent: #5eead4; --accent-ink: #062c27; --ok: #34d399; --warn: #fbbf24; --bad: #fb7185;
+    --stop-ink: #2a0710;
+    --ok-soft: rgba(52, 211, 153, .14); --warn-soft: rgba(251, 191, 36, .14); --bad-soft: rgba(251, 113, 133, .16);
+    --radius: 18px;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f4f5f7; --surface: #ffffff; --surface-2: #f0f2f5; --line: rgba(15, 23, 42, .08);
+      --text: #0f172a; --text-2: #3f4a5a; --muted: #5f6b78;
+      --accent: #0f766e; --accent-ink: #ffffff; --ok: #047857; --warn: #a14b06; --bad: #be123c;
+      --stop-ink: #ffffff;
+      --ok-soft: rgba(5, 150, 105, .1); --warn-soft: rgba(217, 119, 6, .12); --bad-soft: rgba(225, 29, 72, .1);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 16px/1.45 var(--font); -webkit-font-smoothing: antialiased; padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+  main { max-width: 480px; margin: 0 auto; display: grid; gap: 14px; }
+  h1 { font-size: 22px; margin: 4px 0 0; letter-spacing: -.01em; }
+  h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 10px 0 0; }
+  p { margin: 0; color: var(--text-2); text-wrap: pretty; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+  .gauge { text-align: center; padding: 26px 18px 20px; }
+  .speed { font-size: 88px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -.03em; }
+  .unit { color: var(--muted); font-weight: 600; margin-top: 4px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: 14px; font-weight: 600; margin-top: 14px; }
+  .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  .pill.bad { background: var(--bad-soft); color: var(--bad); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 18px; }
+  .stats div { background: var(--surface-2); border-radius: 12px; padding: 10px 6px; }
+  .stats b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stats span { font-size: 13px; color: var(--muted); }
+  .btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 56px; border-radius: 16px;
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--text); font: 600 17px var(--font); cursor: pointer; }
+  .btn:active { transform: scale(.98); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn.stop { background: var(--bad); color: var(--stop-ink); border-color: transparent; }
+  .btn.small { min-height: 44px; width: auto; padding: 0 16px; font-size: 15px; }
+  .btn:disabled { opacity: .45; pointer-events: none; }
+  .btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  ol { margin: 8px 0 0; padding-left: 22px; color: var(--text-2); }
+  li + li { margin-top: 6px; }
+  .rec { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); }
+  .rec:first-child { border-top: 0; padding-top: 0; }
+  .rec .what { flex: 1; min-width: 0; }
+  .rec b { display: block; }
+  .rec small { color: var(--muted); }
+  .empty { color: var(--muted); }
+  .note { font-size: 14px; color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>VST Ride-along</h1>
+    <p>Records your car's speed from the phone's GPS, so VideoSpeedTracker can calibrate from a drive past at any steady speed.</p>
+  </header>
+
+  <section class="card gauge" aria-live="polite">
+    <div class="speed" id="speed">–</div>
+    <div class="unit">mph, from GPS</div>
+    <div class="pill warn" id="fix">GPS off</div>
+    <div class="stats" id="stats" hidden>
+      <div><b id="dur">0:00</b><span>recording</span></div>
+      <div><b id="count">0</b><span>GPS fixes</span></div>
+      <div><b id="dist">0</b><span>metres</span></div>
+    </div>
+  </section>
+
+  <button class="btn primary" id="record" type="button">Start recording</button>
+  <p class="note" id="msg" role="status"></p>
+
+  <section class="card">
+    <h2 style="margin-top:0">How to calibrate with it</h2>
+    <ol>
+      <li>Start VST tracking at home, then start recording here <strong>before you set off</strong>. Leave this screen open; a passenger or a phone mount is safest.</li>
+      <li>Drive past the camera at a steady speed. Once each way on a two-way street.</li>
+      <li>Stop recording and save the file to the computer running VST Studio (AirDrop, email, a USB cable or a shared folder).</li>
+      <li>On VST Studio's Calibrate page, pick your pass and press <strong>Read my speed from a dashcam clip or ride-along</strong>.</li>
+    </ol>
+    <p class="note" style="margin-top:10px">Phone GPS speed is good to about half a mph at a steady speed. Your recording stays on this phone until you save or share it; this page sends nothing anywhere.</p>
+  </section>
+
+  <section class="card">
+    <h2 style="margin-top:0">Recordings on this phone</h2>
+    <div id="list"></div>
+  </section>
+</main>
+<script type="module">
+const KEY_LIST = 'vst-ride-recordings';   // finished recordings: [{ name, csv, fixes, seconds }]
+const KEY_LIVE = 'vst-ride-live';         // the one in progress, saved as it grows
+const MPH = 2.2369362920544;
+const $ = (id) => document.getElementById(id);
+
+let watch = null, lock = null, fixes = [], started = 0, tick = null;
+
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* full or private mode: the recording still works in memory */ } };
+
+function metres(a, b) {
+  const r = Math.PI / 180, x = (b.lon - a.lon) * r * Math.cos((a.lat + b.lat) / 2 * r), y = (b.lat - a.lat) * r;
+  return Math.hypot(x, y) * 6371000;
+}
+
+// File name in TeslaCam's local-time style, so recordings sort and read the same way: vst-ride-2026-10-31_14-03-10.csv
+function fileName(ms) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
+  return `vst-ride-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}.csv`;
+}
+
+function toCsv(list) {
+  const rows = list.map((f) => [f.t, f.lat.toFixed(7), f.lon.toFixed(7), f.speed == null ? '' : f.speed.toFixed(2),
+    f.acc == null ? '' : f.acc.toFixed(1), f.heading == null ? '' : f.heading.toFixed(0)].join(','));
+  return ['# VST ride-along recording v1', 'time_ms,lat,lon,speed_mps,accuracy_m,heading_deg', ...rows].join('\n') + '\n';
+}
+
+function showFix(f) {
+  const fix = $('fix');
+  if (!f) { fix.className = 'pill warn'; fix.textContent = watch ? 'Waiting for GPS…' : 'GPS off'; return; }
+  const acc = Math.round(f.acc ?? 99);
+  fix.className = 'pill ' + (acc <= 10 ? 'ok' : acc <= 25 ? 'warn' : 'bad');
+  fix.textContent = acc <= 25 ? `GPS ±${acc} m` : `Weak GPS ±${acc} m: move clear of buildings`;
+  // Some phones leave out the GPS speed on a fix: fall back to the distance from the previous one.
+  let v = f.speed;
+  const prev = fixes.at(-2);
+  if (v == null && prev && f.t > prev.t) v = metres(prev, f) / ((f.t - prev.t) / 1000);
+  $('speed').textContent = v == null ? '–' : Math.round(v * MPH);
+}
+
+function showStats() {
+  const s = Math.max(0, Math.round((Date.now() - started) / 1000));
+  $('dur').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  $('count').textContent = fixes.length;
+  let m = 0;
+  for (let i = 1; i < fixes.length; i++) m += metres(fixes[i - 1], fixes[i]);
+  $('dist').textContent = Math.round(m);
+}
+
+async function keepAwake() {
+  try { lock = await navigator.wakeLock?.request('screen'); } catch { lock = null; }
+}
+// The wake lock drops when the page is hidden; take it again on return while recording.
+document.addEventListener('visibilitychange', () => { if (watch != null && document.visibilityState === 'visible') keepAwake(); });
+
+function start(resume = null) {
+  if (!('geolocation' in navigator)) { $('msg').textContent = "This browser can't use GPS."; return; }
+  fixes = resume?.fixes ?? [];
+  started = resume?.started ?? Date.now();
+  watch = navigator.geolocation.watchPosition((p) => {
+    const c = p.coords;
+    const f = { t: p.timestamp, lat: c.latitude, lon: c.longitude, acc: c.accuracy,
+      speed: c.speed != null && c.speed >= 0 ? c.speed : null, heading: c.heading != null && c.heading >= 0 ? c.heading : null };
+    fixes.push(f);
+    showFix(f);
+    $('msg').textContent = 'Recording. Drive past the camera at a steady speed.';
+    if (fixes.length % 5 === 0) store(KEY_LIVE, { started, fixes });
+  }, (e) => {
+    $('msg').textContent = e.code === 1 ? 'Location is blocked for this page. Allow it in the browser or phone settings, then try again.'
+      : "Can't get a GPS fix yet. Keep the phone where it can see the sky.";
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+  keepAwake();
+  tick = setInterval(showStats, 1000);
+  $('stats').hidden = false;
+  $('record').textContent = 'Stop recording';
+  $('record').className = 'btn stop';
+  $('msg').textContent = 'Recording. Drive past the camera at a steady speed.';
+  showFix(null);
+  showStats();
+}
+
+function stop() {
+  navigator.geolocation.clearWatch(watch);
+  watch = null;
+  clearInterval(tick);
+  lock?.release?.();
+  lock = null;
+  localStorage.removeItem(KEY_LIVE);
+  $('record').textContent = 'Start recording';
+  $('record').className = 'btn primary';
+  $('stats').hidden = true;
+  $('speed').textContent = '–';
+  showFix(null);
+  if (fixes.length < 3) { $('msg').textContent = 'Nothing recorded: no GPS fixes came in.'; return; }
+  const list = load(KEY_LIST, []);
+  list.unshift({ name: fileName(fixes[0].t), csv: toCsv(fixes), fixes: fixes.length, seconds: Math.round((fixes.at(-1).t - fixes[0].t) / 1000) });
+  store(KEY_LIST, list.slice(0, 20));
+  $('msg').textContent = 'Saved on this phone. Save or share it to your VST computer below.';
+  render();
+}
+
+async function save(rec) {
+  const file = new File([rec.csv], rec.name, { type: 'text/csv' });
+  try {
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: rec.name }); return; }
+  } catch (e) { if (e.name === 'AbortError') return; }
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(file), download: rec.name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+function render() {
+  const list = load(KEY_LIST, []), el = $('list');
+  el.replaceChildren();
+  if (!list.length) { el.innerHTML = '<p class="empty">None yet.</p>'; return; }
+  list.forEach((rec, i) => {
+    const row = document.createElement('div');
+    row.className = 'rec';
+    row.innerHTML = `<div class="what"><b></b><small>${rec.fixes} fixes · ${Math.floor(rec.seconds / 60)} min ${rec.seconds % 60} s</small></div>`;
+    row.querySelector('b').textContent = rec.name.replace(/^vst-ride-|\.csv$/g, '').replace('_', ' ').replace(/-(\d\d)-(\d\d)$/, ':$1:$2');
+    const saveBtn = Object.assign(document.createElement('button'), { className: 'btn small', type: 'button', textContent: 'Save' });
+    saveBtn.setAttribute('aria-label', `Save or share ${rec.name}`);
+    saveBtn.onclick = () => save(rec);
+    const del = Object.assign(document.createElement('button'), { className: 'btn small', type: 'button', textContent: 'Delete' });
+    del.setAttribute('aria-label', `Delete ${rec.name}`);
+    del.onclick = () => { const l = load(KEY_LIST, []); l.splice(i, 1); store(KEY_LIST, l); render(); };
+    row.append(saveBtn, del);
+    el.append(row);
+  });
+}
+
+$('record').onclick = () => (watch == null ? start() : stop());
+render();
+// A recording cut off by a reload or a closed tab carries on where it stopped.
+const live = load(KEY_LIVE, null);
+if (live?.fixes?.length) { start(live); $('msg').textContent = 'Carried on with the recording you started earlier.'; }
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>

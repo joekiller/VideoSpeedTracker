@@ -15,6 +15,11 @@
 // knows where the camera's zone is on the map (the "spot", remembered from one clock-matched pass or pasted from a
 // map), speedAtSpot() matches by GPS instead: it finds when the car was closest to the spot, which no clock can
 // shift, and reads the speed there.  The clock only picks which drive-by it was when a clip holds several.
+//
+// The same matching reads a phone's ride-along recording (companion/ride: the phone's GPS fixes as a CSV, about one
+// a second, speed from the GPS itself), so anyone can calibrate without a Tesla.  With both for the same drive past,
+// jointSpeed() cross-checks them: two independent speedometers that agree make a calibration a traffic engineer
+// can trust, and one that disagrees is caught before it's applied.
 #pragma once
 #include <string>
 #include <vector>
@@ -29,6 +34,7 @@ struct Sample {
 };
 
 struct Clip {
+	enum Kind { Tesla, Phone } kind = Tesla;
 	std::string path;
 	double start = 0;        // from the file name; 0 when the name has no TeslaCam timestamp
 	double duration = 0;     // seconds, from mvhd
@@ -38,6 +44,15 @@ struct Clip {
 // Reads one clip.  On failure (not an MP4, no SEI telemetry, no timestamp in the name) returns false and says why
 // in `err`, in words for the user.
 bool readClip(const std::string& path, Clip& clip, std::string& err);
+
+// Reads a ride-along recording (companion/ride/index.html):
+//   # VST ride-along recording v1
+//   time_ms,lat,lon,speed_mps,accuracy_m,heading_deg
+// Fixes worse than kMaxAccuracyM are dropped; a fix without a GPS speed gets one from the positions either side.
+bool readRide(const std::string& path, Clip& clip, std::string& err);
+constexpr double kMaxAccuracyM = 25;
+// readClip() or readRide() by the file's extension (.mp4 or .csv).
+bool readAny(const std::string& path, Clip& clip, std::string& err);
 
 // Parses "YYYY-MM-DD_HH-MM-SS" at the start of a TeslaCam file name as local time; 0 if it isn't there.
 double startFromName(const std::string& fileName);
@@ -73,5 +88,18 @@ std::vector<double> closestApproaches(const std::vector<Clip>& clips, double lat
 // the spot is), `crossing` wide plus `slack` each side for GPS error (a few metres: a fraction of a second).
 // Falls back to speedDuring() (byGps false) when no drive-by is in the clips.
 PassSpeed speedAtSpot(const std::vector<Clip>& clips, double lat, double lon, double passEnd, double crossing, double slack = 1);
+
+// A pass read from every kind of source loaded: the Tesla's clips and the phone's recordings matched separately
+// (by GPS at the spot when lat/lon is set, else by clock), then combined.
+struct Joint {
+	PassSpeed tesla, phone;  // found = that kind had data covering the pass
+	bool both = false;       // both found and steady
+	bool agree = false;      // both, within kAgreeMph
+	double mph = 0;          // what to calibrate with: the mean when they agree; the Tesla's when they don't (wheel
+	                         // speed beats phone GPS); whichever is steady when only one is; 0 when neither found
+	bool found = false, steady = false;
+	static constexpr double kAgreeMph = 1.5;
+};
+Joint jointSpeed(const std::vector<Clip>& clips, double lat, double lon, double passEnd, double crossing);
 
 }  // namespace dashcam

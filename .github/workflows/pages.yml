@@ -1,0 +1,38 @@
+name: pages
+
+# Publishes VST Ride-along (companion/ride), the phone GPS recorder for calibration, on GitHub Pages. It has to
+# be on https: browsers only give GPS to secure pages, and VST Studio serves the companion over plain http on the
+# home network. Only that folder is published; nothing else in the repository is.
+#
+# One-time setup: Settings > Pages > Build and deployment > Source: GitHub Actions.
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/pages.yml
+      - companion/ride/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: companion/ride
+      - id: deployment
+        uses: actions/deploy-pages@v4

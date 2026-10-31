@@ -7,7 +7,9 @@
 // message, undoes H.264's emulation-prevention bytes, skips fields it doesn't use, times the samples from the file
 // name and duration, and that a pass's speed is read from the right seconds.  GPS matching: a car driving along a
 // street, its pass found by when it came closest to the camera spot even when the computer's clock is 8 s off (a
-// clock match would land in the acceleration), the right drive-by of two, and the fall-back when the spot is far.  Also the user-facing errors: not an
+// clock match would land in the acceleration), the right drive-by of two, and the fall-back when the spot is far.
+// Ride-along: a phone's 1 Hz GPS recording of the same drive read alone and together with the Tesla's clip, agreeing,
+// and disagreeing when the phone reads high.  Also the user-facing errors: not an
 // MP4, no telemetry (older firmware), no TeslaCam timestamp in the name.
 #include "DashCam.h"
 #include <cmath>
@@ -216,6 +218,55 @@ int main(int argc, char** argv) {
 	CHECK(gp.byGps && gp.steady() && std::fabs(gp.mph - 30) < .1);
 	gp = dashcam::speedAtSpot(gclips, spotLat, spotLon, g0 + 20 - 3, .6);
 	CHECK(gp.byGps && std::fabs(gp.mph - 25) < .1);
+
+	// A phone's VST Ride-along recording of the same drive: one fix a second (the first 20 s of the minute, the car
+	// past the spot at 20 s), GPS speed with ±0.1 m/s of noise, one fix with no speed (filled from its neighbours)
+	// and one too inaccurate to keep.
+	auto writeRide = [&](const fs::path& path, double bias) {
+		std::ofstream r(path);
+		r << "# VST ride-along recording v1\ntime_ms,lat,lon,speed_mps,accuracy_m,heading_deg\n";
+		for (int sec = 0; sec < 60; sec++) {
+			int i = sec * fps;
+			char line[160];
+			double v = speed(i) + (sec % 2 ? .1 : -.1) + bias;
+			if (sec == 22) snprintf(line, sizeof line, "%.0f,%.7f,%.7f,,6.0,90\n", (g0 + sec) * 1000, lat0, lon0 + east[i] / mPerDegLon);
+			else snprintf(line, sizeof line, "%.0f,%.7f,%.7f,%.2f,%.1f,90\n", (g0 + sec) * 1000, lat0, lon0 + east[i] / mPerDegLon, std::max(0.0, v), sec == 40 ? 60.0 : 5.0);
+			r << line;
+		}
+	};
+	fs::path ridePath = out / "vst-ride-2026-10-31_15-00-00.csv";
+	writeRide(ridePath, 0);
+	dashcam::Clip ride;
+	CHECK(dashcam::readAny(ridePath.string(), ride, err));
+	CHECK(ride.kind == dashcam::Clip::Phone);
+	CHECK(ride.samples.size() == 59);                                  // the 60 m fix is dropped
+	if (ride.samples.size() == 59) CHECK(std::fabs(ride.samples[22].mps - mps25) < .2);   // filled from positions
+	CHECK(std::fabs(ride.start - g0) < 1e-6);
+	dashcam::Clip teslaOnly;
+	CHECK(dashcam::readAny(gpsPath.string(), teslaOnly, err) && teslaOnly.kind == dashcam::Clip::Tesla);
+
+	// Phone alone, matched by GPS with the clock 8 s off as above.
+	dashcam::Joint jn = dashcam::jointSpeed({ ride }, spotLat, spotLon, g0 + logged, .6);
+	std::printf("  phone alone: %.2f mph (%s)\n", jn.mph, jn.phone.byGps ? "GPS" : "clock");
+	CHECK(jn.found && jn.steady && !jn.both && jn.phone.byGps && std::fabs(jn.mph - 25) < .3);
+	// Tesla and phone together: both steady, agree, the mean.
+	jn = dashcam::jointSpeed({ gclip, ride }, spotLat, spotLon, g0 + logged, .6);
+	std::printf("  joint: Tesla %.2f, phone %.2f -> %.2f mph\n", jn.tesla.mph, jn.phone.mph, jn.mph);
+	CHECK(jn.both && jn.agree && std::fabs(jn.mph - (jn.tesla.mph + jn.phone.mph) / 2) < 1e-9);
+	// A phone reading 3 mph high (bad sky view): they disagree and the Tesla's reading is used.
+	fs::path biased = out / "vst-ride-2026-10-31_15-00-01.csv";
+	writeRide(biased, 3 / 2.2369362920544);
+	dashcam::Clip bad;
+	CHECK(dashcam::readRide(biased.string(), bad, err));
+	jn = dashcam::jointSpeed({ gclip, bad }, spotLat, spotLon, g0 + logged, .6);
+	CHECK(jn.both && !jn.agree && jn.mph == jn.tesla.mph);
+	// Without a spot both are matched by clock: with the clocks right that's the same pass.
+	jn = dashcam::jointSpeed({ gclip, ride }, 0, 0, g0 + 20, .6);
+	CHECK(jn.agree && !jn.tesla.byGps && !jn.phone.byGps);
+	// Not a recording.
+	fs::path notRide = out / "notes.csv";
+	std::ofstream(notRide) << "a,b,c\n1,2,3\n";
+	CHECK(!dashcam::readAny(notRide.string(), ride, err) && err.find("isn't a VST Ride-along") != std::string::npos);
 
 	std::printf("%d checks, %d failed\n", checks, failures);
 	return failures ? 1 : 0;
