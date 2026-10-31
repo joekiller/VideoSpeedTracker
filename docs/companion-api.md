@@ -285,7 +285,7 @@ settings. It answers:
 `{"ok": false, "problems": [ … ]}`. The new state shows in `GET /api/status` `calibration` at once.
 
 Every apply and check, from the phone or the desktop, is appended to `calibration-history.csv` in VST
-Studio's config folder (the format is in [vst-studio.md](vst-studio.md#calibrate)), so the record of how a
+Studio's config folder (the format is in [vst-studio.md](vst-studio.md#5-calibrate)), so the record of how a
 calibration was made and tested outlives the session.
 
 ### `GET /api/stats.csv`

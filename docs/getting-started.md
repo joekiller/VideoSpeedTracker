@@ -17,9 +17,10 @@ go before you mount anything.
    - **macOS:** untar the release next to Homebrew's `opencv`.
 2. **Open VST Studio** from the Start menu, or the applications menu on Linux. `VSTStudio` starts it from a
    terminal.
-3. **Follow Get started.** It opens on the bundled sample video, so you can watch cars get measured before your
-   own camera is set up. Then it takes you through Video source, Zones, Calibrate and Live tracking in order. The
-   header's main button always says what the next step is.
+3. **Follow the five setup steps.** What you need, Pick your spot, Connect the camera, Mark your street and
+   Calibrate, numbered the same in the side rail and across the top of each step. The header's main button always
+   names the next step, then becomes Start tracking. No camera yet? Step 3 offers the bundled sample video, so you
+   can watch cars get measured first.
 4. **Leave it running.** VST Studio reconnects to a camera that drops out and keeps video under a disk budget.
    It warns if the camera gets knocked out of line, and logs each day to `Stats/health.csv`.
 5. **Pair your phone** on the Companion page to aim the camera and help calibrate from the curb.
@@ -122,7 +123,7 @@ speed = CalibrationSpeed × CalibrationFrames × (video fps / CalibrationFPS) / 
 4. Do a second pass at a different speed and check that VST reports it within a mile or two per hour. Keep a note
    of both passes (speed driven, frames, what VST reported): it's how you show someone the calibration is right.
 
-[VST Studio](vst-studio.md#calibrate) does all of this on its Calibrate page: pick your pass and the speed you drove,
+[VST Studio](vst-studio.md#5-calibrate) does all of this in step 5, Calibrate: pick your pass and the speed you drove,
 then **Check it with a second drive**, which shows the error and calls it **Verified** within ±2 mph. Every
 calibration and check it makes is appended to `calibration-history.csv` in the config folder, as that record.
 

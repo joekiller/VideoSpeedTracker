@@ -17,29 +17,39 @@ are legal drivers going the other way.
 The side rail follows the order a first-time user works in. Every page reads and writes the same `VST.cfg` the
 command line uses, so a setup made here works for headless and cron runs too.
 
-Setup steps get a check mark once they're done for the source and settings in use: Zones once you've checked
-them on the current source with nothing for the tracker to reject, and Calibrate once a calibration was applied
-to this `VST.cfg` (the bundled sample comes calibrated). Until a run can work, the header's main button leads to
-the next step instead of **Start tracking**, and a **Not calibrated** chip opens the Calibrate page.
+Setup is one flow of five numbered steps: **1 What you need, 2 Pick your spot, 3 Connect the camera, 4 Mark your
+street, 5 Calibrate**. The side rail lists them with those numbers and names, and every setup page has the same
+steps as a stepper across the top; click either to jump to a step. The header's main button walks the flow by name
+(**Next: Mark your street**) until steps 3 to 5 are done, then becomes **Start tracking**. Off the flow, on Live
+tracking or Results, it leads to the first step a run can't do without.
 
-### Get started
+A step gets a check mark once it's done for the source and settings in use: steps 1 and 2 once you've moved past
+them, Connect the camera once a source is open, Mark your street once you've checked it on the current source with
+nothing for the tracker to reject, and Calibrate once a calibration was applied to this `VST.cfg` (the bundled
+sample comes calibrated). A **Not calibrated** chip in the header opens step 5.
 
-Six steps for someone who has never set up a speed camera: what equipment to get, picking a spot, setting up
-the camera, marking the street, calibrating, and starting.
+### 1 What you need
 
-![Get started](images/studio/01-get-started.jpg)
+What each later step will need, one card per step in order: a window on the street (step 2), a camera held still
+(step 3), a few minutes with the picture (step 4) and one drive past (step 5).
 
-**Pick your spot** is a site planner. Enter the camera's field of view, resolution, frame rate and shutter, the
-distance to the lane and how long a stretch of it is clear. It shows a to-scale top view and works out the
-usable timing zone, the frames a car spends in it, the timing and distance error, and motion blur, with a
-verdict and a table of worst-case error by speed. The model:
+![What you need](images/studio/01-get-started.jpg)
+
+### 2 Pick your spot
+
+A site planner, for before anything is bought or mounted. Start with the street as you see it from the window:
+the distance to the moving lane and how long a stretch of it is clear, in feet, and the speed limit. The camera
+starts as a phone; pick another from the list once you know which one you'll use, and open **Camera details** for
+field of view, resolution, frame rate and shutter. It shows a to-scale top view and works out the usable timing
+zone, the frames a car spends in it, the timing and distance error, and motion blur, with a verdict and a table of
+worst-case error by speed. The model:
 
 - lane in frame = 2 × distance × tan(field of view / 2), limited by the clear stretch
 - timing zone = visible lane − one car length − 0.2 s of run-up for the tracker to lock on
 - timing error ≈ speed ÷ frames in the zone (a one-frame slip), distance error ≈ speed × distance error ÷ zone
 - blur = speed × shutter time, in pixels at the lane
 
-**Short views.** A narrow street seen from a front window may show only 5 to 7 m (15 to 25 ft) of the lane, too
+**Short views.** A narrow street seen from a front window may show only 15 to 25 ft of the lane, too
 little for a car to spend 15 whole frames in the zone. The planner then calls it a short view and offers **Use
 short-view timing**, which turns on `subFrameTiming` and sets the tracker's look-ahead, entry look-back and speed
 lines from the plan. With it, VST fits a line through each car's front-bumper positions and times the crossing to a
@@ -49,18 +59,19 @@ typical plan, and *Narrow streets: parked cars, shadows and wrong-way drivers* h
 
 ![Site planner](images/studio/02-site-planner.jpg)
 
-### Video source
+### 3 Connect the camera
 
 Open recorded video (several files run as a batch), a USB camera or a phone in USB webcam mode, or a network
 camera's RTSP/HTTP URL. A photo of the view also works for planning zones before the camera is installed. The
 preview lists resolution, frame rate, length and codec, with plain-language checks against what the tracker
-needs. Without a camera, **Use the sample** opens the 2016 Locust Avenue clip.
+needs. Without a camera, **Use the sample** opens the 2016 Locust Avenue clip. **Aim it like this** shows where
+to point the camera and how to keep it still.
 
-![Video source](images/studio/03-source.jpg)
+![Connect the camera](images/studio/03-source.jpg)
 
 The command line takes the same sources: `--input 0` opens the first camera and `--input rtsp://...` a stream.
 
-### Zones
+### 4 Mark your street
 
 Drag everything on the picture: the analysis box (edges, corners, or the tab to move it), the two white speed
 lines, the lane lines at hubcap height, and the obstruction band for a tree or pole. The inspector shows the
@@ -68,7 +79,7 @@ same values as numbers, explains each one, and lists anything the tracker would 
 
 Settings save themselves: a change is written to `VST.cfg` a moment after you let go of a handle or field, and
 never while the tracker would reject it. The first save of a session keeps the file as it was in `VST.cfg.bak`,
-and **Undo changes since opening** (or **Undo** on the Source page) puts it back. Saves go to a temporary file
+and **Undo changes since opening** (or **Undo** on the Connect the camera page) puts it back. Saves go to a temporary file
 that replaces `VST.cfg` in one step, so a crash or power cut can't leave it half written.
 
 **Your street** sets the compass direction of each lane and whether the street is one-way. On a one-way street
@@ -76,9 +87,9 @@ VST flags every vehicle going the other way: the lane on the picture turns red, 
 results count wrong-way drivers. This is the `LegalDirection` key in `VST.cfg` (`Both`, `L2R`, `R2L`, or the
 compass label of one direction, such as `NE`); the command line prints a `WRONG WAY` line for each.
 
-![Zones](images/studio/04-zones.jpg)
+![Mark your street](images/studio/04-zones.jpg)
 
-### Calibrate
+### 5 Calibrate
 
 VST counts frames rather than measuring distance, so it needs one pass at a known speed.
 
@@ -280,7 +291,7 @@ be open at once. The API is described in [companion-api.md](companion-api.md).
 
 | | |
 |---|---|
-| Settings (`VST.cfg`) | the file shown on the Source page; by default the per-user config (see the README) |
+| Settings (`VST.cfg`) | the file shown on the Connect the camera page; by default the per-user config (see the README) |
 | App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs, recent sources, pairing token |
 | Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
 | Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, and street reports in `Reports/` |

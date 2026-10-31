@@ -4,11 +4,14 @@
 // current page, then drains work queued by the companion API (Server runs on its own threads and hands anything
 // that touches App state to the GUI thread through post()).
 //
-// Pages follow what a first-time user has to do, in order:
-//   Get started (Guide.cpp)  equipment, picking a spot with the site planner, aiming, then a checklist
-//   Source                   video files (batch), a USB camera, or a network stream
-//   Zones                    drag the analysis box, speed lines, lanes and obstruction on the picture
-//   Calibrate                drive-through calibration or counting frames by hand
+// Setup is one flow of five numbered steps (kFlow in App.cpp), drawn the same way in the side rail and in the
+// stepper at the top of each step's page, with the header's Next button walking it in order:
+//   1 What you need      (Guide.cpp, guideStep_ 0)  what each later step will need, in step order
+//   2 Pick your spot     (Guide.cpp, guideStep_ 1)  the site planner: the street first, the camera a guess
+//   3 Connect the camera (Source)    video files (batch), a USB camera, or a network stream; how to aim it
+//   4 Mark your street   (Zones)     drag the analysis box, speed lines, lanes and obstruction on the picture
+//   5 Calibrate                      drive-through calibration or counting frames by hand
+// Then the pages used once it's set up:
 //   Live                     tracking with overlays, live counts and a feed of logged vehicles
 //   Results                  speeders and wrong-way drivers, charts, snapshots, csv and highlights
 //   Companion                pairing a phone with the local API (QR code)
@@ -33,6 +36,12 @@
 class Server;
 
 enum class Page { Guide, Source, Zones, Calibrate, Track, Results, Companion, Count };
+
+// One step of the setup flow: its name (the same in the rail, the stepper, the page header and every Next button),
+// the page that shows it, and for the Guide's two steps which one.
+struct FlowStep { const char* name; const char* icon; const char* subtitle; Page page; int guideStep; };
+constexpr int kFlowSteps = 5;
+extern const FlowStep kFlow[kFlowSteps];
 
 // The outcome of a check pass (App::checkCalibration), kept so the Calibrate page can show it and offer to average.
 struct CalCheck {
@@ -151,6 +160,12 @@ private:
 	void drawHeader(float w);
 	void drawToasts(float w, float h);
 	void pageGuide();
+	// The setup flow (App.cpp).  flowStep() is the step the current page shows, or -1 off the flow.
+	int flowStep() const;
+	bool flowDone(int step);
+	void goFlow(int step);
+	void flowStepper();                 // the numbered stepper at the top of each setup page
+	void aimCard(float width);          // Guide.cpp: how to aim and mount the camera, on the Connect the camera page
 	void pageSource();
 	void pageZones();
 	void pageCalibrate();
@@ -184,7 +199,7 @@ private:
 	std::map<int, std::unique_ptr<Texture>> snapTex_;
 	int seenVehicleId_ = 0;
 	bool wasRunning_ = false;
-	int guideStep_ = 0;
+	int guideStep_ = 0;                 // which of the Guide's two steps (What you need, Pick your spot) is showing
 	int resultsFilter_ = 0;
 	int selectedRow_ = -1;
 	int calibMode_ = 0;
