@@ -58,7 +58,7 @@ function spot({ vst, body, cfg, st, n }) {
     <h3>A good view has</h3>
     <div class="card">
       <div class="check">${icon('compass')}<p><b>The street crossing the picture side to side.</b> Aim straight across, not up or down the road; a window above street level is ideal.</p></div>
-      <div class="check">${icon('ruler')}<p><b>About 100 feet of road in view.</b> A car at the limit should take at least a second to cross the middle of the picture. A narrow street with only 20 ft or so in view works too, with short-view timing from VST Studio's site planner.</p></div>
+      <div class="check">${icon('ruler')}<p><b>About 100 feet of road in view.</b> A car at the limit should take at least a second to cross the middle of the picture. A narrow street with only 15 ft or so in view works too, with short-view timing from VST Studio's site planner.</p></div>
       <div class="check">${icon('camera')}<p><b>A steady 720p or 1080p picture at 30 fps.</b> Any webcam, a phone in webcam mode, or an IP camera (RTSP) works. Mount it so it can't shift.</p></div>
       <div class="check">${icon('sparkle')}<p><b>Little in the way.</b> A post or tree trunk is fine (you'll mark it), but avoid glare: put the lens against the glass and turn off room lights at night.</p></div>
     </div>

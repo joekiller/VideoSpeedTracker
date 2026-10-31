@@ -6,14 +6,19 @@
 // aiming card shown on Connect the camera.
 // The planner's model is the one in the project's site calculator: view width at the lane from the field of
 // view, limited by the clear stretch, minus a car length and a lock-in run-up gives the timing zone; frames in
-// the zone give the one-frame timing error, the distance error over the zone gives the calibration error, and
-// speed x shutter time gives motion blur.
-// A short view (an old-city street seen across 20 ft or so) uses the engine's short-view timing (subFrameTiming = 1)
+// the zone give the one-frame timing error, and speed x shutter time gives motion blur.  The calibration error is the
+// timing error of the calibration drive itself (at the speed limit), carried into every speed: VST learns the zone
+// from that pass rather than from a measured length.
+// A short view (an old-city street seen across 14 to 25 ft or so) uses the engine's short-view timing (subFrameTiming = 1)
 // instead.  That times the front bumper with a line fitted through its positions, so a whole car never has to fit
 // in the zone: the zone is the view less about a foot at each end, the limit is how many bumper positions the fit
 // gets (one per frame pair, at least kMinSamples), and the timing error comes from the bumper's pixel jitter
-// spread over the zone rather than from a whole frame.  Both numbers are from the 20 ft simulation in
-// tests/short_view.cmake (p90 error 1 mph at 30 fps, fits rejected below 3 points).
+// spread over the zone rather than from a whole frame.  Both numbers are from the simulations in
+// tests/short_view.cmake (p90 error 1 mph at 30 fps on 15 and 20 ft crops, fits rejected below 3 points).
+// The fastest car a short view can time follows from kMinSamples: it needs 2 (kMinSamples - 1) frames in the zone.
+// Halving the frame rate of the 15 ft crop (the same as doubling every car's speed at 30 fps) bore that out: cars up
+// to about 45 mph at 30 fps were timed, half of those at 50-59 mph, few above 60, and the ones timed stayed within
+// 2 mph.  The model's 44 mph at 30 fps for 15 ft is the planner's number.
 #include "App.h"
 #include "Canvas.h"
 #include "Icons.h"
@@ -57,18 +62,25 @@ Eval evaluate(const AppPrefs& p, double mph, bool shortView) {
 	e.cover = 2 * p.planDist * std::tan(p.planHfov * IM_PI / 180 / 2);
 	e.visible = std::min(e.cover, p.planClear);
 	e.zone = shortView ? std::max(0.0, e.visible - 2 * kEdgeM) : std::max(0.0, e.visible - p.planCarLen - v * kLockTime);
-	e.frames = e.zone / v * p.planFps;
-	// The engine looks at frames in pairs: one bumper position per pair, plus the one beyond the far line.
-	e.samples = e.zone > 0 ? e.frames / 2 + 1 : 0;
-	if (!shortView) e.quant = e.frames > 0 ? mph / e.frames : INFINITY;
-	else if (e.samples < kMinSamples) e.quant = INFINITY;
-	else {
+	// Timing error of one crossing at s mph, as a fraction of its speed.
+	auto timing = [&](double s, double* framesOut, double* samplesOut) -> double {
+		double frames = e.zone / (s * kMph) * p.planFps;
+		// The engine looks at frames in pairs: one bumper position per pair, plus the one beyond the far line.
+		double samples = e.zone > 0 ? frames / 2 + 1 : 0;
+		if (framesOut) *framesOut = frames;
+		if (samplesOut) *samplesOut = samples;
+		if (!shortView) return frames > 0 ? 1 / frames : INFINITY;
+		if (samples < kMinSamples) return INFINITY;
 		// Slope error of a least-squares line through n evenly spaced points with position noise s over a run of
 		// length L: s * sqrt(12 / n) / L, as a fraction of the speed.
 		double jitterM = kJitterPx * e.cover / 1280;
-		e.quant = mph * jitterM * std::sqrt(12 / e.samples) / e.zone;
-	}
-	e.calib = e.zone > 0 ? mph * (p.planCalib / 100) / e.zone : INFINITY;
+		return jitterM * std::sqrt(12 / samples) / e.zone;
+	};
+	e.quant = mph * timing(mph, &e.frames, &e.samples);
+	// VST never measures the zone: it learns it from a pass at a known speed (step 5), so the calibration carries that
+	// pass's own timing error, here a drive past at the speed limit, into every speed.  (The old site calculator's
+	// tape-measured zone length doesn't apply.)
+	e.calib = e.zone > 0 ? mph * timing(p.speedLimit, nullptr, nullptr) : INFINITY;
 	e.total = std::hypot(e.quant, e.calib);
 	e.pxPerM = p.planWidth / std::max(e.cover, .01);
 	e.blurCm = v / p.planShutter * 100;
@@ -242,7 +254,7 @@ void App::shortViewNote(double coverM, bool on) {
 			"timed like any other.");
 		bullet(ICON_CAMERA, c::ok, "Through a window",
 			"Take out any insect screen, and put the lens against the glass with a rubber hood so the room doesn't reflect. "
-			"60 fps lets VST time cars up to about 100 mph in a 20 ft view; 30 fps tops out at about 50-60 mph.");
+			"At 30 fps a 15 ft view times cars up to about 45 mph and a 20 ft view up to about 60; at 60 fps both time cars over 70. Use 60 fps and a 1/1000 s shutter if you can.");
 		ImGui::PopTextWrapPos();
 		ImGui::TreePop();
 	}
@@ -275,7 +287,7 @@ void App::sitePlanner() {
 		if (std::fabs(shown - *metres * scale) > 1e-9) *metres = shown / scale;
 	};
 	numIn("Window to the lane (ft)", &prefs.planDist, kFt, 1, "%.0f", "Straight-line distance from where the camera will sit to the middle of the nearer moving lane. Pace it out or measure on a map.");
-	numIn("Clear stretch (ft)", &prefs.planClear, kFt, 1, "%.0f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 15-25 ft; that works with short-view timing.");
+	numIn("Clear stretch (ft)", &prefs.planClear, kFt, 1, "%.0f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 14-25 ft; that works with short-view timing, down to about 14 ft.");
 	formLabel("Speed limit (mph)", col);
 	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // lines up with the inputs above
 	ImGui::InputInt("##lim", &prefs.speedLimit, 5);
@@ -314,8 +326,7 @@ void App::sitePlanner() {
 		ImGui::TreePop();
 	}
 	if (ImGui::TreeNode("Fine-tuning")) {
-		numIn("Zone length known to (in)", &prefs.planCalib, 1 / 2.54, 2, "%.0f", "How well you know the zone's length, if you measure it instead of calibrating with a drive past. Tape over 30 ft: 4-8 in. Guessed from a photo: 40 in or more. A drive-past calibration (step 5) avoids this.");
-		numIn("Car length (ft)", &prefs.planCarLen, kFt, .5, "%.1f", nullptr);
+		numIn("Car length (ft)", &prefs.planCarLen, kFt, .5, "%.1f", "A typical car is 15-16 ft. Whole-frame timing needs one fully in the zone; short-view timing doesn't.");
 		ImGui::TreePop();
 	}
 	prefs.planHfov = std::clamp(prefs.planHfov, 5.0, 170.0);
@@ -345,6 +356,22 @@ void App::sitePlanner() {
 	if (r.zone <= 0) ImGui::TextUnformatted("Less than a couple of feet of street is in view. Move back, or use a wider lens.");
 	else if (tooFew) ImGui::Text("At %d mph a car crosses the %.0f ft zone in %.0f frames, too few to time. Use a 60 fps camera, or see more of the street.", check, r.zone * 3.281, r.frames);
 	else ImGui::Text("About ±%.1f mph at %d mph, over a %.0f ft zone.", r.total, check, r.zone * 3.281);
+	if (shortView && r.zone > 0) {
+		// The fastest car this view can time, and what 60 fps would make of it: the spec a short view is bought on.
+		// Past kMaxTrackMph the tracker's margins, not the frame count, are the limit, so it just says "over 70".
+		auto fastest = [&](double fps) {
+			double v = r.zone * fps / (2 * (kMinSamples - 1)) / kMph;
+			char b[32];
+			if (v > kMaxTrackMph) snprintf(b, sizeof b, "over %.0f mph", kMaxTrackMph);
+			else snprintf(b, sizeof b, "up to about %.0f mph", std::floor(v / 5) * 5);
+			return std::string(b);
+		};
+		ImGui::PushTextWrapPos(0);
+		if (prefs.planFps < 59) dimText(ICON_GAUGE "  At %.0f fps this view times cars %s. A 60 fps camera would time them %s.",
+			prefs.planFps, fastest(prefs.planFps).c_str(), fastest(60).c_str());
+		else dimText(ICON_GAUGE "  At %.0f fps this view times cars %s.", prefs.planFps, fastest(prefs.planFps).c_str());
+		ImGui::PopTextWrapPos();
+	}
 	if (shortView) shortViewNote(r.cover, shortOn);
 	planDiagram(prefs, r, cfg.g, ImVec2(ImGui::GetContentRegionAvail().x, px(230)));
 	ImGui::Dummy(ImVec2(0, px(4)));
@@ -376,7 +403,7 @@ void App::sitePlanner() {
 	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("plantable", ICON_TABLE, "Worst-case error by speed", ImVec2(outW, 0));
 	if (ImGui::BeginTable("errs", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
-		for (const char* h : { "Speed", shortView ? "Positions" : "Frames", "Timing ±", "Distance ±", "Combined ±", "Blur" }) ImGui::TableSetupColumn(h);
+		for (const char* h : { "Speed", shortView ? "Positions" : "Frames", "Timing ±", "Calibration ±", "Combined ±", "Blur" }) ImGui::TableSetupColumn(h);
 		ImGui::TableHeadersRow();
 		for (int mph : { prefs.speedLimit, prefs.speedLimit + 5, prefs.speedLimit + 10, prefs.speedLimit + 20, prefs.speedLimit + 30 }) {
 			Eval e = evaluate(prefs, mph, shortView);
@@ -434,7 +461,7 @@ void App::pageGuide() {
 		// One card per later step, in step order, each naming its step, so the list reads as the plan.
 		float cw = (avail - px(48)) / 4, ch = px(222);
 		gearCard("g2", ICON_LOCATE, c::accent2, "A window on the street", "Step 2 · Pick your spot",
-			"Somewhere that sees the street from the side. 20 ft of clear street is enough; more is better. You'll check it next.", ImVec2(cw, ch));
+			"Somewhere that sees the street from the side. 15 ft of clear street is enough; more is better. You'll check it next.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g3", ICON_CAMERA, c::accent, "A camera, held still", "Step 3 · Connect the camera",
 			"A phone, webcam or IP camera at 720p or better and 25-30 fps (60 for a short view), on a window clamp or tripod.", ImVec2(cw, ch));

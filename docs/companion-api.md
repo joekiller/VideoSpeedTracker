@@ -215,7 +215,7 @@ companion-facing settings:
 stats csv; slower ones are only counted in the run manifest. 0 logs every timed vehicle; negative values
 are refused.
 
-`subFrameTiming` (0 or 1) turns on short-view timing for a view of about 20 ft of street, where a car
+`subFrameTiming` (0 or 1) turns on short-view timing for a view of about 14 to 25 ft of street, where a car
 fills most of the frame. `maxL2RDistOnEntry` and `maxR2LDistOnEntry` are the tracker's look-ahead, the
 pixels a car moves in two frames at the fastest speed it tracks, and `entryLookBack` is how far back it
 looks for a car entering the box. A short view needs several hundred pixels for each; Studio's site
