@@ -58,3 +58,8 @@ expect_run(min_speed_bad "${sample}minLoggedSpeed = 12.5\n" "can't read a value 
 expect_run(sub_frame_on "${sample}subFrameTiming = 1\n" "Can't open video")
 expect_run(sub_frame_bad "${sample}subFrameTiming = 2\n" "subFrameTiming must be 0 \\(whole frames\\) or 1")
 expect_run(sub_frame_no_margin "${sample}subFrameTiming = 1\nmaxR2LDistOnEntry = 0\n" "so both must be > 0")
+
+# levelDegrees (a camera not mounted level) turns each frame up to 15 degrees either way; a non-number or more is refused.
+expect_run(level_ok "${sample}levelDegrees = -2.5\n" "Can't open video")
+expect_run(level_too_far "${sample}levelDegrees = 20\n" "levelDegrees must be between -15 and 15")
+expect_run(level_bad "${sample}levelDegrees = nan\n" "levelDegrees must be between|can't read a value for levelDegrees")

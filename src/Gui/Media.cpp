@@ -1,4 +1,5 @@
 #include "Media.h"
+#include "Level.h"
 #include <GLFW/glfw3.h>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -249,12 +250,12 @@ bool Player::open(const std::string& path) {
 	info_.label = friendlySourceName(path);
 	if (info_.kind == SourceInfo::Image) {
 		// A still photo of the view is enough to plan zones before any camera is installed.
-		frame_ = cv::imread(path);
-		if (frame_.empty()) { error = "Can't read image " + path; return false; }
-		info_.width = frame_.cols;
-		info_.height = frame_.rows;
-		toWorkingSize(frame_);
-		tex_.update(frame_);
+		cv::Mat photo = cv::imread(path);
+		if (photo.empty()) { error = "Can't read image " + path; return false; }
+		info_.width = photo.cols;
+		info_.height = photo.rows;
+		toWorkingSize(photo);
+		show(photo);
 		opened_ = true;
 		pos_ = 0;
 		return true;
@@ -275,8 +276,22 @@ void Player::close() {
 	opened_ = false;
 	playing = false;
 	frame_.release();
+	raw_.release();
 	pos_ = -1;
 	carry_ = 0;
+}
+
+void Player::show(const cv::Mat& working) {
+	raw_ = working;
+	frame_ = working;           // shares raw_'s pixels at a zero angle; levelFrame() writes a new Mat, never into raw_
+	levelFrame(frame_, level_);
+	tex_.update(frame_);
+}
+
+void Player::setLevel(double degrees) {
+	if (degrees == level_) return;
+	level_ = degrees;
+	if (!raw_.empty()) show(raw_);
 }
 
 // Takes what the reader has: an error (the open or the picture failed), the opened file to step through, or the
@@ -291,6 +306,7 @@ bool Player::tickLive() {
 			live_.reset();
 			opened_ = false;
 			frame_.release();
+			raw_.release();
 			return false;
 		}
 		if (!live_->ready || live_->seq == liveSeq_) return false;
@@ -305,8 +321,7 @@ bool Player::tickLive() {
 		f = live_->latest;   // shares the buffer; the reader makes a new Mat for each frame rather than writing into this one
 		if (live_->handoff) { cap_ = std::move(live_->handoff); live_.reset(); }   // a file: stepping is the GUI's from here
 	}
-	frame_ = f;
-	tex_.update(frame_);
+	show(f);
 	pos_++;
 	return true;
 }
@@ -315,8 +330,7 @@ bool Player::readInto() {
 	cv::Mat f;
 	if (!cap_ || !cap_->read(f) || f.empty()) { playing = false; return false; }
 	toWorkingSize(f);
-	frame_ = f;
-	tex_.update(frame_);
+	show(f);
 	pos_++;
 	return true;
 }

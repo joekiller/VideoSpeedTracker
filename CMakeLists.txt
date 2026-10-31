@@ -53,6 +53,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(VideoSpeedTracker PRIVATE -ffp-contract=off)
 endif()
 
+# Software levelling for a camera not mounted level (Level.h): a tilted curb comes out level, about the centre, with
+# black corners.  Header only, OpenCV core and imgproc.
+add_executable(level_test tests/level_test.cpp)
+target_include_directories(level_test PRIVATE ${VST_DIR})
+target_link_libraries(level_test PRIVATE ${OpenCV_LIBS})
+
 # Interactive editor that trims a VST highlights video down to the vehicles worth posting.
 add_executable(ProcessHiLites ${CMAKE_SOURCE_DIR}/src/Wintel64/ProcessHiLites/ProcessHilites.cpp)
 target_link_libraries(ProcessHiLites PRIVATE vst_common ${OpenCV_LIBS})
@@ -78,6 +84,7 @@ foreach(min 0 30)
       -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
   set_tests_properties(min_logged_speed_${min} PROPERTIES FIXTURES_REQUIRED sample_run)
 endforeach()
+add_test(NAME software_level COMMAND level_test)
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}
     -DVST=$<TARGET_FILE:VideoSpeedTracker>

@@ -207,7 +207,8 @@ companion-facing settings:
   "legalDirection": "R2L",
   "speedLimit": 25, "egregious": 40, "siteName": "7½ St SW",
   "minLoggedSpeed": 18,
-  "subFrameTiming": 1, "maxL2RDistOnEntry": 440, "maxR2LDistOnEntry": 440, "entryLookBack": 1000
+  "subFrameTiming": 1, "maxL2RDistOnEntry": 440, "maxR2LDistOnEntry": 440, "entryLookBack": 1000,
+  "levelDegrees": 0
 }
 ```
 
@@ -220,6 +221,10 @@ fills most of the frame. `maxL2RDistOnEntry` and `maxR2LDistOnEntry` are the tra
 pixels a car moves in two frames at the fastest speed it tracks, and `entryLookBack` is how far back it
 looks for a car entering the box. A short view needs several hundred pixels for each; Studio's site
 planner works them out from the camera and street. See `VST.cfg`'s keys of the same names.
+
+`levelDegrees` (-15 to 15) turns every frame counter-clockwise by that much before tracking, for a camera that
+isn't mounted level. `/api/stream.mjpg` shows the turned picture, so lines drawn on it
+line up with what the tracker sees.
 
 As in `VST.cfg`, `speedLineLeft`, `speedLineRight` and `obstruction` are x offsets from
 `AnalysisBoxLeft`; `R2LStreetY` and `L2RStreetY` are y offsets from `AnalysisBoxTop`. `obstruction`
