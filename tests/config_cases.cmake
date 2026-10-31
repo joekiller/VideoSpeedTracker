@@ -53,3 +53,8 @@ expect_run(legal_bad "${sample}LegalDirection = uphill\n" "LegalDirection must b
 expect_run(min_speed_zero "${sample}minLoggedSpeed = 0\n" "Can't open video")
 expect_run(min_speed_negative "${sample}minLoggedSpeed = -5\n" "minLoggedSpeed must be >= 0")
 expect_run(min_speed_bad "${sample}minLoggedSpeed = 12.5\n" "can't read a value for minLoggedSpeed from \"12.5\"")
+
+# subFrameTiming (short views) is 0 or 1, and scales its margins by maxL2R/R2LDistOnEntry, so those must be positive.
+expect_run(sub_frame_on "${sample}subFrameTiming = 1\n" "Can't open video")
+expect_run(sub_frame_bad "${sample}subFrameTiming = 2\n" "subFrameTiming must be 0 \\(whole frames\\) or 1")
+expect_run(sub_frame_no_margin "${sample}subFrameTiming = 1\nmaxR2LDistOnEntry = 0\n" "so both must be > 0")

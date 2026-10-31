@@ -1090,8 +1090,11 @@ void App::zoneInspector() {
 		intRow("Slop", &g.SLOP, 0, 100, "Pixels of tolerance when two vehicles overlap.");
 		intRow("Vehicle height", &g.nextHeight, 10, 300, "First guess at a vehicle's height in pixels.");
 		intRow("Large vehicle", &g.largeVehicleArea, 1, 1000, "Area above which a vehicle counts as a truck or bus.");
-		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 400, "Fastest trackable motion, pixels per two frames.");
-		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 400, "Fastest trackable motion, pixels per two frames.");
+		bool shortView = g.subFrameTiming != 0;
+		if (ImGui::Checkbox("Short view (about 20 ft of street in the picture)", &shortView)) g.subFrameTiming = shortView;
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Times each car's front bumper to a fraction of a frame, for views where a car fills most of the frame.\nThe site planner on the Get started page can set this and the steps below for you.");
+		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
+		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Entry look-back", &g.entryLookBack, 0, 1280);
 		intRow("Slowest logged", &g.minLoggedSpeed, 0, 100, "Vehicles timed below this many mph (walkers, cyclists) are counted in the run manifest but not written to the csv. 0 logs every timed vehicle.");
 	}

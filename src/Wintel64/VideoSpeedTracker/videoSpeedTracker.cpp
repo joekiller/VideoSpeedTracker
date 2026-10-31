@@ -441,7 +441,7 @@ void writeManifest(bool complete){
 		<< "    \"LegalDirection\": " << jsonString(g.LegalDirection) << ", \"L2RDirection\": " << jsonString(g.L2RDirection)
 		<< ", \"R2LDirection\": " << jsonString(g.R2LDirection) << ",\n"
 		<< "    \"speedLineLeft\": " << g.speedLineLeft << ", \"speedLineRight\": " << g.speedLineRight << ",\n"
-		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << "\n"
+		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << ", \"subFrameTiming\": " << g.subFrameTiming << "\n"
 		<< "  },\n"
 		<< "  \"counts\": { \"logged\": " << runLogged << ", \"belowMinSpeed\": " << runBelowMinSpeed << ", \"untimed\": " << runUntimed << " }\n"
 		<< "}\n";
@@ -1331,7 +1331,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 // This could be modified to delete the overrun vehicle instead, but leapfrogging would have to be dealt with.
 
 	for (int index = vehiclesGoingRight.size() - 1; index > 0; index--){
-		if (index > 0 && (projectedL2R[index].getBox().x + projectedL2R[index].getBox().width) > (projectedL2R[index - 1].getBox().x - 200) ) {
+		if (index > 0 && (projectedL2R[index].getBox().x + projectedL2R[index].getBox().width) > (projectedL2R[index - 1].getBox().x - g.margin(200, true)) ) {
 			if (pleaseTrace) traceFile << endl << "<" << frameNumber << ">   # # # # # # # L2R vehicle[" << index << "] is being deleted for overrunning: " << endl;
 			cout << "<" << frameNumber << ">   # # # # # # # L2R vehicle[" << index << "] is overrunning: "  << endl;
 			// For now, erase all ongoing vehicle records and wait for scene to go quiescent.  Then start analyzing again.
@@ -1348,7 +1348,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 // This could be modified to delete the overrun vehicle instead, but leapfrogging would have to be dealt with.
 
 	for (int index = vehiclesGoingLeft.size() - 1; index > 0; index--){
-		if (index > 0 && ((projectedR2L[index - 1].getBox().x + projectedR2L[index - 1].getBox().width) > (projectedR2L[index].getBox().x - 200))) {
+		if (index > 0 && ((projectedR2L[index - 1].getBox().x + projectedR2L[index - 1].getBox().width) > (projectedR2L[index].getBox().x - g.margin(200, false)))) {
 			if (pleaseTrace) traceFile << endl << "<" << frameNumber << ">   # # # # # # # R2L vehicle[" << index << "] is being deleted for overrunning: " << endl;
 			cout << "<" << frameNumber << ">   # # # # # # # R2L vehicle[" << index << "] is overrunning: " << endl;
 			// For now, erase all ongoing vehicle records and wait for scene to go quiescent.  Then start analyzing again.
@@ -1468,7 +1468,9 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 			if (coalescedRectangle.x != -1){ // at least one object is present in coalesced rectangle(s)
 				vehiclesGoingRight.push_back(VehicleDynamics(L2R));
 				vehiclesGoingRight[vehiclesGoingRight.size() - 1].addSnapshot(Snapshot(coalescedRectangle, frameNumber));
-				if (coalescedRectangle.x + coalescedRectangle.width >= g.speedLineLeft)
+				// First seen already in the zone: usually a lost track picked up again.  In a short view (subFrameTiming) a car can be a
+				// frame pair into the zone before it is first seen, so one still at the left edge is just entering and is timed from there.
+				if (coalescedRectangle.x + coalescedRectangle.width >= g.speedLineLeft && !(g.subFrameTiming && coalescedRectangle.x <= g.margin(45, true)))
 					     vehiclesGoingRight[vehiclesGoingRight.size() - 1].markInvalidSpeed();
 				if (pleaseTrace) traceFile << endl << endl << "<" << frameNumber
 					<< ">    >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Just added rightbound vehicle[" << vehiclesGoingRight.size() - 1 << "] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>" << endl;
@@ -1491,7 +1493,8 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 			if (coalescedRectangle.x != -1){
 				vehiclesGoingLeft.push_back(VehicleDynamics(R2L));
 				vehiclesGoingLeft[vehiclesGoingLeft.size() - 1].addSnapshot(Snapshot(coalescedRectangle, frameNumber));
-				if (coalescedRectangle.x <= g.speedLineRight)
+				if (coalescedRectangle.x <= g.speedLineRight  // see the note on L2R just above
+					&& !(g.subFrameTiming && coalescedRectangle.x + coalescedRectangle.width >= g.pixelRight - g.margin(45, false)))
 					     vehiclesGoingLeft[vehiclesGoingLeft.size() - 1].markInvalidSpeed();
 				if (pleaseTrace) traceFile << endl << endl << "<" << frameNumber
 					<< ">     <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< Just added leftbound vehicle[" << vehiclesGoingLeft.size() - 1 << "] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << endl;
@@ -1544,8 +1547,8 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				//find external contours of filtered image using openCV findContours function
 				contours.erase(contours.begin(), contours.end()); // Clear contours vector
 				hierarchy.erase(hierarchy.begin(), hierarchy.end());  // Clear hierarchy vector
-				int tempX = max(projectedL2R[index].getBox().x - 80, g.pixelLeft);  // look behind the predicted rear bumper
-				int tempWidth = min(projectedL2R[index].getBox().width + 100, g.pixelRight - tempX); // Look a little beyond the front bumper;
+				int tempX = max(projectedL2R[index].getBox().x - g.margin(80, true), g.pixelLeft);  // look behind the predicted rear bumper
+				int tempWidth = min(projectedL2R[index].getBox().width + g.margin(100, true), g.pixelRight - tempX); // Look a little beyond the front bumper;
 				Mat ROIL2R = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.L2RStreetY));
 				findContours(ROIL2R, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeL2RObjects = 0; // Used to count how many detected objects are in selected region of interest
@@ -1573,12 +1576,12 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 						grabRestriction = strict;
 					if (projectedL2R[index].getVState() == entering)
 						// Look a few pixels beyond projections in each direction
-						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeL2RObjects, max(g.pixelLeft, (projRearBumper - 10)), (projFrontBumper + 20), grabRestriction);
+						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeL2RObjects, max(g.pixelLeft, (projRearBumper - g.margin(10, true))), (projFrontBumper + g.margin(20, true)), grabRestriction);
 					else if (projectedL2R[index].getVState() == exiting)  // Look a few pixels beyond projections in each direction
-						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeL2RObjects, (projRearBumper - 10), min((projFrontBumper + 10), g.pixelRight), grabRestriction);
+						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeL2RObjects, (projRearBumper - g.margin(10, true)), min((projFrontBumper + g.margin(10, true)), g.pixelRight), grabRestriction);
 					else  // somewhere in the middle
-						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeL2RObjects, max((projRearBumper - 50),
-						g.pixelLeft), min((projFrontBumper + 10), g.pixelRight), grabRestriction);
+						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeL2RObjects, max((projRearBumper - g.margin(50, true)),
+						g.pixelLeft), min((projFrontBumper + g.margin(10, true)), g.pixelRight), grabRestriction);
 
 					// If no coalesced objects have been found, record no snapshot.
 					//                                        =======================
@@ -1613,8 +1616,8 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				//find external contours of filtered image using openCV findContours function
 				contours.erase(contours.begin(), contours.end()); // Clear contours vector
 				hierarchy.erase(hierarchy.begin(), hierarchy.end());  // Clear hierarchy vector
-				int tempX = max(projectedR2L[index].getBox().x - 20, g.pixelLeft);  // look a little ahead of the predicted front bumper
-				int tempWidth = min(projectedR2L[index].getBox().width + 100, g.pixelRight - tempX); // Look behind the rear bumper;
+				int tempX = max(projectedR2L[index].getBox().x - g.margin(20, false), g.pixelLeft);  // look a little ahead of the predicted front bumper
+				int tempWidth = min(projectedR2L[index].getBox().width + g.margin(100, false), g.pixelRight - tempX); // Look behind the rear bumper;
 				Mat ROIR2L = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.R2LStreetY));
 				findContours(ROIR2L, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeR2LObjects = 0; // Used to count how many detected objects are in selected region of interest
@@ -1644,12 +1647,12 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 						grabRestriction = strict;
 					if (projectedR2L[index].getVState() == entering)
 						// Look a few pixels beyond projections in each direction
-						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeR2LObjects, (projFrontBumper - 20), min((projRearBumper + 10), g.pixelRight), grabRestriction); // minus for R2L vehicle
+						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeR2LObjects, (projFrontBumper - g.margin(20, false)), min((projRearBumper + g.margin(10, false)), g.pixelRight), grabRestriction); // minus for R2L vehicle
 					else if (projectedR2L[index].getVState() == exiting)  // Look a few pixels beyond projections in each direction
-						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeR2LObjects, max((projFrontBumper - 10), g.pixelLeft), (projRearBumper + 10), grabRestriction);
+						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeR2LObjects, max((projFrontBumper - g.margin(10, false)), g.pixelLeft), (projRearBumper + g.margin(10, false)), grabRestriction);
 					else  // somewhere in the middle
-						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeR2LObjects, max((projFrontBumper - 20), g.pixelLeft),
-						min(projRearBumper + 50, g.pixelRight), grabRestriction);
+						coalescedRectangle = coalesce(objectBoundingRectangle, numOKSizeR2LObjects, max((projFrontBumper - g.margin(20, false)), g.pixelLeft),
+						min(projRearBumper + g.margin(50, false), g.pixelRight), grabRestriction);
 
 					// If no coalesced objects have been found, record no snapshot.
 					//                                        =======================

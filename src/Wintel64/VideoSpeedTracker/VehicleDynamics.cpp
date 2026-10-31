@@ -147,6 +147,38 @@ vector<double> getLinearFit(const std::vector<double>& x, const std::vector<doub
 
 
 
+// Private function for subFrameTiming = 1.  Rather than count whole frames between the frame pairs in which the projected front
+// bumper passed each speed line (in a 20 ft view at 30 fps a car crosses the zone in a dozen frames, so one frame pair is 15%),
+// fit a line through the front bumpers actually seen in the zone, and the nearest one beyond each speed line, against frame
+// number.  Its slope (pixels per frame) gives the time between the lines to a fraction of a frame.  -1, so no speed, if fewer
+// than three were seen, they don't move the right way, or they stray from the line by more than margin(4) pixels rms.  This
+// replaces validGap(), whose entry gap here is mostly the deliberate look-ahead of a large maxDistOnEntry.
+int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
+	int first = -1, last = -1;  // the first and last front bumpers seen between the speed lines (they are in frame order)
+	for (int i = 0; i < int(seenFBPixel.size()); i++)
+		if (seenFBPixel[i] >= g.speedLineLeft && seenFBPixel[i] <= g.speedLineRight){
+			if (first < 0) first = i;
+			last = i;
+		}
+	if (first < 0) return -1;
+	vector<double> frames, pixels;
+	for (int i = max(first - 1, 0); i <= min(last + 1, int(seenFBPixel.size()) - 1); i++)
+		if (seenFBPixel[i] > g.pixelLeft && seenFBPixel[i] < g.pixelRight){  // one at the edge of the box is cut off there, not a bumper
+			frames.push_back(seenFBFrame[i]);
+			pixels.push_back(seenFBPixel[i]);
+		}
+	if (frames.size() < 3) return -1;
+	vector<double> fit = getLinearFit(frames, pixels);
+	double slope = fit[0];  // pixels per frame; + for L2R, - for R2L
+	if ((dir == L2R && slope <= 0) || (dir == R2L && slope >= 0)) return -1;
+	double sumSq = 0;
+	for (size_t i = 0; i < frames.size(); i++) sumSq += pow(pixels[i] - (slope * frames[i] + fit[1]), 2);
+	if (sqrt(sumSq / frames.size()) > g.margin(4, dir == L2R)) return -1;  // not one vehicle moving steadily: usually two merged, or a lost track picked up again
+	double zoneFrames = double(g.speedLineRight - g.speedLineLeft) / abs(slope);
+	double calibrationFrames = (dir == L2R ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) * g.videoFPS / g.CalibrationFPS;
+	return int(calibrationFrames / zoneFrames * g.CalibrationSpeed + 0.5);
+}
+
 //Private function
 void VehicleDynamics::assembleStats(int frameNumber, direction dir){
 	entryFrameNum = snaps.front().getFrameNum();
@@ -175,7 +207,7 @@ void VehicleDynamics::addSnapshot(Snapshot inShot){
 
 
 bool validGap(int gap){
-//	quality measure to determine if tracking worked well enough to report vehicle speed.
+//	quality measure to determine if tracking worked well enough to report vehicle speed.  (With subFrameTiming, subFrameSpeed() judges instead.)
 	return abs(gap) <= 40;
 }
 
@@ -192,6 +224,7 @@ int VehicleDynamics::computeFinalSpeed(Globals& g, direction dir, int trackStart
 	// Speed = CalibrationSpeed * (calibration crossing time / this vehicle's crossing time).  The calibration crossing was
 	// counted in CalibrationFPS video; fpsScale converts it to frames of the video being analyzed (exactly 1 when they match).
 	double fpsScale = g.videoFPS / g.CalibrationFPS;
+	if (g.subFrameTiming) return subFrameSpeed(g, dir);  // > 0: estimateNextVehicleData() checked it before calling
 	switch (dir){
 	case L2R:
 		// fine tune final frame marker used for estimating speed
@@ -222,6 +255,7 @@ int VehicleDynamics::computeFinalSpeed(Globals& g, direction dir, int trackStart
 statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 
 	Rect lastObservedBox = snaps.back().getRect();
+	int lastObservedFrame = snaps.back().getFrameNum();  // before a coasted snapshot may be added below
 	double prevNextFrontBumper = nextFrontBumper; // Get last prediction for front bumper
 	double prevNextRearBumper = nextRearBumper;  // Get last prediction for rear bumper
 	int prevEstVelocity = estVelocity;
@@ -268,8 +302,9 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 		case UNK: // UNK ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ?
 			break;
 		}
+			if (!FBPixel.empty()){ seenFBFrame.push_back(lastObservedFrame); seenFBPixel.push_back(FBPixel.back()); }
 			nextY = 60;
-			estVelocity = 10;  // Ten is an estimate only, on the conservative side, generally placing rear bumper further back than actual, when it is used in next block.
+			estVelocity = g.margin(10, vehicleDirection == L2R);  // Ten is an estimate only, on the conservative side, generally placing rear bumper further back than actual, when it is used in next block.
 			return ImOK;
 	}
 
@@ -288,7 +323,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 		case L2R:  // L2R >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 			if (overlapStatus == none || overlapStatus == rearOnly){
 				double beliefFactor = double(snaps.size() - 1) / double(snaps.size());
-				double motionDelta = max(double(lastObservedBox.x + lastObservedBox.width) - double(nextToLastBox.x + nextToLastBox.width), 10.0);
+				double motionDelta = max(double(lastObservedBox.x + lastObservedBox.width) - double(nextToLastBox.x + nextToLastBox.width), double(g.margin(10, true)));
 				nextFrontBumper = double(lastObservedBox.x + lastObservedBox.width) + (beliefFactor * motionDelta)
 					+ ((1.0 - beliefFactor) *  g.maxL2RDistOnEntry);  // Believe part of how much moved last time and part of aggressive look out front.
 				FBPixel.push_back(double(lastObservedBox.x + lastObservedBox.width));
@@ -303,7 +338,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 				return lostTrack;
 			}
 
-			if (lastObservedBox.x < 45 || int(nextFrontBumper) < g.entryLookBack  // A rear bumper less than 45 pixels away from left edge is still at left edge.  45 is a tuning parameter.  
+			if (lastObservedBox.x < g.margin(45, true) || int(nextFrontBumper) < g.entryLookBack  // A rear bumper less than 45 pixels away from left edge is still at left edge.  45 is a tuning parameter.  
 				                       || (overlapStatus == rearOnly || overlapStatus == bothOverlap)) // vehicle's rear bumper not determined yet; could still be zero
 				nextRearBumper = g.pixelLeft;
 			else { // Rear bumper has left the left edge;  Start collecting data for Linear regression over rear bumper
@@ -317,7 +352,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 		case R2L:  //R2L <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 			if (overlapStatus == none || overlapStatus == rearOnly){
 				double beliefFactor = double(snaps.size() - 1) / double(snaps.size());
-				double motionDelta = max(double(nextToLastBox.x - lastObservedBox.x), 10.0);
+				double motionDelta = max(double(nextToLastBox.x - lastObservedBox.x), double(g.margin(10, false)));
 				nextFrontBumper = (double)lastObservedBox.x - (beliefFactor * motionDelta )
 					- ((1.0 - beliefFactor) *  g.maxR2LDistOnEntry);  // Can keep using FB (x) because rear bumper projection is parked at pixelRight;
 				FBPixel.push_back(double(lastObservedBox.x));
@@ -332,7 +367,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 				return lostTrack;
 			}
 
-			if ((lastObservedBox.x + lastObservedBox.width) > (g.pixelRight - 45) || (g.pixelRight - int(nextFrontBumper)) < g.entryLookBack   //  See note above about use of 45.
+			if ((lastObservedBox.x + lastObservedBox.width) > (g.pixelRight - g.margin(45, false)) || (g.pixelRight - int(nextFrontBumper)) < g.entryLookBack   //  See note above about use of 45.
 				|| (overlapStatus == rearOnly || overlapStatus == bothOverlap))
 				nextRearBumper = g.pixelRight;
 			else { // This will force a transition to vState = inMiddle
@@ -349,6 +384,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 
 		}
 
+		if (!coasting){ seenFBFrame.push_back(lastObservedFrame); seenFBPixel.push_back(FBPixel.back()); }  // dropped by now if its front bumper was hidden
 		estVelocity = abs((lastObservedBox.x + lastObservedBox.width) - (nextToLastBox.x + nextToLastBox.width)); // Could be moving backwards!  In normal case, delta between
 																												// two front bumpers in sequence is best estimate.
 		if ((vehicleDirection == L2R && (nextRearBumper >= nextFrontBumper)) || (vehicleDirection == R2L && (nextRearBumper <= nextFrontBumper))){
@@ -395,7 +431,10 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					FBPixel.push_back(prevNextFrontBumper);  // 
 					//					cout << " * * * * * * * * * * * * * * L2R front bumper moved backwards or it was occluded." << endl;
 				}
-				else FBPixel.push_back(double(lastObservedBox.x + lastObservedBox.width));
+				else {
+					FBPixel.push_back(double(lastObservedBox.x + lastObservedBox.width));
+					if (!coasting){ seenFBFrame.push_back(lastObservedFrame); seenFBPixel.push_back(FBPixel.back()); }
+				}
 				break;
 			case R2L:   //  R2L <<<<<
 				if ((int(prevNextFrontBumper) >= (g.obstruction[0] - g.obstruction_extent)) && (int(prevNextFrontBumper) <= g.obstruction[1])
@@ -404,7 +443,10 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					FBPixel.push_back(double(prevNextFrontBumper));
 					//					cout << " * * * * * * * * * * * * * * R2L front bumper moved backwards or it was occluded." << endl;
 				}
-				else FBPixel.push_back(double(lastObservedBox.x));
+				else {
+					FBPixel.push_back(double(lastObservedBox.x));
+					if (!coasting){ seenFBFrame.push_back(lastObservedFrame); seenFBPixel.push_back(FBPixel.back()); }
+				}
 				break;
 			case UNK:
 				break;
@@ -444,7 +486,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 			}
 			if ((trackEndPixel == 0) && (nextFrontBumper > g.speedLineRight)){
 				int endGap = (int(prevNextFrontBumper) - (lastObservedBox.x + lastObservedBox.width));
-				if (validGap(entryGap - endGap)){
+				if (g.subFrameTiming ? subFrameSpeed(g, L2R) > 0 : validGap(entryGap - endGap)){
 					trackEndPixel = int(nextFrontBumper); // End tracking L2R speed
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, L2R, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
@@ -471,8 +513,8 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 			}
 			if ((trackEndPixel == 0) && (nextFrontBumper < g.speedLineLeft)){
 				int endGap = int(prevNextFrontBumper) - lastObservedBox.x;
-				if (validGap(entryGap - endGap)){
-					trackEndPixel = int(nextFrontBumper); // End tracking R2L speed
+				if (g.subFrameTiming ? subFrameSpeed(g, R2L) > 0 : validGap(entryGap - endGap)){
+					trackEndPixel = max(int(nextFrontBumper), 1); // End tracking R2L speed.  Not 0, which means "not timed", when a fast vehicle's projection was pinned to pixelLeft.
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, R2L, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
 					cout << "<" << frameNum << ">   < < < < < Speed is : " << finalSpeed << endl;
@@ -496,7 +538,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 		if (vState == entering){
 			switch (vehicleDirection){  // L2R >>>>>>>>>>>>>>>>>>>>>>>
 			case L2R:
-				if (lastObservedBox.x < 45 || int(nextFrontBumper) < g.entryLookBack   // A rear bumper less than 45 pixels away from left edge is still at left edge.  45 is a tuning parameter.  
+				if (lastObservedBox.x < g.margin(45, true) || int(nextFrontBumper) < g.entryLookBack   // A rear bumper less than 45 pixels away from left edge is still at left edge.  45 is a tuning parameter.  
 					|| (overlapStatus == rearOnly || overlapStatus == bothOverlap)) // vehicle's rear bumper not determined yet; could still be zero
 					nextRearBumper = g.pixelLeft;
 				else { // This will force a transition to vState = inMiddle
@@ -507,7 +549,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 				}
 				break;
 			case R2L:  // R2L  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-				if ((lastObservedBox.x + lastObservedBox.width) > (g.pixelRight - 45) || (g.pixelRight - int(nextFrontBumper)) < g.entryLookBack  // See note about 45, just above.
+				if ((lastObservedBox.x + lastObservedBox.width) > (g.pixelRight - g.margin(45, false)) || (g.pixelRight - int(nextFrontBumper)) < g.entryLookBack  // See note about 45, just above.
 					|| (overlapStatus == rearOnly || overlapStatus == bothOverlap))
 					nextRearBumper = g.pixelRight;
 				else { // This will force a transition to vState = inMiddle
@@ -605,7 +647,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 
 
 // Get best snapshot of cross section area for stats (taken when center of vehicle is mid speed zone, which need not be mid Analysis box)
-			if (abs(((nextFrontBumper + nextRearBumper) / 2) - ((g.speedLineLeft + g.speedLineRight) / 2)) <= 70){
+			if (abs(((nextFrontBumper + nextRearBumper) / 2) - ((g.speedLineLeft + g.speedLineRight) / 2)) <= g.margin(70, vehicleDirection == L2R)){
 				bestHeight = lastObservedBox.height;
 				bestWidth = lastObservedBox.width;
 				bestVelocity = estVelocity;

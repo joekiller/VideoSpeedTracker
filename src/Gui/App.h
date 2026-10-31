@@ -162,6 +162,7 @@ private:
 	Texture* snapshotTexture(int vehicleId);
 	void pumpTracker();
 	void sitePlanner();
+	void shortViewNote(double coverM, bool on);   // Guide.cpp: the planner's short-view advice and its settings button
 	void autosave();
 	void recordCalibration(CalEvent e);
 	const std::vector<CalEvent>& calibrationHistory();

@@ -100,7 +100,7 @@ expect("counts.logged (baseline rows)" "${M_logged}" ${baseline_rows})
 expect("counts.logged (csv rows)" "${M_logged}" ${rows})
 # bin/VST.cfg: the 2016 Locust Avenue calibration and zone; minLoggedSpeed isn't set there, so it's the default 18.
 foreach(kv CalibrationSpeed=25 CalibrationFPS=30 CalibrationFramesL2R=35 CalibrationFramesR2L=40 LegalDirection=Both
-           L2RDirection=SE R2LDirection=NW speedLineLeft=350 speedLineRight=909 minLoggedSpeed=18)
+           L2RDirection=SE R2LDirection=NW speedLineLeft=350 speedLineRight=909 minLoggedSpeed=18 subFrameTiming=0)
   string(REPLACE "=" ";" kv "${kv}")
   list(GET kv 0 k)
   list(GET kv 1 v)

@@ -161,7 +161,8 @@ req GET /api/config
 expect 200 "GET /api/config"
 has AnalysisBoxLeft AnalysisBoxTop AnalysisBoxWidth AnalysisBoxHeight speedLineLeft speedLineRight obstruction \
     R2LStreetY L2RStreetY L2RDirection R2LDirection CalibrationFramesL2R CalibrationFramesR2L CalibrationSpeed \
-    CalibrationFPS legalDirection speedLimit egregious siteName minLoggedSpeed
+    CalibrationFPS legalDirection speedLimit egregious siteName minLoggedSpeed subFrameTiming maxL2RDistOnEntry \
+    maxR2LDistOnEntry entryLookBack
 CONFIG_BEFORE=$BODY
 
 echo "Health"
@@ -187,6 +188,8 @@ req PUT /api/config -H 'Content-Type: application/json' --data '{"speedLimit": 2
 grep -q '"ok":false' <<< "$BODY" && pass "speedLimit 2 is rejected" || fail "speedLimit 2 should be rejected: ${BODY:0:300}"
 req PUT /api/config -H 'Content-Type: application/json' --data '{"minLoggedSpeed": -1}'
 grep -q '"ok":false' <<< "$BODY" && pass "minLoggedSpeed -1 is rejected" || fail "minLoggedSpeed -1 should be rejected: ${BODY:0:300}"
+req PUT /api/config -H 'Content-Type: application/json' --data '{"subFrameTiming": 2}'
+grep -q '"ok":false' <<< "$BODY" && pass "subFrameTiming 2 is rejected" || fail "subFrameTiming 2 should be rejected: ${BODY:0:300}"
 req PUT /api/config -H 'Content-Type: application/json' --data 'not json'
 expect 400 "PUT /api/config with a body that isn't JSON"
 json_error "400"
