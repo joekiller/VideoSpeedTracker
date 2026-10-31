@@ -90,7 +90,7 @@ static void testCamera(const fs::path& root) {
 
 	// The camera knocked 30 px to the right (in 1280-wide frame pixels): the scene appears 30 px to the left... or
 	// right, depending on convention, so only the size of the shift is checked.
-	cv::Mat shifted, m = (cv::Mat_<double>(2, 3) << 1, 0, 30.0 * a.cols / 1280, 0, 1, 12.0 * a.rows / 720);
+	cv::Mat shifted, m = (cv::Mat_<double>(2, 3) << 1.0, 0.0, 30.0 * a.cols / 1280, 0.0, 1.0, 12.0 * a.rows / 720);
 	cv::warpAffine(b, shifted, m, b.size(), cv::INTER_LINEAR, cv::BORDER_REPLICATE);
 	ViewCheck moved = compareView(a, shifted);
 	std::printf("  shifted 30,12: %s, shift %.1f,%.1f px, confidence %.3f\n", moved.name(), moved.dx, moved.dy, moved.confidence);
