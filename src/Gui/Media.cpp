@@ -279,13 +279,36 @@ void Player::close() {
 	raw_.release();
 	pos_ = -1;
 	carry_ = 0;
+	fed_ = false;
+	fedLevel_ = 0;
 }
 
 void Player::show(const cv::Mat& working) {
 	raw_ = working;
 	frame_ = working;           // shares raw_'s pixels at a zero angle; levelFrame() writes a new Mat, never into raw_
-	levelFrame(frame_, level_);
+	levelFrame(frame_, level_ - fedLevel_);   // turns about the centre add up, so a fed frame needs only the difference
 	tex_.update(frame_);
+}
+
+// No reader, no device: the frame is the tracker's copy.  It is cloned because the caller's Mat (App::live_) is
+// refilled in place by Tracker::latest(), and frame() must stay the picture the texture shows (the cone timer and the
+// companion's snapshot read it).  One 1280x720 copy and one texture upload per shown frame, at most ~40 a second.
+void Player::feed(const cv::Mat& working, double turnedBy, const SourceInfo& about, int frameNumber) {
+	if (working.empty()) return;
+	if (live_ || cap_ || !fed_) {
+		// Anything this Player still had open (a preview reader App::startTracking abandoned) lets go now.
+		SourceInfo keep = info_;
+		close();
+		info_ = keep;
+		error.clear();
+	}
+	if (about.path != info_.path) info_ = about;
+	fed_ = true;
+	opened_ = true;
+	playing = false;
+	fedLevel_ = turnedBy;
+	pos_ = frameNumber;
+	show(working.clone());
 }
 
 void Player::setLevel(double degrees) {
@@ -354,6 +377,7 @@ bool Player::seek(int index) {
 }
 
 bool Player::tick(double now) {
+	if (fed_) return false;         // the feeder (App::pumpTracker) brings each frame
 	if (live_) return tickLive();   // never waits: takes the reader's newest frame (or the opened file), if there is one
 	if (!opened_ || info_.kind == SourceInfo::Image) return false;
 	double dt = lastTick_ > 0 ? now - lastTick_ : 0;

@@ -288,6 +288,12 @@ A camera or stream runs until you press Stop. If the picture drops out, the badg
 tracker reopens the source after 1, 2, 4, 8 and 16 s, then every 30 s until it's back; Stop works during the wait.
 Vehicles in the speed zone when the picture stopped are dropped rather than measured across the gap.
 
+While a run goes on, **Pick your spot**, **Connect the camera**, **Mark your street** and **Calibrate** keep showing
+its picture, with the same badge. It's the tracker's own feed passed along, not a second connection to the camera,
+so switching pages costs nothing extra and never interrupts the run. The run keeps the settings it started with:
+lines you drag now are saved and used the next time you start tracking. When you press Stop, the preview reconnects
+to the camera by itself.
+
 #### Leaving it running
 
 The **Unattended health** card on this page looks after a camera left running for days or weeks:

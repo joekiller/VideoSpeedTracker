@@ -75,7 +75,7 @@ public:
 	void closeAndWait(double maxS);
 	struct LiveReader;                   // a camera or stream's reader thread state (Media.cpp)
 	const SourceInfo& info() const { return info_; }
-	bool seekable() const { return info_.kind == SourceInfo::File && info_.frames > 0; }
+	bool seekable() const { return !fed_ && info_.kind == SourceInfo::File && info_.frames > 0; }
 	// Reads the frame at index (files) or the next frame (cameras, streams).  Returns false at end or on error.
 	bool seek(int index);
 	bool next();
@@ -90,6 +90,16 @@ public:
 	// changes, the current frame is re-turned from its unturned copy at once, so a paused video or a photo follows a
 	// drag on the level slider.
 	void setLevel(double degrees);
+	// Shows a frame another reader already has, without a capture of its own: while Live tracking runs, its engine
+	// holds the camera (a camera takes one reader at a time) and App::pumpTracker passes the tracker's frames on here,
+	// so Connect the camera, Mark your street and Calibrate keep showing the same running feed.  `working` is the
+	// engine's 1280x720 frame, already turned by `turnedBy` degrees (the run's levelDegrees); setLevel() turns it on by
+	// the difference only, so dragging the level slider during a run still previews the new angle.  `about` replaces
+	// info() when it names another source (the next video of a batch); for the same source the facts read when it
+	// was opened (resolution, codec) are kept.  Fed frames are not seekable and tick()/next() never read; close() or
+	// open() ends feeding.
+	void feed(const cv::Mat& working, double turnedBy, const SourceInfo& about, int frameNumber);
+	bool fed() const { return fed_; }
 	std::string error;
 private:
 	bool readInto();
@@ -103,6 +113,8 @@ private:
 	cv::Mat raw_;                        // the current frame before levelling, so a new angle needn't wait for a new frame
 	cv::Mat frame_;
 	double level_ = 0;
+	bool fed_ = false;                   // showing frames handed in by feed(), not read by this Player
+	double fedLevel_ = 0;                // the angle the fed frames already carry; show() turns by level_ - fedLevel_
 	Texture tex_;
 	int pos_ = -1;
 	double lastTick_ = 0, carry_ = 0;
