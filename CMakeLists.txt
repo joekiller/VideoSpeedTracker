@@ -174,6 +174,12 @@ if(TARGET vst_report)
   add_test(NAME unattended_health
     COMMAND health_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/health-test)
 
+  # The site planner's model (src/Gui/Plan.cpp): street presets, measuring the street from a calibration or from
+  # car lengths across the picture, and the verdicts the planner and the phone show.
+  add_executable(plan_test tests/plan_test.cpp)
+  target_link_libraries(plan_test PRIVATE vst_report)
+  add_test(NAME site_planner COMMAND plan_test)
+
   # Calibrating from a Tesla dashcam clip (src/Gui/DashCam.cpp): reads per-frame speed from synthetic TeslaCam MP4s
   # and picks a pass's speed out of them.
   add_executable(dashcam_test tests/dashcam_test.cpp)

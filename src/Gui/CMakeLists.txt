@@ -125,8 +125,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # The street report (Report.cpp), the stats csv reader it builds on and the unattended-run health checks
-# (Health.cpp): no ImGui or OpenGL, so tests/report_test.cpp and tests/health_test.cpp link it on their own.
-add_library(vst_report STATIC Report.cpp Results.cpp Health.cpp DashCam.cpp)
+# (Health.cpp) and the site planner's model (Plan.cpp): no ImGui or OpenGL, so tests/report_test.cpp,
+# tests/health_test.cpp and tests/plan_test.cpp link it on their own.
+add_library(vst_report STATIC Report.cpp Results.cpp Health.cpp DashCam.cpp Plan.cpp)
 target_include_directories(vst_report PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${SINGLE_DIR})
 target_link_libraries(vst_report PUBLIC ${OpenCV_LIBS})
 if(MSVC)

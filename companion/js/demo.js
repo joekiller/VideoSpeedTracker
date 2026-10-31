@@ -15,6 +15,8 @@
  * The pictures come from the original VST sample video (Locust Avenue, 2016).
  */
 
+import * as plan from './plan.js';
+
 const SNAPSHOTS = 6;
 const DIRS = ['L2R', 'R2L'];
 const DAY = 86400e3;
@@ -65,6 +67,64 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     frameWidth: 1280, frameHeight: 720,
   };
   const state = { running: true, paused: false, frame: 0, marks: {} };
+  // Step 2's site planner (GET/PUT /api/plan).  The demo street is calibrated (the Locust Avenue numbers above), so
+  // it starts as VST Studio would after step 5: measured.  Camera: the default phone guess.
+  const planState = { distFt: 0, clearFt: 0, source: 'calibration', note: '', carLengths: null,
+    camera: { hfov: 66, width: 1920, fps: 30, shutter: 120 } };
+  const measuredPlan = () => {
+    const c = config;
+    const frames = c.legalDirection === 'L2R' ? c.CalibrationFramesL2R : c.legalDirection === 'R2L' ? c.CalibrationFramesR2L
+      : (c.CalibrationFramesL2R + c.CalibrationFramesR2L) / 2;
+    return plan.fromCalibration(frames, c.CalibrationSpeed, c.CalibrationFPS, c.speedLineRight - c.speedLineLeft, c.AnalysisBoxWidth,
+      Math.max(0, c.obstruction[1] - c.obstruction[0]));
+  };
+  const useMeasured = () => {
+    const m = measuredPlan();
+    Object.assign(planState, { distFt: plan.distForCoverFt(m.coverFt, planState.camera.hfov), clearFt: m.clearFt, source: 'calibration',
+      note: 'Measured by your step 5 calibration' });
+  };
+  useMeasured();
+  const r1 = (v) => Math.round(v * 10) / 10;
+  function planJson() {
+    const p = { ...planState.camera, distFt: planState.distFt, clearFt: planState.clearFt, speedLimit: config.speedLimit };
+    const m = measuredPlan();
+    const v = plan.verdict(p, !!config.subFrameTiming);
+    return {
+      street: { distFt: r1(p.distFt), clearFt: r1(p.clearFt), coverFt: r1(plan.coverFt(p.distFt, p.hfov)), source: planState.source,
+        sourceName: plan.SOURCE_NAMES[planState.source], note: planState.note, speedLimit: config.speedLimit },
+      presets: plan.PRESETS.map((x) => ({ ...x })),
+      camera: { ...planState.camera },
+      verdict: { ...v, frameRate: null },
+      measured: m ? { coverFt: r1(m.coverFt), clearFt: r1(m.clearFt), how: 'your step 5 calibration' } : null,
+      carLengths: planState.carLengths,
+      picture: true,
+      typicalCarFt: plan.TYPICAL_CAR_FT,
+    };
+  }
+  /** Like VST Studio's applyPlan (src/Gui/Server.cpp): one change per request, problems in words. */
+  function setPlan(b) {
+    const num = (k) => (k in b ? (typeof b[k] === 'number' ? b[k] : NaN) : undefined);
+    if ('preset' in b) {
+      const x = plan.PRESETS.find((q) => q.key === b.preset);
+      if (!x) return ['unknown preset'];
+      Object.assign(planState, { distFt: x.distFt, clearFt: x.clearFt, source: 'guess', note: x.name });
+    } else if ('carLengths' in b) {
+      const n = num('carLengths');
+      if (!(n >= 1 && n <= 20)) return ['carLengths must be between 1 and 20'];
+      const m = plan.fromCarLengths(n, config.AnalysisBoxWidth, Math.max(0, config.obstruction[1] - config.obstruction[0]));
+      Object.assign(planState, { distFt: plan.distForCoverFt(m.coverFt, planState.camera.hfov), clearFt: m.clearFt, source: 'picture',
+        note: `${n.toFixed(1)} car lengths across the picture`, carLengths: n });
+    } else if (b.useMeasured) {
+      useMeasured();
+    } else {
+      const d = num('distFt'), c = num('clearFt');
+      if (d === undefined && c === undefined) return ['send preset, distFt/clearFt, carLengths or useMeasured'];
+      if (d !== undefined && !(d >= 3 && d <= 1000)) return [Number.isNaN(d) ? 'distFt must be a number' : 'distFt must be between 3 and 1000'];
+      if (c !== undefined && !(c >= 3 && c <= 1000)) return [Number.isNaN(c) ? 'clearFt must be a number' : 'clearFt must be between 3 and 1000'];
+      Object.assign(planState, { distFt: d ?? planState.distFt, clearFt: c ?? planState.clearFt, source: 'typed', note: '' });
+    }
+    return [];
+  }
   // VST Studio's calibration-history.csv, in memory: { time, kind: 'apply'|'check', dir, calFrames, error }.
   // Empty at start, like a calibration made before the history existed, so both directions read "unchecked".
   const history = [];
@@ -249,6 +309,12 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       case 'GET /api/config': return ok({ ...config });
       case 'PUT /api/config': return ok(setConfig(body || {}));
       case 'GET /api/frame.jpg': return { status: 200, file: 'demo/frame.jpg' };
+      case 'GET /api/plan': return ok(planJson());
+      case 'PUT /api/plan': {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return err(400, 'body must be a JSON object');
+        const problems = setPlan(body);
+        return ok({ ok: !problems.length, problems, plan: planJson() });
+      }
       case 'GET /api/vehicles': {
         const since = Number(query.get('since') || 0);
         const from = query.get('from') ? Date.parse(query.get('from')) : -Infinity;

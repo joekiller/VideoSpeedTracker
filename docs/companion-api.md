@@ -242,6 +242,43 @@ starts. If it isn't valid nothing changes, and the answer is still `200`:
 `config` is always the configuration now saved (unchanged when `ok` is false), and `problems` is
 `[]` when `ok` is true.
 
+### `GET /api/plan`, `PUT /api/plan`
+
+VST Studio's site planner (step 2, Pick your spot), so the phone can plan the street and size it from the picture.
+
+```json
+{
+  "street": { "distFt": 20.0, "clearFt": 20.0, "coverFt": 26.0, "source": "guess", "sourceName": "Rough guess",
+              "note": "Narrow street from a front window", "speedLimit": 25 },
+  "presets": [ { "key": "narrow", "name": "Narrow street from a front window", "hint": "…", "distFt": 20, "clearFt": 20 }, … ],
+  "camera": { "hfov": 66, "width": 1920, "fps": 30, "shutter": 120 },
+  "verdict": { "grade": 0, "label": "Good to go", "text": "About ±0.9 mph at 35 mph, over a 18 ft zone.", "checkMph": 35,
+               "errorMph": 0.9, "zoneFt": 18.0, "shortView": true, "fastest": "up to about 60 mph",
+               "fastest60": "over 70 mph", "frameRate": null },
+  "measured": { "coverFt": 97.9, "clearFt": 92.5, "how": "your step 5 calibration, 2026-10-31" },
+  "carLengths": null,
+  "picture": true,
+  "typicalCarFt": 15.5
+}
+```
+
+* `street.distFt` is the camera to the middle of the moving lane, `clearFt` the stretch of it with nothing in the way,
+  `coverFt` the width of street the whole picture spans there. `source` says where they came from: `guess` (a preset
+  or the first-run default), `typed`, `picture` (car lengths across the picture) or `calibration` (measured by the
+  calibration in force; VST Studio applies a new calibration's measurement by itself, once). `note` says how, in words.
+* `verdict` is the planner's, in its words: `grade` 0 good, 1 rougher, 2 needs a tweak; `errorMph` is `null` when the
+  view can't time a car at `checkMph` (the speed limit + 10); `fastest`/`fastest60` are set for a short view;
+  `frameRate` is advice when the planned camera is under 24 fps.
+* `measured` is what the calibration says the street is, or `null` with no calibration for this camera (or the
+  bundled sample's). `picture` says whether a picture of the user's own view is open to size it from.
+
+`PUT /api/plan` makes one change and answers `{ "ok", "problems", "plan" }` like `PUT /api/config`, refusals in-band:
+
+* `{"preset": "narrow"}`: a preset's numbers, as a rough guess.
+* `{"distFt": 24, "clearFt": 30}`: typed numbers (either or both, 3 to 1000 ft).
+* `{"carLengths": 6}`: that many `typicalCarFt` car lengths span the picture (1 to 20).
+* `{"useMeasured": true}`: back to what the calibration measured.
+
 ### `POST /api/run`
 
 `{"action": "start" | "stop" | "pause" | "resume"}` → `{"ok": true, "status": { … }}`, where `status`

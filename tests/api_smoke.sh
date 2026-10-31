@@ -7,7 +7,7 @@
 # Remote companion on, a known port and token, the bundled sample video as the source and real-time pacing off.
 # Then it drives the app the way the phone does, over HTTP with curl:
 #
-#   hello, auth (401 without the token), status and config fields, a rejected PUT /api/config that must leave
+#   hello, auth (401 without the token), status and config fields, the site planner (GET/PUT /api/plan), a rejected PUT /api/config that must leave
 #   VST.cfg byte-identical, the /api/live stream (status and config events), POST /api/run start, polling until
 #   the run ends, the vehicle count and the stats csv against tests/baseline_manual_20160130172251.csv (with the
 #   same drift rules as the command-line regression test), the street report (/api/report.html), a snapshot JPEG,
@@ -174,6 +174,25 @@ grep -q '"result":"unchecked"' <<< "$BODY" && pass "no camera check on a recorde
 req GET /api/status
 grep -q '"health":{"camera":"unchecked","cameraWarning":false,"lowDisk":false}' <<< "$BODY" && pass "status carries the health summary" \
   || fail "status should carry the health summary: $(grep -o '"health":{[^}]*}' <<< "$BODY")"
+
+echo "Site planner"
+req GET /api/plan
+expect 200 "GET /api/plan"
+has street distFt clearFt coverFt source sourceName presets camera verdict grade label text checkMph zoneFt measured picture
+grep -q '"key":"narrow"' <<< "$BODY" && pass "plan lists the street presets" || fail "plan should list presets: ${BODY:0:300}"
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"preset": "narrow"}'
+grep -q '"ok":true' <<< "$BODY" && grep -q '"source":"guess"' <<< "$BODY" && grep -q '"distFt":20' <<< "$BODY" \
+  && pass "a preset sets a rough guess" || fail "preset narrow: ${BODY:0:400}"
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"distFt": 24, "clearFt": 30}'
+grep -q '"source":"typed"' <<< "$BODY" && grep -q '"clearFt":30' <<< "$BODY" && pass "typed numbers stick" || fail "typed plan: ${BODY:0:400}"
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"carLengths": 6}'
+grep -q '"source":"picture"' <<< "$BODY" && grep -q '"coverFt":93' <<< "$BODY" && pass "6 car lengths is 93 ft across" || fail "car lengths: ${BODY:0:400}"
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"preset": "castle"}'
+grep -q '"ok":false' <<< "$BODY" && pass "an unknown preset is refused in-band" || fail "unknown preset: ${BODY:0:300}"
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"distFt": "far"}'
+grep -q '"ok":false' <<< "$BODY" && pass "a string for a number is refused" || fail "distFt string: ${BODY:0:300}"
+req PUT /api/plan -H 'Content-Type: application/json' --data 'not json'
+expect 400 "PUT /api/plan with a body that isn't JSON"
 
 echo "Rejected config changes leave VST.cfg alone"
 SUM_BEFORE=$(cksum < "$OUT/VST.cfg")

@@ -8,7 +8,7 @@
 const CACHE = 'vst-companion-v1';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
-  'js/app.js', 'js/api.js', 'js/demo.js', 'js/ui.js', 'js/prefs.js', 'js/overlay.js', 'js/share.js',
+  'js/app.js', 'js/api.js', 'js/demo.js', 'js/plan.js', 'js/ui.js', 'js/prefs.js', 'js/overlay.js', 'js/share.js',
   'js/views/live.js', 'js/views/passes.js', 'js/views/stats.js', 'js/views/setup.js', 'js/views/system.js', 'js/views/connect.js',
   'icons/icon.svg', 'icons/icon-192.png',
 ];

@@ -261,6 +261,7 @@ void AppPrefs::load() {
 	str("config", configPath); str("source", lastSource); str("site", siteName); str("remoteToken", remoteToken);
 	str("remoteAddress", remoteAddress);
 	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor);
+	str("planNote", planNote); str("planCalSig", planCalSig); i("planSource", planSource); d("planCarLengths", planCarLengths);
 	i("speedLimit", speedLimit); i("egregious", egregious); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
 	i("remotePort", remotePort); i("keepVideoGB", keepVideoGB); i("planPreset", planPreset);
 	b("realtime", realtime); b("highlights", highlights); b("trace", trace); b("showMotion", showMotion);
@@ -289,7 +290,8 @@ void AppPrefs::save() const {
 		<< "\nremote = " << remoteEnabled << "\nremotePort = " << remotePort << "\nremoteToken = " << remoteToken << "\nremoteAddress = " << remoteAddress << "\nkeepVideoGB = " << keepVideoGB
 		<< "\nplanPreset = " << planPreset << "\nplanHfov = " << planHfov << "\nplanWidth = " << planWidth << "\nplanFps = " << planFps
 		<< "\nplanShutter = " << planShutter << "\nplanDist = " << planDist << "\nplanClear = " << planClear
-		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nzonesFor = " << zonesFor
+		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nplanSource = " << planSource
+		<< "\nplanNote = " << planNote << "\nplanCalSig = " << planCalSig << "\nplanCarLengths = " << planCarLengths << "\nzonesFor = " << zonesFor
 		<< "\nsiteLat = " << std::setprecision(10) << siteLat << "\nsiteLon = " << siteLon << std::setprecision(6)
 		<< "\ncalibratedFor = " << calibratedFor << "\n";
 	for (auto& r : recent) out << "recent = " << r << "\n";

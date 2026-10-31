@@ -103,7 +103,11 @@ struct DemoScript {
 			break;
 		case 3:
 			if (frames == 1) { app.page = Page::Zones; app.player.seek(2186); }
-			if (frames == 20) { shot("04-zones.png"); next(); }
+			if (frames == 20) shot("04-zones.png");
+			// Back on Pick your spot with a picture: the "Zero in on it" card's car-length ruler over the sample.
+			if (frames == 21) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
+			if (frames == 40) shot("02b-zero-in.png");
+			if (frames == 42) next();
 			break;
 		case 4:
 			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }

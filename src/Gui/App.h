@@ -20,6 +20,7 @@
 #include "DashCam.h"
 #include "Health.h"
 #include "Media.h"
+#include "Plan.h"
 #include "Report.h"
 #include "Results.h"
 #include "Settings.h"
@@ -138,6 +139,23 @@ public:
 	static constexpr std::uintmax_t kMinFreeBytes = 2ull << 30;   // pruning goes past the budget to keep 2 GB free
 	static constexpr int kMovedChecks = 3;                        // ~6 minutes of "moved" before warning
 	void useCurrentViewAsReference();
+
+	// The site planner's street (Guide.cpp; model in Plan.h).  It starts as a rough guess and is refined: typed,
+	// sized from the camera's picture, or measured by any calibration.  planInputs() is the model's view of prefs;
+	// setPlanStreet() records new street numbers and where they came from.  planFromCalibration() works out what the
+	// calibration in force says the street is (false when there is none for this camera, or it's the bundled sample's),
+	// and syncPlanFromCalibration() applies it once per new calibration, so the planner follows step 5 by itself and
+	// a number typed afterwards sticks.  Called after every calibration and whenever the planner or /api/plan is shown.
+	plan::Inputs planInputs() const;
+	void setPlanStreet(double distM, double clearM, plan::Source source, const std::string& note);
+	bool planFromCalibration(plan::Measured& m, std::string& how);
+	void syncPlanFromCalibration(bool announce = true);
+	// "Cars across the picture" needs a picture of the user's own street: an open camera, stream, video or photo that
+	// isn't the bundled 2016 sample.
+	bool planPictureAvailable();
+	// What a frame rate means for the planned view, in a sentence, with what to do about a low one (the Connect the
+	// camera page's frame-rate check and the planner's camera section).
+	std::string frameRateAdvice(double fps);
 	std::string referenceViewPath();     // <configDir>/view-reference.jpg
 
 	// Runs fn on the GUI thread at the start of the next frame and waits (up to 5 s) for its result.
@@ -210,6 +228,7 @@ private:
 	void pumpTracker();
 	void sitePlanner();
 	void shortViewNote(double coverM, bool on);   // Guide.cpp: the planner's short-view advice and its settings button
+	void zeroInCard(float width);       // Guide.cpp: refining the street, from the picture or from a calibration
 	void autosave();
 	void recordCalibration(CalEvent e);
 	const std::vector<CalEvent>& calibrationHistory();
@@ -229,6 +248,7 @@ private:
 	int seenVehicleId_ = 0;
 	bool wasRunning_ = false;
 	int guideStep_ = 0;                 // which of the Guide's two steps (What you need, Pick your spot) is showing
+	bool showZeroIn_ = false;           // scroll Pick your spot to its "Zero in on it" card on the next frame
 	int resultsFilter_ = 0;
 	int selectedRow_ = -1;
 	int calibMode_ = 0;

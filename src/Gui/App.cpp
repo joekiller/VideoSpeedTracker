@@ -272,6 +272,7 @@ void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
 	if (lastCheck_.l2r == l2r) lastCheck_ = CalCheck();
 	toast(std::string("Calibrated ") + (l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
 		+ std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
+	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 }
 
 CalCheck App::checkCalibration(bool l2r, double mph, int frames, double fps) {
@@ -326,6 +327,7 @@ void App::averageCalibration(const CalCheck& check) {
 	lastCheck_ = CalCheck();
 	toast(std::string("Averaged ") + (check.l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
 		+ std::to_string(int(g.CalibrationSpeed)) + " mph. Check it once more.", c::ok, ICON_CHECK_CIRCLE);
+	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 }
 
 void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from) {
@@ -351,6 +353,7 @@ void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const 
 	calibAppliedId_ = 0;
 	toast(std::string("Calibrated from ") + from + ": " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
 		+ " mph. Check it with one drive past.", c::ok, ICON_CHECK_CIRCLE);
+	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 }
 
 // Appends a calibration event to calibration-history.csv and to the in-memory copy the page reads.  The
@@ -1097,7 +1100,8 @@ void App::pageSource() {
 		};
 		check(in.height >= 720, "HD or better: plenty of detail", "Below 720p: it works, with a little less detail; 1280×720 or better sharpens the bumpers");
 		if (in.kind == SourceInfo::Image) check(false, "", "A still photo: use it to plan zones; tracking needs video");
-		else check(in.fps == 0 || in.fps >= 24, "Frame rate is good for timing", "Under 24 fps: everyday speeds time fine; the very fastest cars may cross too quickly");
+		else if (in.fps <= 0) check(true, "Frame rate is good for timing", "");
+		else { std::string fr = frameRateAdvice(in.fps); check(in.fps >= 24, fr.c_str(), fr.c_str()); }   // what it means for the planned view (Guide.cpp)
 	}
 	else if (!player.error.empty()) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad));
