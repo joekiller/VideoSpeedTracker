@@ -109,9 +109,11 @@ the sample and walks you through your own camera. On the command line, the first
 `VideoSpeedTracker --demo`. [Getting started](docs/getting-started.md) (installed as `GETTING-STARTED.md`) then walks
 through setting VST up for your own camera: geometry, calibration and batch runs.
 
-To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`) or create a release with a new `v*`
-tag in the GitHub UI. The workflow builds and tests every platform, then creates the release (or adds to it) with the
-packages and a `SHA256SUMS` file.
+To cut a release, push a version tag (`git tag v1.0.0 && git push origin v1.0.0`), or from the web page run
+**Actions > cut-release > Run workflow** with the version (it tags main and starts the release build). The workflow
+builds and tests every platform, uploads the packages and a `SHA256SUMS` file to a draft, and publishes it last.
+Don't publish the release in the GitHub UI yourself: releases are immutable, so a release published before its
+packages can never get them.
 
 ### Verifying a download
 

@@ -1,7 +1,9 @@
 # Builds every release binary and attaches it to a GitHub release.
 #
 # Cut a release by pushing a version tag:   git tag v1.0.0 && git push origin v1.0.0
-# (or create the release in the GitHub UI with a new v* tag; that pushes the tag too).
+# or from the web page with Actions > cut-release > Run workflow (cut-release.yml tags main and starts this).
+# Don't publish the release in the GitHub UI first: immutable releases lock a published release, so this
+# workflow could never upload to it (meta stops early with a message if it finds one). A saved draft is fine.
 # The release is created with generated notes if it doesn't exist yet, otherwise the
 # assets are uploaded to it, replacing any with the same name.
 #
@@ -81,6 +83,20 @@ jobs:
           version="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${version:-0.0.0~${GITHUB_SHA::7}}" >> "$GITHUB_OUTPUT"
+      # A release published before its assets is locked by immutable releases (HTTP 422 on upload), so say so now
+      # rather than after ten minutes of builds.
+      - name: Check the release isn't already published
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          if [ "$draft" = false ]; then
+            echo "::error::Release $TAG is already published, so its assets are locked. Delete it and release the next version with a tag push or Actions > cut-release, without publishing it in the UI."
+            exit 1
+          fi
 
   linux:
     needs: meta

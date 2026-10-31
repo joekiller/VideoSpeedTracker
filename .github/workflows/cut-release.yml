@@ -1,0 +1,52 @@
+# Cut a release from the GitHub web page: Actions > cut-release > Run workflow, type the version (1.8.4), Run.
+#
+# GitHub's web page can't make a bare tag, and making the release there publishes it empty, which immutable
+# releases then lock for good (release.yml can't upload to it: HTTP 422).  This does what
+# `git tag v1.8.4 && git push origin v1.8.4` would:
+#   1. checks the version is X.Y.Z and that neither the tag nor a release of that name exists yet,
+#   2. tags the head of main (or the branch it was run from),
+#   3. starts release.yml on that tag, which builds, signs, uploads to a draft and publishes it at the end.
+# Step 3 is a workflow_dispatch because a tag pushed with GITHUB_TOKEN doesn't start other workflows; release.yml
+# treats a manual run on a tag exactly like a tag push (signing environment and publish included).
+name: cut-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, like 1.8.4 (the tag is v1.8.4)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # create the tag
+  actions: write    # start release.yml
+
+concurrency:
+  group: cut-release
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Tag and start the release build
+        run: |
+          version="${VERSION#v}"
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Version must look like 1.8.4, got '$VERSION'"; exit 1; }
+          tag="v$version"
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Tag $tag already exists. Pick the next version (immutable releases never free a used tag)."; exit 1
+          fi
+          # A draft made in the UI is fine (release.yml fills it); a published one is locked.
+          if [ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
+            echo "::error::Release $tag is already published, so its assets are locked. Pick the next version."; exit 1
+          fi
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" >/dev/null
+          echo "Tagged ${GITHUB_SHA::7} ($GITHUB_REF_NAME) as $tag"
+          gh workflow run release.yml --ref "$tag"
+          echo "Started release.yml on $tag: it publishes the release when every platform is uploaded." >> "$GITHUB_STEP_SUMMARY"
+          echo "Started release.yml on $tag"
