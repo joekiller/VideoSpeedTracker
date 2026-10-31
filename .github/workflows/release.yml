@@ -15,9 +15,10 @@
 # their sample configs. VST Studio's own dependencies (GLFW, Dear ImGui, fonts, ...) are fetched by CMake at
 # configure time and linked statically, so the packages need nothing new at run time.
 # Outputs (all on OpenCV 5 and checked with the sample-video ctest):
-#   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu 24.04,
-#                                                amd64 + arm64; OpenCV linked in statically, apt pulls
-#                                                in the distro's FFmpeg and GTK runtimes
+#   videospeedtracker_<ver>_<distro>_<arch>.deb  Debian 12/13 (incl. Raspberry Pi OS) and Ubuntu
+#                                                24.04/26.04 LTS, amd64 + arm64; OpenCV linked in
+#                                                statically, apt pulls in the distro's FFmpeg and GTK
+#                                                runtimes
 #   VideoSpeedTracker-<ver>-windows-x64-setup.exe  installer of the same files: Start-menu "VST Studio",
 #                                                per-user or all-users, signed like the exes (packaging/windows)
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes (static OpenCV) + FFmpeg plugin/MSVC runtime DLLs
@@ -85,7 +86,7 @@ jobs:
         # One .deb per distro release because each ships different FFmpeg/GTK sonames
         # (OpenCV itself is static). arm64 builds run natively on GitHub's arm runners and
         # cover 64-bit Raspberry Pi OS.
-        distro: [debian-bookworm, debian-trixie, ubuntu-24.04]
+        distro: [debian-bookworm, debian-trixie, ubuntu-24.04, ubuntu-26.04]
         arch: [amd64, arm64]
         include:
           - distro: debian-bookworm
@@ -94,6 +95,8 @@ jobs:
             image: debian:trixie
           - distro: ubuntu-24.04
             image: ubuntu:24.04
+          - distro: ubuntu-26.04
+            image: ubuntu:26.04
           - arch: amd64
             runner: ubuntu-24.04
           - arch: arm64
