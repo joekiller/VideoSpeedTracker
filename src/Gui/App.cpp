@@ -113,7 +113,7 @@ void App::shutdown() {
 }
 
 bool App::wantsContinuousFrames() {
-	return tracker.running() || player.playing || (player.isOpen() && player.info().kind != SourceInfo::File && player.info().kind != SourceInfo::Image)
+	return tracker.running() || player.playing || player.opening() || (player.isOpen() && player.info().kind != SourceInfo::File && player.info().kind != SourceInfo::Image)
 		|| !toasts_.empty() || ImGui::IsAnyItemActive();
 }
 
@@ -193,9 +193,12 @@ std::string App::findSample() {
 	return "";
 }
 
+// Files open here and now; a camera or stream starts connecting in the background (Player), so the window never waits
+// on a device.  `source` is set straight away so the header and preview name what is connecting; if the connection
+// fails, frame() clears it again and says why, rather than leaving the old picture or a stale name behind.
 bool App::openSource(const std::string& path) {
 	if (tracker.running()) { toast("Stop tracking before changing the source", c::warn, ICON_WARN); return false; }
-	if (!player.open(path)) { toast(player.error, c::bad, ICON_WARN); return false; }
+	if (!player.open(path)) { toast(player.error, c::bad, ICON_WARN); source.clear(); return false; }
 	source = path;
 	// A Pi camera reopened from Recent brings its settings back into the camera card's settings popup.
 	picam::Settings pi;
@@ -207,6 +210,16 @@ bool App::openSource(const std::string& path) {
 	prefs.lastSource = path;
 	prefs.addRecent(path);
 	return true;
+}
+
+void App::disconnectSource() {
+	if (tracker.running()) { toast("Stop tracking before disconnecting", c::warn, ICON_WARN); return; }
+	std::string was = source.empty() ? std::string() : friendlySourceName(source);
+	player.close();
+	source.clear();
+	batch.clear();
+	prefs.lastSource.clear();
+	if (!was.empty()) toast("Disconnected " + was, c::accent2, ICON_LINK);
 }
 
 void App::addToBatch(const std::vector<std::string>& paths) {
@@ -225,7 +238,7 @@ void App::startTracking() {
 	// Run with the settings on screen (saved or not) via a scratch copy, so experiments don't touch VST.cfg.
 	std::string runCfg = cfg.dirty() ? cfg.writeRunCopy(userpaths::configDir().string()) : cfg.path();
 	if (runCfg.empty()) { toast("Can't write the run settings to " + userpaths::configDir().string(), c::bad, ICON_WARN); return; }
-	player.close();   // a camera can only be opened by one reader at a time
+	player.closeAndWait(2);   // a camera can only be opened by one reader at a time: let the preview's let go
 	Tracker::Options o;
 	o.configPath = runCfg;
 	o.dataDir = dataDir();
@@ -512,7 +525,16 @@ void App::frame(float w, float h) {
 	}
 	pumpTracker();
 	healthTick();
-	if (!tracker.running()) player.tick(now());
+	if (!tracker.running()) {
+		// Never waits: a live source's frames come from its reader thread.  A connection that fails, or a picture that
+		// is lost, ends here: say why and drop the source, so nothing stale stays on screen.
+		bool live = player.opening() || (player.isOpen() && player.info().kind != SourceInfo::File && player.info().kind != SourceInfo::Image);
+		player.tick(now());
+		if (live && !player.opening() && !player.isOpen() && !player.error.empty()) {
+			toast(player.error, c::bad, ICON_WARN);
+			source.clear();
+		}
+	}
 	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
 	autosave();
 
@@ -570,7 +592,7 @@ bool App::flowDone(int step) {
 	switch (step) {
 	case 0: return prefs.guideDone || (page == Page::Guide && guideStep_ > 0);
 	case 1: return prefs.guideDone;
-	case 2: return !source.empty() || !batch.empty();
+	case 2: return (!source.empty() && !player.opening()) || !batch.empty();   // connected, not still connecting
 	case 3: return zonesDone();
 	case 4: return calibrationDone();
 	default: return false;
@@ -770,7 +792,8 @@ void App::drawHeader(float w) {
 	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
 	float pauseW = run ? ImGui::GetFrameHeight() + px(10) : 0;
-	std::string chip = source.empty() ? std::string("No source") : displayName(source);
+	std::string chip = source.empty() ? std::string("No source") : shortSourceName(source, 36);
+	if (player.opening()) chip = "Connecting to " + chip + "…";
 	if (batch.size() > 1) chip = std::to_string(batch.size()) + " videos queued";
 	const char* chipIcon = source.empty() ? ICON_VIDEO : classifySource(source) == SourceInfo::Camera ? ICON_CAMERA
 		: classifySource(source) == SourceInfo::Stream ? ICON_BROADCAST : ICON_FILE_VIDEO;
@@ -979,7 +1002,13 @@ void App::pageSource() {
 				if (ImGui::BeginPopup("##pisettings")) { piCameraSettings(); ImGui::EndPopup(); }
 			}
 			ImGui::SameLine(0, px(pi ? 6 : 8));
-			if (primaryButton(ICON_LINK " Connect", ImVec2(-FLT_MIN, 0), c::ok)) {
+			// The button follows the menu: Disconnect while the camera it names is the source (or connecting), Connect
+			// otherwise.  A Pi camera's source name carries its settings, so any Pi camera source counts as "it".
+			bool inUse = pi ? picam::isName(source) : source == std::to_string(cameraIndex_);
+			if (inUse) {
+				if (ghostButton(ICON_XMARK " Disconnect", ImVec2(-FLT_MIN, 0))) disconnectSource();
+			}
+			else if (primaryButton(ICON_LINK " Connect", ImVec2(-FLT_MIN, 0), c::ok)) {
 				batch.clear();
 				if (pi) {
 					piSettings_.camera = piCams_[piChoice_].index;
@@ -1033,7 +1062,7 @@ void App::pageSource() {
 					sc = j.state == Job::Running ? c::accent : j.state == Job::Done ? c::ok : j.state == Job::Failed ? c::bad : c::faint;
 				}
 			ImGui::AlignTextToFramePadding();
-			ImGui::Text(ICON_FILE_VIDEO "  %s", displayName(batch[i]).c_str());
+			ImGui::Text(ICON_FILE_VIDEO "  %s", friendlySourceName(batch[i]).c_str());
 			ImGui::SameLine(leftW - px(180));
 			pill(state, c::bg0, sc);
 			ImGui::SameLine(leftW - px(70));
@@ -1050,7 +1079,7 @@ void App::pageSource() {
 			ImGui::PushID(int(i));
 			SourceInfo::Kind k = classifySource(r);
 			std::string label = std::string(k == SourceInfo::Camera ? ICON_CAMERA : k == SourceInfo::Stream ? ICON_BROADCAST : k == SourceInfo::Image ? ICON_IMAGE : ICON_FILE_VIDEO)
-				+ "   " + displayName(r);
+				+ "   " + friendlySourceName(r);
 			if (ImGui::Selectable(label.c_str(), r == source, 0, ImVec2(0, px(26)))) openSource(r);
 			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", r.c_str());
 			ImGui::PopID();
@@ -1065,7 +1094,23 @@ void App::pageSource() {
 	ImGui::BeginGroup();
 	beginCard("preview", ICON_EYE, "Preview", ImVec2(rightW, 0));
 	float pw = ImGui::GetContentRegionAvail().x;
-	drawFrame(player.isOpen() ? player.texture().imguiId() : nullptr, ImVec2(pw, pw * 9 / 16), "Pick a source");
+	std::string shortName = shortSourceName(player.info().path, 34);
+	std::string waiting = player.opening() ? "Connecting to " + shortName + "…" : std::string("Pick a source");
+	drawFrame(player.isOpen() ? player.texture().imguiId() : nullptr, ImVec2(pw, pw * 9 / 16), waiting.c_str());
+	// What is on screen, by name, and the way out of it: Cancel while connecting, Disconnect (or Close) after.
+	if (player.opening() || player.isOpen()) {
+		bool liveSrc = player.info().kind == SourceInfo::Camera || player.info().kind == SourceInfo::Stream;
+		const char* out = player.opening() ? ICON_XMARK " Cancel" : liveSrc ? ICON_XMARK " Disconnect" : ICON_XMARK " Close";
+		float ow = ImGui::CalcTextSize(out).x + px(28);
+		ImGui::AlignTextToFramePadding();
+		ImGui::PushFont(fonts.strong);
+		if (player.opening()) ImGui::Text("Connecting to %s…  %.0f s", shortName.c_str(), player.openingSeconds(now()));
+		else ImGui::TextUnformatted(shortName.c_str());
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", player.info().label.c_str());
+		ImGui::PopFont();
+		ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - ow);
+		if (ghostButton(out, ImVec2(ow, 0))) disconnectSource();
+	}
 	if (player.isOpen()) {
 		const SourceInfo& in = player.info();
 		auto fact = [&](const char* k, const std::string& v) {
@@ -1075,7 +1120,6 @@ void App::pageSource() {
 			ImGui::SameLine(px(130));
 			ImGui::TextUnformatted(v.c_str());
 		};
-		fact("Source", in.label);
 		fact("Resolution", std::to_string(in.width) + " × " + std::to_string(in.height));
 		if (in.kind != SourceInfo::Image) {
 			char buf[64];
