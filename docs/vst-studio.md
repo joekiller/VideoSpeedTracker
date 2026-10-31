@@ -92,6 +92,16 @@ Both keep the other direction's calibration valid by expressing it against the s
 
 ![Calibrate](images/studio/07-calibrate.jpg)
 
+#### Calibrating with a Tesla dashcam
+
+If you drive a Tesla, you don't need cruise control. Teslas on software 2025.44.25 or later (HW3 and newer)
+record the car's speed in every dashcam frame. Drive past at any steady speed with TeslaCam recording, copy the
+`-front.mp4` clip for that minute from the USB drive's `TeslaCam` folder, pick your pass, and press **Read my
+speed from a Tesla dashcam clip**. VST Studio matches the pass to the clip by time, averages the car's speed over
+the seconds around it, and fills in the speed to a tenth of a mph. It warns if the car sped up or slowed down
+there. Matching needs the computer's clock and the car's to agree within a second or two (both normally set
+themselves from the internet or GPS). The clip stays on your computer.
+
 #### Check it with a second drive
 
 A single pass at a speedometer reading is easy to get wrong, and it's the first thing a traffic engineer will ask

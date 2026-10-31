@@ -1,0 +1,238 @@
+#include "DashCam.h"
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+
+namespace dashcam {
+
+namespace {
+
+constexpr double kMphPerMps = 2.2369362920544;
+
+uint32_t be32(const unsigned char* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+uint64_t be64(const unsigned char* p) { return uint64_t(be32(p)) << 32 | be32(p + 4); }
+
+// One MP4 box: where its contents start and how long they are.
+struct Box { char type[5] = {}; uint64_t at = 0, size = 0; };
+
+// The boxes directly inside [from, from + len): each is a 32-bit size (1 = a 64-bit size follows, 0 = to the end)
+// and a four-letter type.
+std::vector<Box> boxes(std::ifstream& in, uint64_t from, uint64_t len) {
+	std::vector<Box> out;
+	uint64_t pos = from, end = from + len;
+	while (pos + 8 <= end) {
+		unsigned char h[16];
+		in.clear();
+		in.seekg(std::streamoff(pos));
+		if (!in.read(reinterpret_cast<char*>(h), 8)) break;
+		uint64_t size = be32(h), header = 8;
+		if (size == 1) {
+			if (!in.read(reinterpret_cast<char*>(h + 8), 8)) break;
+			size = be64(h + 8);
+			header = 16;
+		}
+		else if (size == 0) size = end - pos;
+		if (size < header || pos + size > end) break;
+		Box b;
+		std::memcpy(b.type, h + 4, 4);
+		b.at = pos + header;
+		b.size = size - header;
+		out.push_back(b);
+		pos += size;
+	}
+	return out;
+}
+
+const Box* find(const std::vector<Box>& bs, const char* type) {
+	for (const Box& b : bs) if (std::memcmp(b.type, type, 4) == 0) return &b;
+	return nullptr;
+}
+
+// moov/mvhd's duration in seconds (version 0: 32-bit times and duration; version 1: 64-bit).
+double movieDuration(std::ifstream& in, const Box& moov) {
+	std::vector<Box> inside = boxes(in, moov.at, moov.size);
+	const Box* mvhd = find(inside, "mvhd");
+	if (!mvhd || mvhd->size < 32) return 0;
+	unsigned char b[32];
+	in.clear();
+	in.seekg(std::streamoff(mvhd->at));
+	if (!in.read(reinterpret_cast<char*>(b), 32)) return 0;
+	uint32_t scale = b[0] == 1 ? be32(b + 20) : be32(b + 12);
+	uint64_t dur = b[0] == 1 ? be64(b + 24) : be32(b + 16);
+	return scale ? double(dur) / scale : 0;
+}
+
+// The RBSP of an SEI NAL: H.264 inserts 0x03 after any two zero bytes so the payload can't mimic a start code.
+std::string unescape(const unsigned char* p, size_t n) {
+	std::string out;
+	out.reserve(n);
+	int zeros = 0;
+	for (size_t i = 0; i < n; i++) {
+		if (zeros >= 2 && p[i] == 3) { zeros = 0; continue; }
+		out.push_back(char(p[i]));
+		zeros = p[i] == 0 ? zeros + 1 : 0;
+	}
+	return out;
+}
+
+// The protobuf inside a Tesla SEI NAL: NAL type 6, payload type 5 (user data unregistered), a size byte, a run of
+// 0x42 bytes and a 0x69 marker, then the message up to the trailing stop byte (as in Tesla's sei_extractor.py).
+bool protoPayload(const std::vector<unsigned char>& nal, std::string& out) {
+	if (nal.size() < 5 || (nal[0] & 0x1F) != 6 || nal[1] != 5) return false;
+	size_t i = 3;
+	while (i < nal.size() && nal[i] == 0x42) i++;
+	if (i <= 3 || i + 1 >= nal.size() || nal[i] != 0x69) return false;
+	out = unescape(nal.data() + i + 1, nal.size() - i - 2);
+	return true;
+}
+
+bool varint(const std::string& s, size_t& i, uint64_t& v) {
+	v = 0;
+	for (int shift = 0; i < s.size() && shift < 64; shift += 7) {
+		unsigned char c = s[i++];
+		v |= uint64_t(c & 0x7F) << shift;
+		if (!(c & 0x80)) return true;
+	}
+	return false;
+}
+
+// Decodes the SeiMetadata fields calibration uses: gear_state (2), vehicle_speed_mps (4, float),
+// latitude_deg (11, double), longitude_deg (12, double).  Every other field is skipped by its wire type.
+bool decode(const std::string& s, Sample& out) {
+	size_t i = 0;
+	bool any = false;
+	while (i < s.size()) {
+		uint64_t key;
+		if (!varint(s, i, key)) return false;
+		int field = int(key >> 3), wire = int(key & 7);
+		if (wire == 0) {
+			uint64_t v;
+			if (!varint(s, i, v)) return false;
+			if (field == 2) out.drive = v == 1;
+		}
+		else if (wire == 5) {
+			if (i + 4 > s.size()) return false;
+			if (field == 4) { float f; std::memcpy(&f, s.data() + i, 4); out.mps = f; any = true; }
+			i += 4;
+		}
+		else if (wire == 1) {
+			if (i + 8 > s.size()) return false;
+			double d;
+			std::memcpy(&d, s.data() + i, 8);
+			if (field == 11) out.lat = d;
+			if (field == 12) out.lon = d;
+			i += 8;
+		}
+		else if (wire == 2) {
+			uint64_t n;
+			if (!varint(s, i, n) || i + n > s.size()) return false;
+			i += size_t(n);
+		}
+		else return false;
+	}
+	// proto3 leaves out zero values, so a stopped car's message has no speed field; it's still a sample.
+	return any || i == s.size();
+}
+
+double localEpoch(int y, int mo, int d, int h, int mi, int s) {
+	std::tm tm{};
+	tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
+	tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s;
+	tm.tm_isdst = -1;
+	std::time_t t = std::mktime(&tm);
+	return t == std::time_t(-1) ? 0 : double(t);
+}
+
+}  // namespace
+
+double startFromName(const std::string& fileName) {
+	int y, mo, d, h, mi, s;
+	char tail;
+	if (std::sscanf(fileName.c_str(), "%4d-%2d-%2d_%2d-%2d-%2d%c", &y, &mo, &d, &h, &mi, &s, &tail) < 6) return 0;
+	return localEpoch(y, mo, d, h, mi, s);
+}
+
+double parseIso(const std::string& iso) {
+	int y, mo, d, h, mi, s;
+	if (std::sscanf(iso.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &y, &mo, &d, &h, &mi, &s) != 6) return 0;
+	return localEpoch(y, mo, d, h, mi, s);
+}
+
+bool readClip(const std::string& path, Clip& clip, std::string& err) {
+	clip = Clip();
+	clip.path = path;
+	std::string name = std::filesystem::u8path(path).filename().u8string();
+	std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
+	if (!in) { err = "Can't open " + name + "."; return false; }
+	in.seekg(0, std::ios::end);
+	uint64_t len = uint64_t(in.tellg());
+	std::vector<Box> top = boxes(in, 0, len);
+	const Box* mdat = find(top, "mdat");
+	const Box* moov = find(top, "moov");
+	if (!mdat || !moov) { err = name + " isn't an MP4 video from a dashcam."; return false; }
+	clip.duration = movieDuration(in, *moov);
+
+	// mdat holds every NAL unit of the video, each prefixed with its 32-bit length.  Only SEI units are read in full;
+	// the rest (the pictures) are skipped by seeking.
+	std::vector<Sample> raw;
+	std::vector<unsigned char> nal;
+	std::string payload;
+	uint64_t pos = mdat->at, end = mdat->at + mdat->size;
+	while (pos + 6 <= end) {
+		unsigned char h[6];
+		in.clear();
+		in.seekg(std::streamoff(pos));
+		if (!in.read(reinterpret_cast<char*>(h), 6)) break;
+		uint64_t n = be32(h);
+		if (n < 2 || pos + 4 + n > end) { pos += 4 + n; continue; }
+		if ((h[4] & 0x1F) == 6 && h[5] == 5) {
+			nal.resize(size_t(n));
+			in.seekg(std::streamoff(pos + 4));
+			if (!in.read(reinterpret_cast<char*>(nal.data()), std::streamsize(n))) break;
+			Sample s;
+			if (protoPayload(nal, payload) && decode(payload, s)) raw.push_back(s);
+		}
+		pos += 4 + n;
+	}
+	if (raw.empty()) {
+		err = name + " has no driving data in it. Teslas add it from software 2025.44.25 on (HW3 and newer), and not in Sentry clips while parked.";
+		return false;
+	}
+	clip.start = startFromName(name);
+	if (clip.start == 0) { err = name + " doesn't start with the date and time TeslaCam names its clips by (2026-10-31_14-03-10-front.mp4)."; return false; }
+	// One message per frame at a steady frame rate: spread them evenly over the clip.
+	double step = clip.duration > 0 ? clip.duration / raw.size() : 1.0 / 36;
+	for (size_t i = 0; i < raw.size(); i++) raw[i].t = clip.start + i * step;
+	clip.samples = std::move(raw);
+	return true;
+}
+
+PassSpeed speedDuring(const std::vector<Clip>& clips, double passEnd, double crossing, double slack) {
+	PassSpeed r;
+	double from = passEnd - crossing - slack, to = passEnd + 1 + slack;   // +1: the log time is truncated to the second
+	double sum = 0, covered0 = 1e300, covered1 = -1e300;
+	r.minMph = 1e9;
+	for (const Clip& c : clips)
+		for (const Sample& s : c.samples) {
+			if (s.t < from || s.t > to) continue;
+			covered0 = std::min(covered0, s.t);
+			covered1 = std::max(covered1, s.t);
+			if (!s.drive) continue;
+			double mph = s.mps * kMphPerMps;
+			sum += mph;
+			r.minMph = std::min(r.minMph, mph);
+			r.maxMph = std::max(r.maxMph, mph);
+			r.samples++;
+		}
+	// The clips must cover the window, not just touch it: most of it, at both ends.
+	r.found = r.samples > 0 && covered0 <= from + 1 && covered1 >= to - 1;
+	if (r.samples) r.mph = sum / r.samples;
+	else r.minMph = 0;
+	return r;
+}
+
+}  // namespace dashcam
