@@ -22,8 +22,13 @@ constexpr double kLevelEpsilonDegrees = 0.02;
 
 inline void levelFrame(cv::Mat& frame, double degrees) {
 	if (frame.empty() || std::fabs(degrees) < kLevelEpsilonDegrees) return;
-	cv::Point2f centre(frame.cols * .5f, frame.rows * .5f);
-	cv::Mat turn = cv::getRotationMatrix2D(centre, degrees, 1.0);
+	// The affine turn about the frame's centre, written out rather than cv::getRotationMatrix2D(): OpenCV 5 moved that
+	// out of imgproc into the geometry module, and these six numbers are the same on every version.
+	//   [ c  s  (1-c)cx - s cy ]
+	//   [-s  c  s cx + (1-c)cy ]
+	const double a = degrees * CV_PI / 180, c = std::cos(a), s = std::sin(a);
+	const double cx = frame.cols * .5, cy = frame.rows * .5;
+	cv::Mat turn = (cv::Mat_<double>(2, 3) << c, s, (1 - c) * cx - s * cy, -s, c, s * cx + (1 - c) * cy);
 	cv::Mat out;
 	cv::warpAffine(frame, out, turn, frame.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar::all(0));
 	frame = out;
