@@ -14,8 +14,8 @@ go before you mount anything.
      for you (no admin prompt) or for everyone on the computer. Installing for everyone also lets phones reach the
      companion app through Windows Firewall on your home network.
    - **Linux:** `sudo apt install ./videospeedtracker_*.deb`.
-   - **macOS:** `brew install opencv`, then open the `.dmg` and drag `VSTStudio.app` to Applications. The
-     command-line tools are in the disk image beside it (copy the whole folder to use them).
+   - **macOS:** `brew install opencv`, then open the `.dmg` and drag `VSTStudio.app` onto Applications. That's the
+     whole install; the command-line tools are inside the app (README, "macOS command-line tools").
 2. **Open VST Studio** from the Start menu, the applications menu on Linux, or `VSTStudio.app` on macOS. `VSTStudio` starts it from a
    terminal.
 3. **Follow the five setup steps.** What you need, Pick your spot, Connect the camera, Mark your street and
@@ -52,7 +52,9 @@ to each question.
 On Windows you can also double-click `VideoSpeedTracker.exe`. The window stays open after the program exits, so you
 can read why it stopped. After a Windows install, the command-line tools are in the install folder:
 `%LOCALAPPDATA%\Programs\VideoSpeedTracker` when installed for you, or `C:\Program Files\VideoSpeedTracker` when
-installed for everyone.
+installed for everyone. On macOS they are inside the app, in `/Applications/VSTStudio.app/Contents/MacOS`; link
+them onto your `PATH` with
+`ln -sf /Applications/VSTStudio.app/Contents/MacOS/{VideoSpeedTracker,ProcessHiLites} "$(brew --prefix)/bin/"`.
 
 ## 2. Where things go
 

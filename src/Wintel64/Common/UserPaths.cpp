@@ -82,18 +82,16 @@ fs::path dataPath(const string& dataPathPrefix){
 }
 
 // Installed file locations, relative to the executable:
-//   <exe dir>/rel                          Windows zip / MSIX, macOS tarball (flat layout)
+//   <exe dir>/rel                          Windows zip / installer / MSIX (flat layout)
 //   <exe dir>/../share/videospeedtracker/  .deb (/usr/bin -> /usr/share) and other FHS prefixes
-//   <exe dir>/../Resources/                macOS .app bundle (Contents/MacOS -> Contents/Resources)
-//   <exe dir>/VSTStudio.app/Contents/Resources/
-//                                          macOS tarball's command-line tools: the sample and companion ship once,
-//                                          inside the VST Studio bundle beside them
+//   <exe dir>/../Resources/                macOS VSTStudio.app, for VSTStudio and the command-line tools alike: all
+//                                          three live in Contents/MacOS (a symlink to one, e.g. in Homebrew's bin,
+//                                          works too, since executableDir() resolves links)
 fs::path installedFile(const string& rel){
 	fs::path exe = executableDir();
 	if (exe.empty()) return {};
 	fs::path r = fs::path(rel).make_preferred();
-	for (const fs::path& candidate : { exe / r, exe / ".." / "share" / "videospeedtracker" / r, exe / ".." / "Resources" / r,
-		exe / "VSTStudio.app" / "Contents" / "Resources" / r }){
+	for (const fs::path& candidate : { exe / r, exe / ".." / "share" / "videospeedtracker" / r, exe / ".." / "Resources" / r }){
 		error_code ec;
 		if (fs::is_regular_file(candidate, ec)) return fs::weakly_canonical(candidate, ec);
 	}

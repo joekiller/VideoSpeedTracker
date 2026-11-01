@@ -101,8 +101,8 @@ built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`
 | Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 / 26.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
 | Windows x64 | `VideoSpeedTracker-<ver>-windows-x64-setup.exe` | run it: installs for you (no admin prompt) or for everyone, adds **VST Studio** to the Start menu, and uninstalls from Settings › Apps. Your config and results stay put across upgrades and uninstalls |
 | Windows x64, portable | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
-| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.dmg` | `brew install opencv`, open the disk image and drag **VSTStudio.app** to Applications; the command-line tools are in the image too |
-| macOS, archive | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | the same files: `brew install opencv`, untar, open **VSTStudio.app** |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.dmg` | `brew install opencv`, open the disk image and drag **VSTStudio.app** onto Applications. That one app is everything: the command-line tools, templates and docs are inside it ([below](#macos-command-line-tools)) |
+| macOS, archive | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | the same app: `brew install opencv`, untar, move **VSTStudio.app** to Applications and open it |
 
 Every package includes the 2016 sample video and a `VST.cfg` set up for it. Open **VST Studio** first: it starts on
 the sample and walks you through your own camera. On the command line, the first thing to run is
@@ -141,7 +141,8 @@ sha256sum -c SHA256SUMS --ignore-missing        # macOS: shasum -a 256 -c SHA256
 The `.deb` files have no separate GPG signature: apt checks signatures on repositories, not on a `.deb` installed
 from a file, so the attestation is the Linux signature (see [docs/code-signing.md](docs/code-signing.md#linux-and-checksums-build-provenance)).
 These attestations are not Windows Authenticode or Apple notarization; tag releases carry those separately (below).
-To check a macOS download yourself, in the opened disk image or untarred folder:
+To check a macOS download yourself, in the opened disk image or untarred folder (checking the app covers the
+command-line tools inside it, which are signed and notarized with it):
 
 ```
 spctl -a -t open --context context:primary-signature -vv VideoSpeedTracker-*.dmg   # the image: Notarized Developer ID
@@ -178,6 +179,28 @@ per-user data folder, so running from the unzipped Windows folder (where the tem
 | macOS | `~/Library/Application Support/VideoSpeedTracker` | `~/Library/Application Support/VideoSpeedTracker/Data` |
 
 Each run prints the config file it used.
+
+### macOS command-line tools
+
+The macOS download is a single `VSTStudio.app`; opening it starts VST Studio. The command-line programs and the
+files that ship with them live inside the bundle (Finder: right-click VSTStudio.app › Show Package Contents):
+
+| | |
+|---|---|
+| `VSTStudio.app/Contents/MacOS/` | `VideoSpeedTracker`, `ProcessHiLites` (and `VSTStudio` itself) |
+| `VSTStudio.app/Contents/Resources/` | `VST.cfg` and `ProcessHiLites.cfg` templates, `README.md`, `GETTING-STARTED.md`, `LICENSE.txt`, `licenses/`, the sample video and the phone companion |
+
+To run them by name, link them into Homebrew's `bin`, which is already on your `PATH` (they still find their
+templates and the sample through the link):
+
+```
+ln -sf /Applications/VSTStudio.app/Contents/MacOS/{VideoSpeedTracker,ProcessHiLites} "$(brew --prefix)/bin/"
+VideoSpeedTracker --demo
+```
+
+Don't edit the templates inside the app: that breaks its signature, and an update replaces them anyway. Each program
+copies its template to `~/Library/Application Support/VideoSpeedTracker` the first time it runs, and that copy is
+the one to edit.
 
 ### Licenses
 

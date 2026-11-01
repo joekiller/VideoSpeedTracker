@@ -25,9 +25,10 @@
 #                                                per-user or all-users, signed like the exes (packaging/windows)
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes (static OpenCV) + FFmpeg plugin/MSVC runtime DLLs
 #                                                and their licenses
-#   VideoSpeedTracker-<ver>-macos-arm64.dmg      VSTStudio.app (drag to Applications) + the command-line tools;
+#   VideoSpeedTracker-<ver>-macos-arm64.dmg      just VSTStudio.app (drag to Applications); the command-line tools,
+#                                                cfg templates, docs and licenses are inside the bundle;
 #                                                signed, notarized and stapled on tags
-#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   the same files; both need `brew install opencv` (Homebrew's 5.x)
+#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   the same app; both need `brew install opencv` (Homebrew's 5.x)
 # Linux and Windows build OpenCV from source with packaging/build-opencv.sh; the install is
 # cached per platform, so only the first run (or a change to that script) pays for the build.
 #   SHA256SUMS                                   sha256 of every package above
@@ -374,17 +375,27 @@ jobs:
         run: |
           name="VideoSpeedTracker-${{ needs.meta.outputs.version }}-macos-arm64"
           echo "PKG_NAME=$name" >> "$GITHUB_ENV"
-          cmake --install build --prefix "pkg/$name"
-          printf 'Requires Homebrew OpenCV 5:  brew install opencv\n' > "pkg/$name/REQUIREMENTS.txt"
-          # VST Studio ships as VSTStudio.app: Gatekeeper won't pass a double-clicked bare executable even when it's
-          # notarized, and only a bundle can carry a stapled ticket. Its resources (companion, sample, VST.cfg
-          # template) go inside the bundle, because a quarantined app is translocated alone on first launch; the
-          # command-line tools beside it find the sample there too (userpaths::installedFile).
+          # The package is a single VSTStudio.app: the disk image shows it beside an Applications link and
+          # nothing else, so installing is one drag and opening it starts the GUI. Everything `cmake --install`
+          # lays out goes inside the bundle:
+          #   Contents/MacOS/      VSTStudio (CFBundleExecutable, what Finder launches) plus the command-line tools
+          #                        VideoSpeedTracker and ProcessHiLites, for power users (README "macOS")
+          #   Contents/Resources/  VST.cfg / ProcessHiLites.cfg templates, companion, sample, README.md,
+          #                        GETTING-STARTED.md, LICENSE.txt, licenses/ and the icon
+          # A bundle rather than a bare executable because Gatekeeper won't pass a double-clicked bare executable
+          # even when it's notarized, and only a bundle can carry a stapled ticket. Keeping the resources inside
+          # matters too: a quarantined app is translocated alone on first launch. Every program finds its files
+          # through Contents/MacOS/../Resources (userpaths::installedFile) and copies the cfg templates to
+          # ~/Library/Application Support/VideoSpeedTracker on first run, so nothing writes into the signed bundle.
+          inst="$RUNNER_TEMP/install"
+          cmake --install build --prefix "$inst"
           app="pkg/$name/VSTStudio.app/Contents"
           mkdir -p "$app/MacOS" "$app/Resources"
-          mv "pkg/$name/VSTStudio" "$app/MacOS/"
-          mv "pkg/$name/companion" "pkg/$name/sample" "$app/Resources/"
-          cp "pkg/$name/VST.cfg" "$app/Resources/"
+          for exe in VSTStudio VideoSpeedTracker ProcessHiLites; do mv "$inst/$exe" "$app/MacOS/"; done
+          printf 'Requires Homebrew OpenCV 5:  brew install opencv\n' > "$inst/REQUIREMENTS.txt"
+          # What's left is data (cfgs, companion, sample, docs, licenses); a stray Mach-O here would break signing.
+          mv "$inst"/* "$app/Resources/"
+          rmdir "$inst"
           sed 's/@VERSION@/${{ needs.meta.outputs.version }}/g' packaging/macos-Info.plist > "$app/Info.plist"
           plutil -lint "$app/Info.plist"
           iconset="$RUNNER_TEMP/VSTStudio.iconset"
@@ -397,11 +408,16 @@ jobs:
           done
           iconutil -c icns "$iconset" -o "$app/Resources/VSTStudio.icns"
           # Seal the bundle (Info.plist and resources) with an ad-hoc signature; tag builds re-sign it below.
+          # The tools in Contents/MacOS are nested code: each is signed before the bundle that seals them.
+          for exe in VideoSpeedTracker ProcessHiLites; do codesign --force --sign - "$app/MacOS/$exe"; done
           codesign --force --sign - "pkg/$name/VSTStudio.app"
+          codesign --verify --strict --verbose=2 "pkg/$name/VSTStudio.app"
+          # The package must hold the app and nothing else (the disk image adds only the Applications link).
+          test "$(ls -A "pkg/$name")" = VSTStudio.app
       # Hardened runtime is required for notarization; the entitlements let it load Homebrew's
-      # OpenCV dylibs, which aren't signed by our team, and use the camera. The ticket is stapled to
-      # VSTStudio.app so it opens offline; the bare command-line tools can't be stapled, so Gatekeeper
-      # looks theirs up online the first time they run.
+      # OpenCV dylibs, which aren't signed by our team, and use the camera. The command-line tools inside the
+      # bundle are signed first (inside-out, no --deep), so the one notarization covers them and the ticket
+      # stapled to VSTStudio.app lets it open offline.
       - name: Sign and notarize
         if: env.SIGN_MACOS == 'true'
         env:
@@ -421,33 +437,32 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"   # the disk image is signed with it after packaging
-          # Signing the bundle signs Contents/MacOS/VSTStudio and seals Info.plist and Resources with it.
-          for exe in VideoSpeedTracker ProcessHiLites VSTStudio.app; do
+          # Inside-out: the nested tools first, then the bundle, which signs Contents/MacOS/VSTStudio and seals
+          # Info.plist, Resources and the tools' signatures with it.
+          app="pkg/$PKG_NAME/VSTStudio.app"
+          for code in "$app/Contents/MacOS/VideoSpeedTracker" "$app/Contents/MacOS/ProcessHiLites" "$app"; do
             codesign --force --timestamp --options runtime \
               --entitlements packaging/macos-entitlements.plist \
-              --sign "Developer ID Application" --keychain "$keychain" "pkg/$PKG_NAME/$exe"
-            codesign --verify --deep --strict --verbose=2 "pkg/$PKG_NAME/$exe"
+              --sign "Developer ID Application" --keychain "$keychain" "$code"
           done
+          codesign --verify --deep --strict --verbose=2 "$app"
           ditto -c -k --keepParent "pkg/$PKG_NAME" "$RUNNER_TEMP/notarize.zip"
           # notarytool exits 0 on an Invalid verdict too, so check the status it reports.
           xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
             --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" | tee "$RUNNER_TEMP/notary.json"
           grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary.json"
           xcrun stapler staple "pkg/$PKG_NAME/VSTStudio.app"
-          # What a user's Mac will decide: the app must read "accepted, source=Notarized Developer ID". The tools'
-          # verdict depends on an online ticket lookup, so it's printed for the log rather than gating the release.
+          # What a user's Mac will decide: the app must read "accepted, source=Notarized Developer ID".
           spctl --assess --type execute --verbose=4 "pkg/$PKG_NAME/VSTStudio.app"
-          for exe in VideoSpeedTracker ProcessHiLites; do
-            spctl --assess --type install --verbose=4 "pkg/$PKG_NAME/$exe" || true
-          done
       # The disk image is built from the already signed and stapled files, so the app inside it opens
-      # offline; Applications is a symlink to drag VSTStudio.app onto (it carries everything it needs).
+      # offline. The image holds VSTStudio.app and an Applications symlink to drag it onto, nothing else: the app
+      # carries the tools, templates, docs and licenses itself.
       - name: Tar and disk image
         run: |
           name="$PKG_NAME"
           mkdir dist
           tar -C pkg -czf "dist/$name.tar.gz" "$name"
-          otool -L "pkg/$name/VideoSpeedTracker"
+          otool -L "pkg/$name/VSTStudio.app/Contents/MacOS/VideoSpeedTracker"
           dmgroot="$RUNNER_TEMP/dmgroot"
           ditto "pkg/$name" "$dmgroot"
           ln -s /Applications "$dmgroot/Applications"
