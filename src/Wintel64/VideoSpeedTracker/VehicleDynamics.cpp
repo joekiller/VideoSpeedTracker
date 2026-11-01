@@ -190,6 +190,27 @@ int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
 	return int(calibrationFrames / zoneFrames * g.CalibrationSpeed + 0.5);
 }
 
+// The vehicle's length in pixels, for the size shown in Results (a car is ~15 ft, a pickup ~20, a truck or bus 25+).
+// bestWidth is one box, taken mid-zone, and the motion box there often swallows something else that moved (a branch,
+// a shadow, a walker): on the sample, a 200 px sedan's mid-zone box grew to 380 px.  So this takes the median of every
+// box seen while the vehicle was wholly inside the analysis box, which shrugs off those few merged boxes, then removes
+// what frame differencing adds: one frame of travel (the box spans the vehicle in both frames of the pair) and the
+// blur's spread at the two ends (about 3/4 of BLUR_SIZE in all, after the second threshold).
+int VehicleDynamics::getLengthPx(const Globals& g){
+	std::vector<int> widths;
+	for (Snapshot& s : snaps){
+		Rect r = s.getRect();
+		if (r.width > 0 && r.x > g.pixelLeft + 2 && r.x + r.width < g.pixelRight - 2) widths.push_back(r.width);
+	}
+	if (widths.empty()) return bestWidth;
+	std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
+	double median = widths[widths.size() / 2];
+	int frames = trackEndFrame - trackStartFrame;
+	double perFrame = (frames > 0 && trackEndPixel > 0) ? abs(trackEndPixel - trackStartPixel) / double(frames) : 0;
+	double len = median - perFrame - 0.75 * g.BLUR_SIZE;
+	return int(std::max(len, median / 2) + 0.5);
+}
+
 //Private function
 void VehicleDynamics::assembleStats(int frameNumber, direction dir){
 	entryFrameNum = snaps.front().getFrameNum();

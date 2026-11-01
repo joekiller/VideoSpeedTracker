@@ -85,6 +85,9 @@ struct AppPrefs {
 	// a calibration was applied to.  A step counts as done only for the camera/config it was done for.
 	std::string zonesFor, calibratedFor;
 	std::string calibratedLines;   // speedLineLeft,speedLineRight,AnalysisBoxWidth when calibrated (App::speedLinesSig)
+	// Pick your spot's distance came from the user (typed, the map, step 4's "to the lane"), so a calibration keeps it
+	// and works out the lens's field of view from the measured picture width instead (App::syncPlanFromCalibration).
+	bool planDistMeasured = false;
 	bool planConfirmed = false;    // Pick your spot has been saved at least once: step 2's check in the rail
 	// The page on screen when Studio last closed (App::pageKey: "guide2" for Pick your spot, "results", ...), so it
 	// reopens where the user left off.  "" = before this existed: What you need, or Connect the camera once past it.

@@ -535,6 +535,7 @@ void App::loadResultsCsv(const std::string& path) {
 	was.swap(rows);
 	if (!appendStatsRows(path, fs::path(path).filename().string(), &skipped)) { rows.swap(was); return; }
 	rowsScope = ResultsScope::File;
+	sizeRows();
 	rowsFrom = path;
 	rowsRuns = 1;
 	selectedRow_ = -1;
@@ -576,11 +577,24 @@ void App::showSessionResults() {
 		r.large = v.large;
 		r.fps = v.fps;
 		r.time = v.passed();   // empty for recordings without a start time
+		r.widthPx = v.ev.width;
 		rows.push_back(r);
 	}
 	rowsScope = ResultsScope::Session;
 	rowsFrom.clear();
 	rowsRuns = 0;
+	sizeRows();
+}
+
+// Each vehicle's length in feet when the calibration gives the scale (session rows; a csv has no length column), and
+// truck-or-bus by that real size: about 24 ft long or more.  A csv row keeps the area test, against the threshold
+// retuneLargeVehicles() set from the same calibration.
+void App::sizeRows() {
+	double ppf = pxPerFtAtLane();
+	for (ResultRow& r : rows) {
+		r.lengthFt = ppf > 0 && r.widthPx > 0 ? r.widthPx / ppf : 0;
+		if (r.lengthFt > 0) r.large = r.lengthFt >= kLargeVehicleFt;
+	}
 }
 
 Texture* App::snapshotTexture(int id) {
@@ -1836,8 +1850,10 @@ void App::zoneInspector() {
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", help);
 			};
 			double distFt = prefs.planDist * plan::kFt;
+			double wasFt = distFt;
 			numRow("To the lane (ft)", &distFt, 1, "%.0f", 4, 300, "From the camera to the middle of the lane, square to the street. The same as step 2.");
-			prefs.planDist = distFt / plan::kFt;
+			// Through the plan, as the user's own number: a calibration later keeps it (Guide.cpp setMeasuredDistance).
+			if (distFt != wasFt) setMeasuredDistance(distFt / plan::kFt, "Your distance, from the ghost car on Mark your street");
 			numRow("Camera height (ft)", &prefs.calcHeightFt, 1, "%.0f", 0, 100, "Above the road. A second-floor window is about 12-15 ft.");
 			numRow("Field of view (°)", &prefs.planHfov, 1, "%.0f", perspective::kMinHfovDeg, perspective::kMaxHfovDeg,
 				"Horizontal angle the camera sees. Phones and webcams: 60-80°. Wide IP cameras: 90-110°. The same as step 2.");
@@ -3173,7 +3189,7 @@ void App::pageResults() {
 		ImGui::TableSetupColumn("Direction", 0, 1.3f);
 		ImGui::TableSetupColumn("When", 0, 1.2f);
 		ImGui::TableSetupColumn("Frames", ImGuiTableColumnFlags_WidthFixed, px(70));
-		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(70));
+		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(80));
 		ImGui::TableSetupColumn("Source", 0, 1.4f);
 		ImGui::TableHeadersRow();
 		// Sorting: by speed (default, fastest first) or by the order they were logged.
@@ -3227,7 +3243,9 @@ void App::pageResults() {
 				ImGui::Text("%d", r.frames);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
-				if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
+				// Feet long when the calibration gives the scale; the engine's area units otherwise.
+				if (r.lengthFt > 0) ImGui::Text(r.large ? ICON_TRUCK " %.0f ft" : "%.0f ft", r.lengthFt);
+				else if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
 				else ImGui::Text("%d", r.area);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
@@ -3282,10 +3300,16 @@ void App::pageResults() {
 		};
 		kv("Direction", std::string(r.l2r ? "Left to right, " : "Right to left, ") + r.compass);
 		kv("In the zone", std::to_string(r.frames) + " frames (" + std::to_string(r.frames / r.fps).substr(0, 4) + " s)");
-		kv("Size", std::to_string(r.area) + (r.large ? "  (truck or bus)" : ""));
+		{
+			char sz[96];
+			if (r.lengthFt > 0) snprintf(sz, sizeof sz, "about %.0f ft long  (%s)", r.lengthFt, r.large ? "truck or bus" : r.lengthFt >= 19 ? "pickup or van" : "car");
+			else snprintf(sz, sizeof sz, "%d%s", r.area, r.large ? "  (truck or bus)" : "");
+			kv("Size", sz);
+		}
 		kv("Frame", std::to_string(r.frame));
 		if (!r.time.empty()) { std::string t = r.time; if (t.size() > 10 && t[10] == 'T') t[10] = ' '; kv("Passed at", t); }
 		kv("Source", r.source);
+		if (r.lengthFt <= 0 && r.area > 0 && pxPerFtAtLane() <= 0) { ImGui::PushTextWrapPos(0); dimText("Calibrate in step 5 and sizes show in feet."); ImGui::PopTextWrapPos(); }
 		ImGui::Dummy(ImVec2(0, px(4)));
 		Vehicle v;
 		if (r.vehicleId && tracker.vehicle(r.vehicleId, v) && !v.clipPath.empty())

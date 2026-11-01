@@ -78,7 +78,10 @@ the picture. The search and the map pictures come from OpenStreetMap's servers; 
   length, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
   measures the whole picture. Step 2 updates by itself after each new calibration (a toast says so), and a number
   typed afterwards stays until the next one. On a one-way street the legal direction's lane is used; on a two-way
-  street, the mean of the two.
+  street, the mean of the two. When the distance to the lane came from you (typed, the map, or **To the lane** on
+  the ghost car in step 4), a calibration keeps it and works out your lens's field of view from the measured picture
+  instead, and measured numbers always replace an unsaved preview's guesses. Going back to this page never resets them: presets
+  and edits here are only a preview until **Save changes**.
 
 With a camera connected, **Plan with your camera** copies its real size and frame rate into the plan. A camera
 below 24 fps gets a note saying how fast a car the planned view still times and how to raise it (most webcams and
@@ -379,6 +382,13 @@ time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows
 **Open CSV** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
 time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
 recordings (`manual_yyyymmddhhmmss`) is when the recording started.
+
+**Size.** With a calibration, each vehicle's length is shown in feet (a car is about 15 ft, a pickup or van 19-23, a
+truck or bus 24 or more, which gets the truck icon). It is measured from the tracked boxes while the vehicle is wholly
+in view (the median, so a branch or a walker caught in one box doesn't stretch it), less what frame differencing adds,
+and scaled by the calibration's feet per pixel, so any calibration, a known parked car included, scales sizes too.
+Each new calibration also resets VST.cfg's `largeVehicleArea` to about 190 sq ft at that scale, which is what rows
+opened from an older csv (no length in it) use.
 
 ![Results](images/studio/06-results.jpg)
 

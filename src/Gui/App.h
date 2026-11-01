@@ -74,6 +74,8 @@ struct ResultRow {
 	double fps = 30;
 	std::string time;
 	std::string statsPath;      // the stats csv the row was read from ("" for session rows)
+	int widthPx = 0;            // session rows: the vehicle's length side-on in pixels (VehicleEvent::width), 0 when unknown
+	double lengthFt = 0;        // that length in feet at the lane, from the calibration (0 = no calibration or no width)
 };
 
 // Where the Results page's rows come from.  Session: vehicles measured since Studio opened (with snapshots).  Saved:
@@ -199,6 +201,15 @@ public:
 	void openMap();
 	bool planFromCalibration(plan::Measured& m, std::string& how);
 	void syncPlanFromCalibration(bool announce = true);
+	// The user's own camera-to-lane distance from outside Pick your spot; saved at once and kept by later calibrations.
+	void setMeasuredDistance(double distM, const char* why);
+	// Pixels per foot at the lane in the 1280-wide frame, from the calibration in force (0 = none for this camera).
+	double pxPerFtAtLane();
+	// Sets largeVehicleArea to a real size (kLargeVehicleSqFt) from the calibration; every apply reaches it.
+	void retuneLargeVehicles();
+	void sizeRows();   // Results rows' length in feet, and truck-or-bus by that length, from the calibration in force
+	static constexpr double kLargeVehicleSqFt = 190;
+	static constexpr double kLargeVehicleFt = 24;   // a box truck, bus or a pickup towing something
 	// "Cars across the picture" needs a picture of the user's own street: an open camera, stream, video or photo that
 	// isn't the bundled 2016 sample.
 	bool planPictureAvailable();
