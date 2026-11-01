@@ -109,6 +109,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 		std::string stem = jobStem(job.input);
 		job.statsPath = (data / "Stats" / ("stats_" + stem + ".csv")).string();
 		job.manifestPath = vst::manifestPathFor(job.statsPath);
+		currentStats_ = job.statsPath;
 		std::vector<std::string> args = {
 			"--input", job.input, "--config", opt.configPath, "--stats", job.statsPath,
 			"--speed-limit", std::to_string(opt.speedLimit), "--egregious", std::to_string(opt.egregious),
@@ -222,6 +223,7 @@ void Tracker::onVehicle(const vst::VehicleEvent& e) {
 	v.time = nowIso();
 	v.video = displayName(currentInput_);
 	v.videoPath = currentInput_;
+	v.statsPath = currentStats_;
 	v.fps = fps_;
 	v.live = liveSource_;
 	v.ev = e;

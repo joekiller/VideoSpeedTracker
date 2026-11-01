@@ -199,6 +199,13 @@ if(TARGET vst_report)
   add_test(NAME street_report
     COMMAND report_test ${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/report-test)
 
+  # Archived datasets (src/Gui/Archive.cpp): archiving the report fixtures away and back, reading the archive, the
+  # street report made from an archive folder, and the browser viewer (review.html) it writes.
+  add_executable(archive_test tests/archive_test.cpp)
+  target_link_libraries(archive_test PRIVATE vst_report)
+  add_test(NAME archived_datasets
+    COMMAND archive_test ${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/archive-test)
+
   # Unattended-run health (src/Gui/Health.cpp): pruning video to the disk budget, the "camera moved" check on
   # frames of the sample video, and the daily health.csv row.
   add_executable(health_test tests/health_test.cpp)

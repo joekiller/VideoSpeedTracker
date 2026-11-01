@@ -5,6 +5,7 @@
 //   VSTStudio --shots DIR           documentation mode: fresh preferences, the bundled sample video, a scripted
 //                                   tour of every page, a PNG of each in DIR, then exit (works under Xvfb); exits
 //                                   non-zero if a step timed out or no vehicles were tracked
+//   VSTStudio --review FOLDER       open an archived dataset (Archive.h) straight in Results, read-only
 //   VSTStudio --write-icon FILE     write the app icon as a 256x256 PNG (packaging/vst-studio.png)
 #include "App.h"
 #include "Canvas.h"
@@ -14,6 +15,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <imgui_internal.h>   // ClosePopupToLevel, for the tour's archive step
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
@@ -290,6 +292,34 @@ struct DemoScript {
 			if (frames == 1) { app.page = Page::Companion; app.setRemote(true); }
 			if (frames == 20) { shot("08-companion.png"); next(); }
 			break;
+		case 10:
+			// Archive the session: the dialog, then (a copy, so the tracked vehicles stay for the checks at exit) the archive
+			// itself, opened read-only in Results with its snapshots read back from disk.
+			if (frames == 1) {
+				app.setRemote(false);
+				app.page = Page::Results;
+				app.showSessionResults();
+				app.openArchiveDialog_ = true;
+			}
+			if (frames == 20) shot("10-archive.png");
+			if (frames == 21) {
+				ImGui::ClosePopupToLevel(0, true);
+				size_t n = app.rows.size();
+				std::string dir, err;
+				if (!archive::write(app.archiveRequest("First week, before the signs", false), dir, err)) fail("archiving the session: " + err);
+				else if (!app.openArchive(dir)) fail("opening the archive just written");
+				else {
+					int snaps = 0;
+					for (const ResultRow& r : app.rows) snaps += !r.snapshotPath.empty();
+					if (app.rows.size() != n || snaps == 0) fail("the archive came back with " + std::to_string(app.rows.size()) + " of " + std::to_string(n) + " vehicles and " + std::to_string(snaps) + " snapshots");
+					int best = 0;
+					for (size_t i = 0; i < app.rows.size(); i++) if (app.rows[i].speed > app.rows[best].speed) best = int(i);
+					app.selectedRow_ = app.rows.empty() ? -1 : best;
+				}
+			}
+			if (frames == 25) app.toasts_.clear();
+			if (frames == 40) { shot("10b-archive-review.png"); next(); }
+			break;
 		default:
 			done = true;
 		}
@@ -297,14 +327,15 @@ struct DemoScript {
 };
 
 int main(int argc, char** argv) {
-	std::string shotsDir, configArg;
+	std::string shotsDir, configArg, reviewArg;
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
 		if (a == "--shots" && i + 1 < argc) shotsDir = argv[++i];
 		else if (a == "--config" && i + 1 < argc) configArg = argv[++i];
+		else if (a == "--review" && i + 1 < argc) reviewArg = argv[++i];
 		else if (a == "--write-icon" && i + 1 < argc) { cv::imwrite(argv[++i], makeIcon(256)); return 0; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("Usage: VSTStudio [--config VST.cfg] [--shots DIR] [--write-icon FILE]\n");
+			std::printf("Usage: VSTStudio [--config VST.cfg] [--review ARCHIVE-FOLDER] [--shots DIR] [--write-icon FILE]\n");
 			return 0;
 		}
 	}
@@ -350,6 +381,7 @@ int main(int argc, char** argv) {
 	app.screenshotMode = shots;
 	app.persist = !shots;   // a documentation run must not overwrite the user's preferences
 	app.init(shots, configArg);
+	if (!reviewArg.empty() && !shots) app.openArchive(reviewArg);
 	DemoScript script{ app, shotsDir };
 	if (shots) {
 		fs::create_directories(shotsDir);

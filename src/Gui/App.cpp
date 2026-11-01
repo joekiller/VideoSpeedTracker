@@ -13,6 +13,8 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <opencv2/imgcodecs.hpp>
 #include <random>
 
 namespace fs = std::filesystem;
@@ -478,6 +480,7 @@ void App::loadResultsCsv(const std::string& path) {
 	int skipped = 0;
 	if (!readStatsCsv(path, stats, err, &skipped)) { toast(err, c::bad, ICON_WARN); return; }
 	rows.clear();
+	archive_ = archive::Info();
 	const Globals& g = cfg.g;
 	for (const StatsRow& s : stats) {
 		ResultRow r;
@@ -496,6 +499,7 @@ void App::loadResultsCsv(const std::string& path) {
 		// The Timestamp column says when this vehicle passed; drop its UTC offset to match session rows ("yyyy-mm-ddThh:mm:ss").
 		// Older csvs only have Date/Time, which for Foscam recordings is when the recording started.
 		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
+		r.statsPath = path;
 		rows.push_back(r);
 	}
 	rowsFrom = path;
@@ -519,9 +523,12 @@ void App::showSessionResults() {
 		r.large = v.large;
 		r.fps = v.fps;
 		r.time = v.passed();   // empty for recordings without a start time
+		r.statsPath = v.statsPath;
+		r.clipPath = v.clipPath;
 		rows.push_back(r);
 	}
 	rowsFrom.clear();
+	archive_ = archive::Info();
 }
 
 Texture* App::snapshotTexture(int id) {
@@ -535,6 +542,217 @@ Texture* App::snapshotTexture(int id) {
 	snapTex_[id] = std::move(t);
 	if (snapTex_.size() > 300) snapTex_.erase(snapTex_.begin());   // oldest ids first
 	return raw;
+}
+
+// ---- archived datasets (Archive.h) --------------------------------------------------------------------------
+
+bool App::openArchive(const std::string& dir) {
+	archive::Info a;
+	std::string err;
+	if (!archive::read(dir, a, err)) { toast(err, c::bad, ICON_WARN); return false; }
+	rows.clear();
+	for (const archive::Vehicle& v : a.vehicles) {
+		ResultRow r;
+		r.source = v.source;
+		r.frame = v.frame;
+		r.l2r = v.l2r;
+		r.compass = v.compass;
+		r.wrongWay = v.wrongWay;   // as judged when it was archived, by the one-way setting of the time
+		r.speed = v.speed;
+		r.frames = v.frames;
+		r.area = v.area;
+		r.large = v.large;
+		r.flagged = v.flagged;
+		r.fps = v.fps > 0 ? v.fps : 30;
+		r.time = v.passed;
+		if (!v.snapshot.empty()) r.snapshotPath = (fs::path(a.dir) / fs::path(v.snapshot)).string();
+		if (!v.clip.empty()) r.clipPath = (fs::path(a.dir) / fs::path(v.clip)).string();
+		rows.push_back(r);
+	}
+	archive_ = a;
+	rowsFrom = a.dir;
+	selectedRow_ = -1;
+	fileTex_.clear();
+	page = Page::Results;
+	return true;
+}
+
+Texture* App::fileTexture(const std::string& path) {
+	auto it = fileTex_.find(path);
+	if (it != fileTex_.end()) return it->second.get();   // a null entry: tried, unreadable
+	// imdecode of the bytes rather than imread, which can't open non-ASCII paths on Windows.  A snapshot is a still for
+	// the detail card, not a frame to track, so it doesn't go through the frame input port.
+	std::unique_ptr<Texture> t;
+	std::ifstream in(fs::path(path), std::ios::binary);
+	std::vector<uchar> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	cv::Mat img = bytes.empty() ? cv::Mat() : cv::imdecode(bytes, cv::IMREAD_COLOR);
+	if (!img.empty()) { t = std::make_unique<Texture>(); t->update(img); }
+	Texture* raw = t.get();
+	fileTex_[path] = std::move(t);
+	return raw;
+}
+
+// What "Archive" takes from what Results shows: the stats csvs behind the rows (with their manifests and highlights),
+// every row with this session's snapshot and clip when it has them, the config and calibration history, and the
+// limits and calibration in force, so the archive can be judged and reported on the same way later.
+archive::Request App::archiveRequest(const std::string& name, bool move) {
+	const Globals& g = cfg.g;
+	archive::Request req;
+	req.dataDir = dataDir();
+	req.move = move;
+	archive::Info& i = req.info;
+	i.name = name;
+	i.created = calib::nowIso();
+	i.from = rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string();
+	i.siteName = prefs.siteName;
+	i.speedLimit = prefs.speedLimit;
+	i.wayOver = prefs.egregious;
+	i.vst = VST_VERSION;
+	i.configPath = cfg.path();
+	i.cal.l2rCompass = g.L2RDirection;
+	i.cal.r2lCompass = g.R2LDirection;
+	i.cal.legal = g.LegalDirection;
+	i.cal.framesL2R = g.CalibrationFramesL2R;
+	i.cal.framesR2L = g.CalibrationFramesR2L;
+	i.cal.calSpeed = g.CalibrationSpeed;
+	i.cal.calFps = g.CalibrationFPS;
+	i.cal.minLoggedSpeed = g.minLoggedSpeed;
+	req.configFile = cfg.path();
+	if (!cfg.path().empty()) req.historyFiles.push_back((fs::path(cfg.path()).parent_path() / "calibration-history.csv").string());
+	req.historyFiles.push_back((userpaths::configDir() / "calibration-history.csv").string());
+	for (const ResultRow& r : rows) {
+		if (!r.statsPath.empty() && std::find(req.statsCsvs.begin(), req.statsCsvs.end(), r.statsPath) == req.statsCsvs.end())
+			req.statsCsvs.push_back(r.statsPath);
+		archive::Source s;
+		archive::Vehicle& v = s.row;
+		v.passed = r.time;
+		v.speed = r.speed;
+		v.l2r = r.l2r;
+		v.compass = r.compass;
+		v.wrongWay = r.wrongWay;
+		v.frames = r.frames;
+		v.area = r.area;
+		v.frame = r.frame;
+		v.large = r.large;
+		v.flagged = r.flagged;
+		v.fps = r.fps;
+		v.source = r.source;
+		Vehicle tv;
+		if (r.vehicleId && tracker.vehicle(r.vehicleId, tv)) { s.snapshot = tv.snapshot; s.clipPath = tv.clipPath; }
+		req.vehicles.push_back(std::move(s));
+	}
+	return req;
+}
+
+// "Archive these results": a name and move-or-copy, then archive::write, then the new archive opens in Results so the
+// user sees at once that everything is there.
+void App::archiveDialog() {
+	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Always);   // 0 = fit the height every frame, as options open and close
+	if (!ImGui::BeginPopupModal("Archive these results", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+	ArchiveForm& f = archiveForm_;
+	int snaps = 0;
+	for (const ResultRow& r : rows) snaps += r.vehicleId != 0;
+	dimText("Puts these %zu vehicles away in a folder of their own, with the results files, %s, and the setup and calibration "
+		"they were measured with. Open them again any time from Open in Results, or double-click review.html in the folder.",
+		rows.size(), snaps ? "their snapshots and clips" : "the highlights video");
+	ImGui::Dummy(ImVec2(0, px(6)));
+	float col = px(110);
+	formLabel("Name", col);
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+	ImGui::InputTextWithHint("##aname", "e.g. First week, before the new signs", f.name, sizeof f.name);
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::SetCursorPosX(col);
+	if (ImGui::RadioButton("Move them into the archive", f.move)) f.move = true;
+	ImGui::SetCursorPosX(col + px(28));
+	dimText("Start fresh: the street report and Open stop counting them. You can put them back.");
+	ImGui::SetCursorPosX(col);
+	if (ImGui::RadioButton("Keep them here too (archive a copy)", !f.move)) f.move = false;
+	if (!f.error.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad)); ImGui::TextWrapped("%s", f.error.c_str()); ImGui::PopStyleColor(); }
+	ImGui::Dummy(ImVec2(0, px(6)));
+	if (primaryButton(ICON_ARCHIVE "  Archive")) {
+		std::string name = f.name;
+		if (name.find_first_not_of(" \t") == std::string::npos) name = "Results " + calib::nowIso().substr(0, 10);
+		bool fromSession = rowsFrom.empty();
+		std::string dir;
+		std::vector<std::string> warnings;
+		f.error.clear();
+		if (archive::write(archiveRequest(name, f.move), dir, f.error, &warnings)) {
+			// Moved out of a session: its clips and csvs are in the archive now, so the session lets go of those vehicles.
+			if (f.move && fromSession) { tracker.clearVehicles(); snapTex_.clear(); seenVehicleId_ = 0; }
+			ImGui::CloseCurrentPopup();
+			openArchive(dir);
+			toast("Archived " + std::to_string(rows.size()) + " vehicles as \"" + name + "\"", c::ok, ICON_ARCHIVE);
+			for (const std::string& w : warnings) toast(w, c::warn, ICON_WARN);
+		}
+	}
+	ImGui::SameLine();
+	if (ghostButton("Cancel")) ImGui::CloseCurrentPopup();
+	ImGui::EndPopup();
+}
+
+// The Open menu: every archive (newest first), then the plain csv and "another folder" for an archive kept elsewhere
+// (a USB stick, a neighbour's copy).
+void App::openMenu() {
+	ImGui::SetNextWindowSizeConstraints(ImVec2(px(360), 0), ImVec2(px(720), px(460)));
+	if (!ImGui::BeginPopup("openmenu")) return;
+	sectionLabel("ARCHIVES");
+	if (archives_.empty()) dimText("None yet. Archive puts the results you're looking at here.");
+	for (size_t i = 0; i < archives_.size(); i++) {
+		const archive::Info& a = archives_[i];
+		ImGui::PushID(int(i));
+		std::string label = std::string(ICON_ARCHIVE "  ") + (a.name.empty() ? fs::path(a.dir).filename().string() : a.name);
+		if (ImGui::Selectable(label.c_str(), archive_.dir == a.dir)) { openArchive(a.dir); ImGui::CloseCurrentPopup(); }
+		ImGui::SameLine(0, px(16));
+		std::string when = a.firstPassed.empty() ? "archived " + a.created.substr(0, std::min<size_t>(10, a.created.size()))
+			: a.firstPassed.substr(0, 10) + (a.lastPassed.substr(0, 10) != a.firstPassed.substr(0, 10) ? " to " + a.lastPassed.substr(0, 10) : "");
+		std::string detail = std::to_string(a.vehicles.size()) + " vehicles · " + when + (a.moved ? "" : " · a copy");
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
+		ImGui::TextUnformatted(detail.c_str());   // one line: the menu grows to fit rather than wrapping under the name
+		ImGui::PopStyleColor();
+		ImGui::PopID();
+	}
+	ImGui::Separator();
+	if (ImGui::Selectable(ICON_FILE_CSV "  A stats csv…")) {
+		ImGui::CloseCurrentPopup();
+		auto r = pfd::open_file("Open stats csv", (fs::path(dataDir()) / "Stats").string(), { "Stats csv", "*.csv", "All files", "*" }).result();
+		if (!r.empty()) loadResultsCsv(r[0]);
+	}
+	if (ImGui::Selectable(ICON_FOLDER_OPEN "  An archive folder somewhere else…")) {
+		ImGui::CloseCurrentPopup();
+		std::string r = pfd::select_folder("Open an archive folder", (fs::path(dataDir()) / "Archive").string()).result();
+		if (!r.empty()) openArchive(r);
+	}
+	ImGui::EndPopup();
+}
+
+// Over an open archive: what it is, that it's read-only, and the two things to do with it besides looking.
+void App::reviewBanner(float width) {
+	const archive::Info& a = archive_;
+	beginCard("review", ICON_ARCHIVE, a.name.empty() ? "Archive" : a.name.c_str(), ImVec2(width, 0));
+	std::string what = "Read-only · archived " + a.created.substr(0, std::min<size_t>(10, a.created.size())) + " from "
+		+ (a.from == "This session" ? std::string("this session") : a.from) + " · judged at " + std::to_string(a.speedLimit) + " mph";
+	if (!a.siteName.empty() && a.siteName != report::Settings().siteName) what = a.siteName + " · " + what;
+	if (a.moved) what += " · moved out of your data";
+	dimText("%s", what.c_str());
+	if (a.moved) {
+		if (ghostButton(ICON_UNDO "  Put back into my data")) {
+			std::string msg;
+			if (archive::restore(a.dir, dataDir(), msg)) {
+				archive_.moved = false;
+				toast("Put back: the street report and Open count these runs again. The archive stays as it was.", c::ok, ICON_UNDO);
+				if (!msg.empty()) toast(msg, c::warn, ICON_WARN);
+			}
+			else toast(msg, c::bad, ICON_WARN);
+		}
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copies the results files back into your data folder. The archive keeps its own copy.");
+		ImGui::SameLine();
+	}
+	if (ghostButton(ICON_EXTERNAL "  Open in browser")) openWithSystem((fs::path(a.dir) / "review.html").string());
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("review.html: the same table, snapshots and clips in any web browser, no install needed.");
+	ImGui::SameLine();
+	if (ghostButton(ICON_XMARK "  Close archive")) showSessionResults();
+	endCard();
 }
 
 // Pulls new frames and vehicles from the tracker each GUI frame: updates textures, raises toasts for the
@@ -2956,7 +3174,7 @@ void App::pageResults() {
 	// The file buttons keep their full labels; the filter gives up width first, so the row fits a 1366-1480 px laptop
 	// window instead of pushing "Make report" off the edge.
 	float actionsW = px(16) * 2 + px(180);
-	for (const char* l : { ICON_CLOCK " This session", ICON_FILE_CSV " Open CSV", ICON_FILM " Highlights", ICON_FOLDER_OPEN " Folder", ICON_REPORT "  Make report" })
+	for (const char* l : { ICON_CLOCK " This session", ICON_FOLDER_OPEN " Open", ICON_ARCHIVE " Archive", ICON_FILM " Highlights", ICON_FOLDER " Folder", ICON_REPORT "  Make report" })
 		actionsW += buttonWidth(l) + ImGui::GetStyle().ItemSpacing.x;
 	segmented("rfilter", &resultsFilter_, filters, 4, std::clamp(avail - actionsW, px(300), px(440)));
 	ImGui::SameLine(0, px(16));
@@ -2965,17 +3183,46 @@ void App::pageResults() {
 	ImGui::SameLine(0, px(16));
 	if (ghostButton(ICON_CLOCK " This session")) showSessionResults();
 	ImGui::SameLine();
-	if (ghostButton(ICON_FILE_CSV " Open CSV")) {
-		auto r = pfd::open_file("Open stats csv", (fs::path(dataDir()) / "Stats").string(), { "Stats csv", "*.csv", "All files", "*" }).result();
-		if (!r.empty()) loadResultsCsv(r[0]);
+	if (ghostButton(ICON_FOLDER_OPEN " Open")) { archives_ = archive::list(dataDir()); ImGui::OpenPopup("openmenu"); }
+	openMenu();
+	ImGui::SameLine();
+	// Archive what's on screen.  Not an archive (it is one already), not nothing, and not while a run is still writing
+	// the csv it would move.
+	const char* whyNot = reviewing() ? "This is an archive already." : rows.empty() ? "Nothing to archive yet."
+		: tracker.running() ? "Stop tracking first: the run is still writing its results." : nullptr;
+	ImGui::BeginDisabled(whyNot != nullptr);
+	if (ghostButton(ICON_ARCHIVE " Archive") || (openArchiveDialog_ && !whyNot)) {
+		// A name that's ready to go: the site and the days the vehicles passed ("Locust Ave, 2016-01-30"), so a novice
+		// can just press Archive.  Rows without a usable date fall back to today.
+		archiveForm_ = ArchiveForm();
+		std::string first, last;
+		for (const ResultRow& r : rows) {
+			if (r.time.size() < 10 || r.time[4] != '-') continue;
+			std::string d = r.time.substr(0, 10);
+			if (first.empty() || d < first) first = d;
+			if (last.empty() || d > last) last = d;
+		}
+		std::string when = first.empty() ? calib::nowIso().substr(0, 10) : first == last ? first : first + " to " + last;
+		std::string site = prefs.siteName == report::Settings().siteName ? std::string() : prefs.siteName;
+		snprintf(archiveForm_.name, sizeof archiveForm_.name, "%s", (site.empty() ? "Results " + when : site + ", " + when).c_str());
+		ImGui::OpenPopup("Archive these results");
 	}
+	openArchiveDialog_ = false;
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("%s", whyNot ? whyNot : "Put these results away in a folder of their own, with snapshots, clips and the calibration, to look at again later.");
+	archiveDialog();
 	ImGui::SameLine();
-	if (ghostButton(ICON_FILM " Highlights")) openWithSystem((fs::path(dataDir()) / "HiLites").string());
+	// While reviewing, Highlights and Folder show the archive's own.
+	fs::path base = reviewing() ? fs::path(archive_.dir) : fs::path(dataDir());
+	if (ghostButton(ICON_FILM " Highlights")) openWithSystem((base / "HiLites").string());
 	ImGui::SameLine();
-	if (ghostButton(ICON_FOLDER_OPEN " Folder")) openWithSystem((fs::path(dataDir()) / "Stats").string());
+	if (ghostButton(ICON_FOLDER " Folder")) openWithSystem(reviewing() ? base.string() : (base / "Stats").string());
 	ImGui::SameLine();
 	if (primaryButton(ICON_REPORT "  Make report")) { reportForm_.saved.clear(); reportForm_.error.clear(); ImGui::OpenPopup("Street report"); }
 	reportDialog();
+	if (reviewing()) reviewBanner(avail);
+	const int limit = resultsLimit(), wayOver = resultsWayOver();
 
 	// Filtered view.
 	int minSpeed = 0;
@@ -2983,20 +3230,26 @@ void App::pageResults() {
 	try { if (!search.empty()) minSpeed = std::stoi(search); } catch (...) {}
 	std::vector<const ResultRow*> shown;
 	for (const ResultRow& r : rows) {
-		if (resultsFilter_ == 1 && r.speed <= prefs.speedLimit) continue;
-		if (resultsFilter_ == 2 && r.speed < prefs.egregious) continue;
+		if (resultsFilter_ == 1 && r.speed <= limit) continue;
+		if (resultsFilter_ == 2 && r.speed < wayOver) continue;
 		if (resultsFilter_ == 3 && !r.wrongWay) continue;
 		if (minSpeed > 0 && r.speed < minSpeed) continue;
 		if (!search.empty() && minSpeed == 0 && r.source.find(search) == std::string::npos) continue;
 		shown.push_back(&r);
 	}
-	dimText("%s  ·  %zu of %zu vehicles", rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string().c_str(), shown.size(), rows.size());
+	dimText("%s  ·  %zu of %zu vehicles", reviewing() ? "Archived vehicles" : rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string().c_str(),
+		shown.size(), rows.size());
 
+	if (rows.empty() && reviewing()) {
+		ImGui::Dummy(ImVec2(0, px(20)));
+		dimText("This archive holds no vehicles: its runs logged none. Its files are still in the folder.");
+		return;
+	}
 	if (rows.empty()) {
 		ImGui::Dummy(ImVec2(0, px(40)));
 		beginCard("noresults", ICON_CHART, "Nothing here yet", ImVec2(avail, 0));
 		dimText("Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
-			"Or use Open CSV to look at the results of an earlier run.");
+			"Or use Open to look at an archive or the results of an earlier run.");
 		if (source.empty() && batch.empty()) { if (primaryButton(ICON_VIDEO "  Choose a source")) page = Page::Source; }
 		else if (primaryButton(ICON_PLAY "  Start tracking")) startTracking();
 		endCard();
@@ -3008,8 +3261,8 @@ void App::pageResults() {
 	double sum = 0;
 	std::vector<int> speeds;
 	for (const ResultRow& r : rows) {
-		over += r.speed > prefs.speedLimit;
-		way += r.speed >= prefs.egregious;
+		over += r.speed > limit;
+		way += r.speed >= wayOver;
 		wrong += r.wrongWay;
 		top = std::max(top, r.speed);
 		sum += r.speed;
@@ -3019,15 +3272,17 @@ void App::pageResults() {
 	int p85 = report::percentile(speeds, 85);   // nearest rank, the same definition as the street report and the phone
 	float tw = (avail - px(48)) / 5, th = px(100);
 	char sub[64];
-	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
+	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : reviewing() ? "in this archive" : "in this file", c::accent, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / rows.size()), prefs.speedLimit);
+	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / rows.size()), limit);
 	statTile(ICON_GAUGE, "Speeding", std::to_string(over), sub, c::warn, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "%d mph or more", prefs.egregious);
+	snprintf(sub, sizeof sub, "%d mph or more", wayOver);
 	statTile(ICON_BOLT, "Way over", std::to_string(way), sub, c::bad, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), cfg.g.LegalDirection == "Both" ? "one-way? set it in step 4" : "against the one-way", c::wrong, ImVec2(tw, th));
+	const std::string& legal = reviewing() ? archive_.cal.legal : cfg.g.LegalDirection;
+	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), legal != "Both" ? "against the one-way" : reviewing() ? "two-way when archived" : "one-way? set it in step 4",
+		c::wrong, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
 	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / rows.size(), top);
 	statTile(ICON_CHART, "85th percentile", std::to_string(p85) + " mph", sub, c::accent2, ImVec2(tw, th));
@@ -3086,7 +3341,7 @@ void App::pageResults() {
 				ImGui::PopID();
 				ImGui::TableNextColumn();
 				std::string s = std::to_string(r.speed) + " mph";
-				ImU32 col = speedColor(r.speed, prefs.speedLimit, prefs.egregious);
+				ImU32 col = speedColor(r.speed, limit, wayOver);
 				linePill(s.c_str(), c::bg0, col, fonts.strong);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
@@ -3124,18 +3379,18 @@ void App::pageResults() {
 		const ResultRow& r = rows[selectedRow_];
 		beginCard("det", nullptr, nullptr, ImVec2(detailW, 0));
 		float w = ImGui::GetContentRegionAvail().x;
-		Texture* t = r.vehicleId ? snapshotTexture(r.vehicleId) : nullptr;
+		Texture* t = r.vehicleId ? snapshotTexture(r.vehicleId) : !r.snapshotPath.empty() ? fileTexture(r.snapshotPath) : nullptr;
 		if (t) ImGui::Image((ImTextureID)(intptr_t)t->imguiId(), ImVec2(w, w * t->height() / std::max(1, t->width())));
 		else {
 			ImVec2 p = ImGui::GetCursorScreenPos();
 			ImGui::GetWindowDrawList()->AddRectFilled(p, p + ImVec2(w, w * .4f), c::bg3, px(8));
 			// Rows read from a csv have no picture; say why, centred in the placeholder.
-			const char* why = "Snapshots are kept only for\nvehicles tracked this session";
+			const char* why = reviewing() ? "No snapshot was archived\nfor this vehicle" : "Snapshots are kept only for\nvehicles tracked this session";
 			ImVec2 ts = ImGui::CalcTextSize(why);
 			ImGui::GetWindowDrawList()->AddText(p + (ImVec2(w, w * .4f) - ts) * .5f, c::faint, why);
 			ImGui::Dummy(ImVec2(w, w * .4f));
 		}
-		ImU32 col = r.wrongWay ? c::wrong : speedColor(r.speed, prefs.speedLimit, prefs.egregious);
+		ImU32 col = r.wrongWay ? c::wrong : speedColor(r.speed, limit, wayOver);
 		ImGui::PushFont(fonts.hero);
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(col));
 		ImGui::Text("%d", r.speed);
@@ -3145,8 +3400,8 @@ void App::pageResults() {
 		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + px(26));
 		dimText("mph");
 		if (r.wrongWay) pill(ICON_WARN "  WRONG WAY", c::rgb(0xFFFFFF), c::wrong, fonts.strong);
-		else if (r.speed >= prefs.egregious) pill(ICON_BOLT "  WAY OVER THE LIMIT", c::bg0, c::bad, fonts.strong);
-		else if (r.speed > prefs.speedLimit) pill(ICON_GAUGE "  SPEEDING", c::bg0, c::warn, fonts.strong);
+		else if (r.speed >= wayOver) pill(ICON_BOLT "  WAY OVER THE LIMIT", c::bg0, c::bad, fonts.strong);
+		else if (r.speed > limit) pill(ICON_GAUGE "  SPEEDING", c::bg0, c::warn, fonts.strong);
 		else pill(ICON_CHECK "  WITHIN THE LIMIT", c::bg0, c::ok, fonts.strong);
 		ImGui::Dummy(ImVec2(0, px(4)));
 		auto kv = [&](const char* k, const std::string& v) {
@@ -3163,9 +3418,10 @@ void App::pageResults() {
 		if (!r.time.empty()) { std::string t = r.time; if (t.size() > 10 && t[10] == 'T') t[10] = ' '; kv("Passed at", t); }
 		kv("Source", r.source);
 		ImGui::Dummy(ImVec2(0, px(4)));
+		std::string clip = r.clipPath;
 		Vehicle v;
-		if (r.vehicleId && tracker.vehicle(r.vehicleId, v) && !v.clipPath.empty())
-			if (ghostButton(ICON_FILM "  Play clip", ImVec2(-FLT_MIN, 0))) openWithSystem(v.clipPath);
+		if (r.vehicleId && tracker.vehicle(r.vehicleId, v)) clip = v.clipPath;
+		if (!clip.empty() && ghostButton(ICON_FILM "  Play clip", ImVec2(-FLT_MIN, 0))) openWithSystem(clip);
 		if (r.vehicleId && ghostButton(ICON_RULER "  This was me: calibrate from it", ImVec2(-FLT_MIN, 0))) {
 			calibPickId_ = r.vehicleId;
 			calibMode_ = 0;
@@ -3184,6 +3440,7 @@ void App::pageResults() {
 
 // Histogram of speeds (2 mph bins, coloured by band, limit marked) next to a timeline of every vehicle.
 void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width) {
+	const int limit = resultsLimit(), wayOver = resultsWayOver();
 	float h = px(200);
 	float half = (width - px(12)) * .5f;
 	auto frameCard = [&](const char* id, const char* icon, const char* title) { beginCard(id, icon, title, ImVec2(half, h)); };
@@ -3208,12 +3465,12 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 			ImVec2 a(p.x + i * bw + 1, p.y + sz.y - bh), b(p.x + (i + 1) * bw - 1, p.y + sz.y);
 			bool hov = ImGui::IsMouseHoveringRect(ImVec2(a.x, p.y), b);
 			if (hov) hoverBin = i;
-			if (counts[i]) dl->AddRectFilled(a, b, alpha(speedColor(mph, prefs.speedLimit, prefs.egregious), hov ? 1.f : .8f), px(3), ImDrawFlags_RoundCornersTop);
+			if (counts[i]) dl->AddRectFilled(a, b, alpha(speedColor(mph, limit, wayOver), hov ? 1.f : .8f), px(3), ImDrawFlags_RoundCornersTop);
 		}
-		float lx = p.x + (prefs.speedLimit + 1 - lo) / 2.f * bw;
+		float lx = p.x + (limit + 1 - lo) / 2.f * bw;
 		for (float y = p.y; y < p.y + sz.y; y += px(8)) dl->AddLine(ImVec2(lx, y), ImVec2(lx, y + px(4)), c::text, 1.5f);
 		// The label sits on a chip of the card colour so the bars behind it can't swallow it.
-		std::string lim = std::to_string(prefs.speedLimit) + " mph limit";
+		std::string lim = std::to_string(limit) + " mph limit";
 		ImVec2 ls = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, lim.c_str());
 		ImVec2 lp(std::min(lx + px(6), p.x + sz.x - ls.x - px(4)), p.y);
 		dl->AddRectFilled(lp - ImVec2(px(4), px(1)), lp + ls + ImVec2(px(4), px(1)), alpha(c::bg2, .9f), px(4));
@@ -3237,7 +3494,7 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		sz.y -= px(4);
 		int top = 50;
 		for (const ResultRow* r : shown) top = std::max(top, r->speed + 5);
-		float ly = p.y + sz.y - sz.y * prefs.speedLimit / top;
+		float ly = p.y + sz.y - sz.y * limit / top;
 		dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + sz.x, ly), alpha(c::bad, .04f));
 		for (float x = p.x; x < p.x + sz.x; x += px(8)) dl->AddLine(ImVec2(x, ly), ImVec2(x + px(4), ly), alpha(c::text, .6f), 1.f);
 		size_t n = shown.size();
@@ -3246,7 +3503,7 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 			const ResultRow* r = shown[i];
 			float x = p.x + (n > 1 ? sz.x * i / (n - 1) : sz.x * .5f);
 			float y = p.y + sz.y - sz.y * r->speed / top;
-			ImU32 col = speedColor(r->speed, prefs.speedLimit, prefs.egregious);
+			ImU32 col = speedColor(r->speed, limit, wayOver);
 			if (r->wrongWay) dl->AddCircle(ImVec2(x, y), px(6), c::wrong, 0, 2.f);
 			dl->AddCircleFilled(ImVec2(x, y), px(3.2f), col);
 			ImVec2 m = ImGui::GetIO().MousePos;
@@ -3293,6 +3550,39 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 	return in;
 }
 
+// The same for an open archive: its folder is laid out like the data folder, so the report reads its Stats/ as is, with
+// the history and config it was archived with and its own (unblurred until blurForReport) snapshots.
+report::Input App::archiveReportInput(bool snapshots, const std::string& from, const std::string& to) {
+	const archive::Info& a = archive_;
+	report::Input in;
+	in.dataDir = a.dir;
+	in.configPath = a.configPath;   // history rows are keyed on the original path
+	in.historyFiles.push_back((fs::path(a.dir) / "calibration-history.csv").string());
+	in.current.l2rCompass = a.cal.l2rCompass;
+	in.current.r2lCompass = a.cal.r2lCompass;
+	in.current.legal = a.cal.legal;
+	in.current.framesL2R = a.cal.framesL2R;
+	in.current.framesR2L = a.cal.framesR2L;
+	in.current.calSpeed = a.cal.calSpeed;
+	in.current.calFps = a.cal.calFps;
+	in.current.minLoggedSpeed = a.cal.minLoggedSpeed;
+	if (!snapshots) return in;
+	std::vector<const archive::Vehicle*> vs;
+	for (const archive::Vehicle& v : a.vehicles) if (!v.snapshot.empty()) vs.push_back(&v);
+	std::sort(vs.begin(), vs.end(), [](const archive::Vehicle* x, const archive::Vehicle* y) { return x->speed > y->speed; });
+	for (const archive::Vehicle* v : vs) {
+		if (in.snapshots.size() >= 6) break;
+		std::string day = v->passed.substr(0, 10);
+		if ((!from.empty() && (day.empty() || day < from)) || (!to.empty() && (day.empty() || day > to))) continue;
+		std::ifstream f(fs::path(a.dir) / fs::path(v->snapshot), std::ios::binary);
+		std::vector<uchar> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		cv::Mat img = bytes.empty() ? cv::Mat() : cv::imdecode(bytes, cv::IMREAD_COLOR);
+		std::string jpeg = img.empty() ? std::string() : report::blurForReport(img);
+		if (!jpeg.empty()) in.snapshots.push_back({ jpeg, v->speed, v->l2r, v->passed });
+	}
+	return in;
+}
+
 report::Settings App::reportSettings() {
 	report::Settings s;
 	s.siteName = prefs.siteName;
@@ -3304,11 +3594,13 @@ report::Settings App::reportSettings() {
 
 // The "Make report" dialog: a few choices, then one HTML file in <data>/Reports that prints cleanly to PDF.
 void App::reportDialog() {
-	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Appearing);
+	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Always);   // 0 = fit the height every frame, as options open and close
 	if (!ImGui::BeginPopupModal("Street report", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
 	ReportForm& f = reportForm_;
 	float col = px(150);
-	dimText("A printable study of the speeds in your data folder, for a city council or a traffic engineer. "
+	dimText(reviewing() ? "A printable study of the speeds in this archive, for a city council or a traffic engineer. "
+		"It lists coverage, speeds per direction, the calibration record and the error band."
+		: "A printable study of the speeds in your data folder, for a city council or a traffic engineer. "
 		"It lists coverage, speeds per direction, the calibration record and the error band.");
 	ImGui::Dummy(ImVec2(0, px(6)));
 	formLabel("Site name", col);
@@ -3338,11 +3630,16 @@ void App::reportDialog() {
 	}
 	ImGui::SetCursorPosX(col);
 	ImGui::Checkbox("Include example frames (blurred)", &f.snapshots);
-	if (f.snapshots) { ImGui::SetCursorPosX(col); dimText("Only this session's vehicles have snapshots. Plates are blurred and nothing identifying is added."); }
+	if (f.snapshots) {
+		ImGui::SetCursorPosX(col);
+		dimText(reviewing() ? "From this archive's snapshots. Plates are blurred and nothing identifying is added."
+			: "Only this session's vehicles have snapshots. Plates are blurred and nothing identifying is added.");
+	}
 	formLabel("Note", col);
 	ImGui::InputTextMultiline("##rnote", f.note, sizeof f.note, ImVec2(-FLT_MIN, px(70)));
 	ImGui::SetCursorPosX(col);
-	dimText("Limit %d mph, way over %d mph (set on the Live page).", prefs.speedLimit, prefs.egregious);
+	if (reviewing()) dimText("Limit %d mph, way over %d mph, as when it was archived.", resultsLimit(), resultsWayOver());
+	else dimText("Limit %d mph, way over %d mph (set on the Live page).", prefs.speedLimit, prefs.egregious);
 
 	if (!f.error.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad)); ImGui::TextWrapped("%s", f.error.c_str()); ImGui::PopStyleColor(); }
 	if (!f.saved.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok)); ImGui::TextWrapped(ICON_CHECK_CIRCLE "  Saved %s", f.saved.c_str()); ImGui::PopStyleColor(); }
@@ -3357,13 +3654,16 @@ void App::reportDialog() {
 		if (f.compare && (!*f.cmpFrom || !*f.cmpTo)) f.error = "Give both dates of the period to compare with.";
 		if (f.error.empty()) {
 			report::Settings s = reportSettings();
+			s.speedLimit = resultsLimit();   // an archive is reported at the limits it was archived with
+			s.wayOver = resultsWayOver();
 			s.from = f.from;
 			s.to = f.to;
 			s.note = f.note;
 			s.includeSnapshots = f.snapshots;
 			if (f.compare) { s.compareFrom = f.cmpFrom; s.compareTo = f.cmpTo; }
 			std::string path, html;
-			if (report::writeReport(reportInput(f.snapshots, s.from, s.to), s, path, html, f.error)) {
+			report::Input in = reviewing() ? archiveReportInput(f.snapshots, s.from, s.to) : reportInput(f.snapshots, s.from, s.to);
+			if (report::writeReport(in, s, path, html, f.error)) {
 				f.saved = path;
 				toast("Report saved: " + fs::path(path).filename().string(), c::ok, ICON_REPORT);
 			}

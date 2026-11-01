@@ -312,7 +312,7 @@ Where the time comes from depends on the source, and VST says which in its log w
   the modified time is in the future or before 2000, or the video doesn't report its length and frame rate, the time
   is left blank.
 
-Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open CSV**
+Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open**
 reads both versions. Spreadsheets that read columns by position are unaffected: the first 13 are unchanged.
 
 Only vehicles timed at `minLoggedSpeed` or faster get a row. This optional `VST.cfg` key is in MPH; the default is 18,
