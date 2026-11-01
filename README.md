@@ -285,8 +285,8 @@ measured speeds. If a video doesn't report a frame rate, VST assumes `Calibratio
 Each vehicle VST measures is one row of `stats_<name>.csv`:
 
 ```
-Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp
-20160130, 172251, 348, NW, 290, 320, 30, 878, 317, 561, 63, , 33, , 2016-01-30T17:23:02-05:00
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft
+20160130, 172251, 348, NW, 290, 320, 30, 878, 317, 561, 63, , 33, , 2016-01-30T17:23:02-05:00, 34, 32, -2.0, decelerating, 31
 ```
 
 | Column | Meaning |
@@ -301,6 +301,13 @@ Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, 
 | estSpeed | estimated speed, MPH |
 | Flag | `*****` when the speed is implausible (more than 20 MPH over the egregious bound): check it by eye. Otherwise empty. |
 | Timestamp | when the vehicle passed, ISO 8601 local time with the UTC offset, e.g. `2026-10-30T14:03:22-04:00`. Empty when unknown. |
+| EntryMph, ExitMph | speed at the first and second speed line, MPH; they average estSpeed |
+| AccelMphPerSec | acceleration through the zone, MPH per second, + speeding up |
+| Trend | `decelerating` (-2 or less), `steady`, `accelerating` (+2 to +6) or `rapid` (+6 or more) |
+| MphIn20ft | the speed 20 ft past the second line at that acceleration (the exit speed when steady; 0 if it would stop) |
+
+The last five are empty when VST couldn't tell (too few or too ragged sightings). How they're measured, the thresholds
+and how much noise a 14-20 ft view leaves: [docs/speed-trend.md](docs/speed-trend.md).
 
 Where the time comes from depends on the source, and VST says which in its log when it starts each video:
 
@@ -312,8 +319,9 @@ Where the time comes from depends on the source, and VST says which in its log w
   the modified time is in the future or before 2000, or the video doesn't report its length and frame rate, the time
   is left blank.
 
-Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open CSV**
-reads both versions. Spreadsheets that read columns by position are unaffected: the first 13 are unchanged.
+Earlier versions wrote the Flag column only when it was set, had no Timestamp column, and (before v1.10) ended at
+Timestamp; VST Studio's **Open CSV** and the street report read every version. Spreadsheets that read columns by
+position are unaffected: the first 15 are unchanged.
 
 Only vehicles timed at `minLoggedSpeed` or faster get a row. This optional `VST.cfg` key is in MPH; the default is 18,
 the value that was hard-coded before v1.2. Slower ones, such as walkers, cyclists and cars turning into a driveway, are

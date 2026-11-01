@@ -5,7 +5,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { esc, raw, html, band, passPills } from '../js/ui.js';
+import { esc, raw, html, band, passPills, trendOf } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
 import { geometry, applyHandle, laneYAt, laneHandleX } from '../js/overlay.js';
 import * as plan from '../js/plan.js';
@@ -60,6 +60,15 @@ describe('ui.js band and passPills', () => {
     const pills = passPills({ speed: 31, speeding: true }, 25).map((p) => p.__html).join('');
     assert.match(pills, /\+6 over/);
     assert.doesNotMatch(passPills({ speed: 50, speeding: true, egregious: true }, 25).map((p) => p.__html).join(''), /over/);
+  });
+  it('shows a speed change, but not a steady one or an unknown one', () => {
+    const pills = (trend) => passPills({ speed: 24, trend }, 25).map((p) => p.__html).join('');
+    assert.match(pills({ kind: 'rapid', entry: 21, exit: 27, accel: 8.5, in20ft: 31 }), /class="pill bad".*21→27/);
+    assert.match(pills({ kind: 'decelerating', entry: 26, exit: 22, accel: -6, in20ft: 18 }), /class="pill ok"/);
+    assert.equal(pills({ kind: 'steady', entry: 24, exit: 24, accel: 0.4, in20ft: 24 }), '');
+    assert.equal(pills(null), '');
+    assert.equal(trendOf({ trend: { kind: 'sideways' } }), null);
+    assert.equal(trendOf({ trend: { kind: 'accelerating' } }).label, 'Speeding up');
   });
 });
 

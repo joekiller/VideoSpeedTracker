@@ -151,7 +151,20 @@ struct EngineExit { int code; };  // thrown by quit() so an embedded run unwinds
 
 // One row per logged vehicle.  Flag is "*****" for an implausible speed, else empty; it used to be written only when set, and is
 // now always there so that Timestamp (ISO 8601 local time with UTC offset, empty when unknown) is always the 15th column.
-const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp";
+// The speed trend follows (v1.10+, SpeedTrend.h): EntryMph and ExitMph at the two speed lines, AccelMphPerSec (+ speeding
+// up), Trend (decelerating, steady, accelerating or rapid) and MphIn20ft, the speed projected 20 ft past the exit line.
+// All five are empty when the trend can't be told.  Readers of the older 15 columns ignore them.
+const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, "
+	"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft";
+
+// The five speed-trend cells of a stats row (see statsHeader), "" in each when unknown.
+string trendCells(const vst::SpeedTrend& t){
+	if (!t.known()) return ", , , , ";
+	char buf[128];
+	snprintf(buf, sizeof buf, "%d, %d, %.1f, %s, %d", int(t.entryMph + 0.5), int(t.exitMph + 0.5), t.accelMphPerSec,
+		vst::trendName(t.trend), int(t.projectedMph + 0.5));
+	return buf;
+}
 
 // Reads the next frame and scales it to the 1280x720 canvas every config coordinate refers to, so cameras that record
 // 1080p, 4K or 640x480 work with the same VST.cfg geometry, then levels it (levelDegrees).  Returns false at end of video or on a read error.
@@ -1085,11 +1098,20 @@ void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed, const str
 #ifdef VST_EMBEDDED
 	if (hooks && hooks->onVehicle)
 		hooks->onVehicle({ leftToRight, wrongWay, compass, estSpeed, frameNumber, v.getTrackStartFrame(), v.getTrackEndFrame(),
-			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp });
+			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp, v.getSpeedTrend() });
 #else
 	(void)v;
 	(void)timestamp;
 #endif
+}
+
+// The trace file's line for a speed trend: "accelerating  in 22 out 28 mph  +5.3 +- 1.1 mph/s  31 mph in 20 ft  (11 points)".
+string traceTrend(const vst::SpeedTrend& t){
+	char buf[160];
+	if (!t.known()) snprintf(buf, sizeof buf, "unknown  (%d points, %.2f ft rms, %+.1f +- %.1f mph/s)", t.points, t.rmsFt, t.accelMphPerSec, t.accelSE);
+	else snprintf(buf, sizeof buf, "%s  in %.1f out %.1f mph  %+.1f +- %.1f mph/s  %.1f mph in 20 ft  (%d points, %.2f ft rms)", vst::trendName(t.trend),
+		t.entryMph, t.exitMph, t.accelMphPerSec, t.accelSE, t.projectedMph, t.points, t.rmsFt);
+	return buf;
 }
 
 void logL2Rstats(bool isOK, int index){
@@ -1105,6 +1127,7 @@ void logL2Rstats(bool isOK, int index){
 		<< "   Exit pixel: " << vehiclesGoingRight[index].getTrackEndPixel()
 		<< "   # Pixels: " << vehiclesGoingRight[index].getTrackEndPixel() - vehiclesGoingRight[index].getTrackStartPixel()
 		<< "             Est speed: " << estSpeed
+		<< endl << "         Trend: " << traceTrend(vehiclesGoingRight[index].getSpeedTrend())
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
 	if (countVehicle(isOK, vehiclesGoingRight[index], estSpeed, true)){  // timed, clean track, and at least minLoggedSpeed
@@ -1120,7 +1143,7 @@ void logL2Rstats(bool isOK, int index){
 			<< vehiclesGoingRight[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingRight[index].getSpeedTrend()) << endl;
 		reportVehicle(true, vehiclesGoingRight[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingRight[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
@@ -1175,6 +1198,7 @@ void logR2Lstats(bool isOK, int index){
 		<< "   End pixel: " << vehiclesGoingLeft[index].getTrackEndPixel()
 		<< "   # Pixels: " << vehiclesGoingLeft[index].getTrackStartPixel() - vehiclesGoingLeft[index].getTrackEndPixel()
 		<< "             Est speed: " << estSpeed
+		<< endl << "         Trend: " << traceTrend(vehiclesGoingLeft[index].getSpeedTrend())
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
 	if (countVehicle(isOK, vehiclesGoingLeft[index], estSpeed, false)){  // timed, clean track, and at least minLoggedSpeed
@@ -1190,7 +1214,7 @@ void logR2Lstats(bool isOK, int index){
 			<< vehiclesGoingLeft[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingLeft[index].getSpeedTrend()) << endl;
 		reportVehicle(false, vehiclesGoingLeft[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingLeft[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());

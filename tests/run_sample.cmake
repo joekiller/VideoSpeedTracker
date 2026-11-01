@@ -6,9 +6,12 @@
 # arm64 SIMD differences) lives in compare_vehicles.cmake, shared with the companion API test.
 #
 # The baseline was recorded before the csv gained its Flag and Timestamp columns, so those are
-# checked on their own: the header must be the current one, every row must have all 15 columns,
+# checked on their own: the header must be the current one, every row must have all 20 columns,
 # Date/Time must be the Foscam name's 20160130, 172251, and Timestamp must be the name's start
 # time plus the row's Frame at 30 fps, with a UTC offset (whatever this machine's zone is).
+# The speed trend columns (SpeedTrend.h) likewise: all five empty or all set, Trend one of the four names, EntryMph and
+# ExitMph averaging estSpeed (each rounded, so within 1 of 2 x estSpeed together), a steady car projected at its exit
+# speed, and a trend for at least 50 of the 61 cars (58 on x86-64 when this was written).
 #
 # Then the run manifest beside the csv (run_manual_20160130172251.json; see writeManifest() in videoSpeedTracker.cpp):
 # complete, as many vehicles logged as the baseline has rows (61), the calibration and zone from bin/VST.cfg, and
@@ -33,7 +36,7 @@ if(NOT rc EQUAL 0)
 endif()
 
 # The time columns of this run (see the note at the top).
-set(HEADER "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp")
+set(HEADER "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft")
 file(STRINGS ${CSV} lines)
 list(GET lines 0 got_header)
 if(NOT got_header STREQUAL HEADER)
@@ -41,13 +44,38 @@ if(NOT got_header STREQUAL HEADER)
 endif()
 list(REMOVE_AT lines 0)
 set(time_errors "")
+set(trends 0)
 foreach(line IN LISTS lines)
   # Split on "," and trim, rather than on ", ", so an empty last column still counts as a column.
   string(REPLACE "," ";" fields "${line}")
   list(LENGTH fields n_fields)
-  if(NOT n_fields EQUAL 15)
-    string(APPEND time_errors "  ${n_fields} columns, expected 15: ${line}\n")
+  if(NOT n_fields EQUAL 20)
+    string(APPEND time_errors "  ${n_fields} columns, expected 20: ${line}\n")
     continue()
+  endif()
+  set(cells "")
+  foreach(i 12 15 16 17 18 19)
+    list(GET fields ${i} c)
+    string(STRIP "${c}" c)
+    list(APPEND cells "${c}")
+  endforeach()
+  list(GET cells 0 speed)
+  list(GET cells 1 entry)
+  list(GET cells 2 exit)
+  list(GET cells 3 accel)
+  list(GET cells 4 trend)
+  list(GET cells 5 in20)
+  if(trend STREQUAL "")
+    if(NOT "${entry}${exit}${accel}${in20}" STREQUAL "")
+      string(APPEND time_errors "  trend unknown but other trend cells set: ${line}\n")
+    endif()
+  else()
+    math(EXPR trends "${trends} + 1")
+    math(EXPR off "${entry} + ${exit} - 2 * ${speed}")
+    if(NOT trend MATCHES "^(decelerating|steady|accelerating|rapid)$" OR NOT accel MATCHES "^-?[0-9]+\\.[0-9]$"
+       OR off GREATER 1 OR off LESS -1 OR (trend STREQUAL "steady" AND NOT in20 EQUAL exit))
+      string(APPEND time_errors "  bad trend cells (${entry} ${exit} ${accel} ${trend} ${in20} for ${speed} mph): ${line}\n")
+    endif()
   endif()
   list(GET fields 0 date)
   list(GET fields 1 time)
@@ -73,8 +101,11 @@ foreach(line IN LISTS lines)
     string(APPEND time_errors "  frame ${frame}: Date/Time ${date} ${time}, Timestamp ${stamp}; expected 20160130 172251, ${want}+hh:mm\n")
   endif()
 endforeach()
+if(trends LESS 50)
+  string(APPEND time_errors "  only ${trends} rows have a speed trend, expected at least 50\n")
+endif()
 if(time_errors)
-  message(FATAL_ERROR "Time columns are wrong in ${CSV}:\n${time_errors}")
+  message(FATAL_ERROR "Time or trend columns are wrong in ${CSV}:\n${time_errors}")
 endif()
 
 compare_vehicles(${BASELINE} ${CSV})

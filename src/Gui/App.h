@@ -73,6 +73,10 @@ struct ResultRow {
 	bool flagged = false;
 	double fps = 30;
 	std::string time;
+	// Speed trend (SpeedTrend.h): "decelerating", "steady", "accelerating", "rapid", or "" when not known.
+	std::string trend;
+	int entryMph = 0, exitMph = 0, mphIn20ft = 0;
+	double accel = 0;           // mph/s
 };
 
 class App {

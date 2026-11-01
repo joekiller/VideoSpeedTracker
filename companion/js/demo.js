@@ -239,7 +239,22 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       frames, startFrame: frame - frames - 30, endFrame: frame - 30, fps: 30,
       snapshot: `/api/vehicles/${id}/snapshot.jpg`,
       clip: withClip ? `/api/vehicles/${id}/clip.mp4` : null,
+      trend: makeTrend(speed),
     };
+  }
+
+  /**
+   * A speed trend like VST's (SpeedTrend.h): mostly steady, some easing off or pulling away, a few flooring it, and
+   * one in ten that couldn't be told (null). Over a 20 ft zone; entry and exit average the speed.
+   */
+  function makeTrend(speed) {
+    if (rand() < 0.1) return null;
+    const accel = Math.round((gauss(rand) * 2.6 + (rand() < 0.06 ? 7 : 0)) * 10) / 10;
+    const kind = accel <= -2 ? 'decelerating' : accel >= 6 ? 'rapid' : accel >= 2 ? 'accelerating' : 'steady';
+    const fps2 = 5280 / 3600, secs = 20 / (speed * fps2), dv = accel * secs;
+    const entry = Math.round(speed - dv / 2), exit = Math.round(speed + dv / 2);
+    const v20 = Math.sqrt(Math.max((exit * fps2) ** 2 + 2 * accel * fps2 * 20, 0)) / fps2;
+    return { kind, entry, exit, accel, in20ft: kind === 'steady' ? exit : Math.round(v20) };
   }
 
   /** A plausible pass: mostly legal direction near the limit, ~2% the wrong way (who also tend to be quick). */

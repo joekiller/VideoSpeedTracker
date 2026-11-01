@@ -3,7 +3,7 @@
  * drivers; new passes slide in live. `#/passes/<id>` shows one pass with its clip, the facts behind
  * the number, and (when sharing is on) Share buttons.
  */
-import { html, $, $$, sign, band, arrow, clock, dayLabel, dateLong, icon, passPills, BAND_LABEL, toast, sheet } from '../ui.js';
+import { html, $, $$, sign, band, arrow, clock, dayLabel, dateLong, icon, passPills, trendOf, BAND_LABEL, toast, sheet } from '../ui.js';
 import { passCard, shareCanvas, shareClip, sharingOn } from '../share.js';
 
 let filter = 'all';
@@ -80,6 +80,7 @@ async function detail({ vst, view, go }, id) {
   const over = v.speed - st.speedLimit;
   const title = v.wrongWay ? 'Wrong-way driver' : over > 0 ? `${over} mph over the limit` : 'Within the limit';
   const clip = vst.media(v.clip), snap = vst.media(v.snapshot);
+  const tr = trendOf(v);
 
   view.innerHTML = html`
     <div class="detail">
@@ -97,6 +98,10 @@ async function detail({ vst, view, go }, id) {
       </div>
       <div class="list">
         <div class="item"><div class="label"><b>Speed</b><small>${BAND_LABEL[b]}${v.wrongWay && v.speeding ? ', and speeding' : ''}</small></div><div class="value">${v.speed} mph · limit ${st.speedLimit}</div></div>
+        <div class="item"><div class="label"><b>Speed change</b><small>${tr ? `${v.trend.entry} mph at the first line, ${v.trend.exit} at the second` : 'Not seen clearly enough to tell'}</small></div>
+          <div class="value">${tr ? html`<span class="pill ${tr.cls}">${icon(tr.icon)}${tr.label}</span>` : '—'}</div></div>
+        ${tr ? html`<div class="item"><div class="label"><b>20 ft further on</b><small>At ${v.trend.accel > 0 ? '+' : ''}${v.trend.accel} mph per second${tr.kind === 'steady' ? ', too little to count' : ''}</small></div>
+          <div class="value">${v.trend.in20ft === 0 ? 'Stopped' : `About ${v.trend.in20ft} mph`}</div></div>` : ''}
         <div class="item"><div class="label"><b>Direction</b><small>${v.dir === 'L2R' ? 'Left to right' : 'Right to left'} on screen</small></div><div class="value row" style="gap:6px">${v.compass}-bound ${arrow(v.dir)}</div></div>
         <div class="item"><div class="label"><b>Time in speed zone</b><small>How the speed is worked out</small></div><div class="value">${v.frames} frames · ${secs.toFixed(2)} s</div></div>
         <div class="item"><div class="label"><b>Vehicle size</b><small>Relative area on screen</small></div><div class="value">${v.large ? 'Large · ' : ''}${v.area}</div></div>

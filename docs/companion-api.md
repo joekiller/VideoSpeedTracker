@@ -137,7 +137,8 @@ Logged passes, newest first. All parameters are optional: `since` returns only i
     "endFrame": 6224,
     "fps": 30,
     "snapshot": "/api/vehicles/1042/snapshot.jpg",
-    "clip": "/api/vehicles/1042/clip.mp4"
+    "clip": "/api/vehicles/1042/clip.mp4",
+    "trend": { "kind": "accelerating", "entry": 35, "exit": 41, "accel": 4.6, "in20ft": 43 }
   }
 ]
 ```
@@ -146,6 +147,10 @@ Logged passes, newest first. All parameters are optional: `since` returns only i
 * `wrongWay` is true when `legalDirection` is not `both` and `dir` differs from it.
 * `speeding` is `speed > speedLimit`; `egregious` is `speed >= egregious`.
 * `frames` is the number of frames the vehicle took to cross the speed zone, measured at `fps`.
+* `trend` is how the speed changed through the zone ([speed-trend.md](speed-trend.md)), or `null` when VST couldn't
+  tell: `kind` is `decelerating`, `steady`, `accelerating` or `rapid`; `entry` and `exit` are the mph at the two speed
+  lines (they average `speed`); `accel` is mph per second (+ speeding up, one decimal); `in20ft` is the mph projected
+  20 ft past the exit line (`exit` when steady, 0 if it would stop). The same as the csv's last five columns.
 * `clip` is a short (2-4 s) mp4 of the analysis-box strip from entry to exit, or `null` when none is
   kept (for example after a restart). `snapshot` is always present.
 
@@ -383,11 +388,12 @@ The session's stats csv, same columns as the command-line `stats_*.csv`. `404` `
 first run.
 
 ```
-Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft
 ```
 
 `Flag` is `*****` for an implausible speed, else empty. `Timestamp` is when the vehicle passed, ISO 8601 with the
-UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The columns are described
+UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The last five are the speed
+trend (the vehicle's `trend`), all empty when it's `null`. The columns are described
 in the [README](../README.md#the-stats-csv).
 
 ### `GET /api/report.html?from=YYYY-MM-DD&to=YYYY-MM-DD`
