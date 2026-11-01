@@ -154,7 +154,7 @@ p { margin: 0 0 12px; color: var(--text-2); text-wrap: pretty; }   /* no one-wor
   text-decoration: none; transition: transform .08s, background .15s;
 }
 .btn:active { transform: scale(.97); }
-.btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.btn svg { flex: none; width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .btn.danger { color: var(--bad); }
 .btn.ghost { background: transparent; border-color: transparent; }
@@ -309,6 +309,54 @@ p { margin: 0 0 12px; color: var(--text-2); text-wrap: pretty; }   /* no one-wor
 .editor .handle { cursor: grab; }
 .editor .handle:active { cursor: grabbing; }
 .editor .tool-hint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); }
+/* Zoomable editors (js/touch.js): the picture and overlay live in .zoom-stage, which is scaled and shifted; controls and
+   the loupe sit above it and stay put. overflow is clipped on phones too, or a zoomed stage would spill over the page. */
+.editor.zoomable { overflow: hidden; }
+.editor .zoom-stage { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+.zoom-ctl { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.zoom-ctl > :first-child { margin-right: auto; }
+.zoom-ctl button[data-z] {
+  width: 44px; height: 40px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--text);
+  font-size: 22px; font-weight: 600; line-height: 1; cursor: pointer; display: grid; place-items: center;
+}
+.zoom-ctl button[data-z]:disabled { opacity: .35; }
+.zoom-ctl button[data-z] svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.zoom-badge:not(:empty) {
+  position: absolute; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 8px; background: rgba(11,13,16,.72); color: #fff;
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.loupe {
+  position: absolute; top: 8px; right: 8px; width: 120px; height: 120px; border-radius: 50%; overflow: hidden; z-index: 3;
+  border: 3px solid #fff; box-shadow: 0 6px 20px rgba(0,0,0,.5); background: #000; pointer-events: none;
+}
+.loupe.left { right: auto; left: 8px; }
+.loupe svg { width: 100%; height: 100%; display: block; }
+.loupe[hidden] { display: none; }
+
+/* Part picker + arrows under an editor: pick what to move, then nudge it a pixel at a time. */
+.parts { display: flex; gap: 6px; overflow-x: auto; padding: 2px 16px 6px; margin: 10px -16px 0; scrollbar-width: none; }
+.parts::-webkit-scrollbar { display: none; }
+.parts button {
+  flex: none; min-height: 40px; padding: 0 12px; border-radius: 20px; border: 1.5px solid var(--line-strong); background: var(--surface);
+  font-size: 13px; font-weight: 600; color: var(--text-2); cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+}
+.parts button i { width: 10px; height: 10px; border-radius: 50%; flex: none; box-shadow: 0 0 0 1px rgba(0,0,0,.3); }
+.parts button[aria-pressed="true"] { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.fine { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.fine .grow small { display: block; color: var(--muted); font-size: 12px; }
+.nudge { display: grid; grid-template-columns: repeat(4, 48px); gap: 6px; flex: none; }
+.nudge button {
+  width: 48px; height: 48px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--surface-2); cursor: pointer;
+  display: grid; place-items: center; touch-action: none; -webkit-user-select: none; user-select: none;
+}
+.nudge button:active { background: var(--surface-3); }
+.nudge button:disabled { opacity: .3; }
+.nudge svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.ruler-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.ruler-tools .seg { flex: 1; min-width: 0; }
+.btn.small { min-height: 40px; padding: 0 12px; font-size: 13px; }
+details > summary { padding: 8px 0; cursor: pointer; }   /* a finger-sized target for the disclosure */
+
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 10px 0; font-size: 13px; color: var(--text-2); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 14px; height: 3px; border-radius: 2px; }
