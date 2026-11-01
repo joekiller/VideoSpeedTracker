@@ -1,6 +1,7 @@
 #include "Settings.h"
 #include "UserPaths.h"
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -264,15 +265,18 @@ void AppPrefs::load() {
 	auto b = [&](const char* k, bool& f) { if (kv.count(k)) f = kv[k] == "1" || kv[k] == "true"; };
 	str("config", configPath); str("source", lastSource); str("site", siteName); str("remoteToken", remoteToken);
 	str("remoteAddress", remoteAddress);
-	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor);
+	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor); str("calibratedLines", calibratedLines);
 	str("planNote", planNote); str("planCalSig", planCalSig); i("planSource", planSource); d("planCarLengths", planCarLengths);
 	i("speedLimit", speedLimit); i("egregious", egregious); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
 	i("remotePort", remotePort); i("keepVideoGB", keepVideoGB); i("planPreset", planPreset);
 	b("realtime", realtime); b("highlights", highlights); b("trace", trace); b("showMotion", showMotion);
 	b("guideDone", guideDone); b("remote", remoteEnabled);
+	// Before the key existed, someone past the guide had been through step 2.
+	if (kv.count("planConfirmed")) b("planConfirmed", planConfirmed); else planConfirmed = guideDone;
 	d("planHfov", planHfov); d("planWidth", planWidth); d("planFps", planFps); d("planShutter", planShutter);
 	d("planDist", planDist); d("planClear", planClear); d("planCalib", planCalib); d("planCarLen", planCarLen);
-	d("siteLat", siteLat); d("siteLon", siteLon); d("calcHeightFt", calcHeightFt); d("calcYawDeg", calcYawDeg);
+	d("siteLat", siteLat); d("siteLon", siteLon); d("planCamLat", planCamLat); d("planCamLon", planCamLon);
+	str("planStreet", planStreet); str("planDraft", planDraft); b("planAutosave", planAutosave); d("calcHeightFt", calcHeightFt); d("calcYawDeg", calcYawDeg);
 	if (remoteToken.empty()) remoteToken = newToken();
 }
 
@@ -284,7 +288,9 @@ std::string AppPrefs::newToken() {
 	return t;
 }
 
-void AppPrefs::save() const {
+void AppPrefs::save() const { writeAtomic(file(), render()); }   // holds the pairing token: never leave it truncated
+
+std::string AppPrefs::render() const {
 	std::ostringstream out;
 	out << "# VST Studio preferences\n"
 		<< "config = " << configPath << "\nsource = " << lastSource << "\nsite = " << siteName << "\n"
@@ -297,14 +303,86 @@ void AppPrefs::save() const {
 		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nplanSource = " << planSource
 		<< "\nplanNote = " << planNote << "\nplanCalSig = " << planCalSig << "\nplanCarLengths = " << planCarLengths
 		<< "\ncalcHeightFt = " << calcHeightFt << "\ncalcYawDeg = " << calcYawDeg << "\nzonesFor = " << zonesFor
-		<< "\nsiteLat = " << std::setprecision(10) << siteLat << "\nsiteLon = " << siteLon << std::setprecision(6)
-		<< "\ncalibratedFor = " << calibratedFor << "\n";
+		<< "\nsiteLat = " << std::setprecision(10) << siteLat << "\nsiteLon = " << siteLon
+		<< "\nplanCamLat = " << planCamLat << "\nplanCamLon = " << planCamLon << std::setprecision(6)
+		<< "\nplanStreet = " << planStreet << "\nplanAutosave = " << planAutosave << "\nplanDraft = " << planDraft
+		<< "\ncalibratedFor = " << calibratedFor << "\ncalibratedLines = " << calibratedLines << "\nplanConfirmed = " << planConfirmed << "\n";
 	for (auto& r : recent) out << "recent = " << r << "\n";
-	writeAtomic(file(), out.str());   // holds the pairing token: never leave it truncated
+	return out.str();
 }
 
 void AppPrefs::addRecent(const std::string& path) {
 	recent.erase(std::remove(recent.begin(), recent.end(), path), recent.end());
 	recent.insert(recent.begin(), path);
 	if (recent.size() > 8) recent.resize(8);
+}
+
+// ---- Pick your spot's plan as one value ----------------------------------------------------------------------
+
+PlanState PlanState::of(const AppPrefs& p) {
+	PlanState s;
+	s.dist = p.planDist; s.clear = p.planClear; s.hfov = p.planHfov; s.width = p.planWidth; s.fps = p.planFps;
+	s.shutter = p.planShutter; s.carLen = p.planCarLen; s.carLengths = p.planCarLengths;
+	s.preset = p.planPreset; s.source = p.planSource; s.speedLimit = p.speedLimit; s.note = p.planNote;
+	s.camLat = p.planCamLat; s.camLon = p.planCamLon; s.laneLat = p.siteLat; s.laneLon = p.siteLon; s.street = p.planStreet;
+	return s;
+}
+
+void PlanState::store(AppPrefs& p) const {
+	p.planDist = dist; p.planClear = clear; p.planHfov = hfov; p.planWidth = width; p.planFps = fps;
+	p.planShutter = shutter; p.planCarLen = carLen; p.planCarLengths = carLengths;
+	p.planPreset = preset; p.planSource = source; p.speedLimit = speedLimit; p.planNote = note;
+	p.planCamLat = camLat; p.planCamLon = camLon; p.siteLat = laneLat; p.siteLon = laneLon; p.planStreet = street;
+}
+
+bool PlanState::same(const PlanState& o) const {
+	auto eq = [](double a, double b) { return std::fabs(a - b) <= 1e-5 * std::max(1.0, std::fabs(a)); };
+	return eq(dist, o.dist) && eq(clear, o.clear) && eq(hfov, o.hfov) && eq(width, o.width) && eq(fps, o.fps)
+		&& eq(shutter, o.shutter) && eq(carLen, o.carLen) && eq(carLengths, o.carLengths) && preset == o.preset
+		&& source == o.source && speedLimit == o.speedLimit && note == o.note && eq(camLat, o.camLat) && eq(camLon, o.camLon)
+		&& eq(laneLat, o.laneLat) && eq(laneLon, o.laneLon) && street == o.street;
+}
+
+std::string PlanState::serialize() const {
+	// '|' separates the pairs, so it can't appear in the two free-text fields (a street name never has one).
+	auto clean = [](std::string t) { std::replace(t.begin(), t.end(), '|', '/'); return t; };
+	std::ostringstream o;
+	o << std::setprecision(12) << "dist=" << dist << "|clear=" << clear << "|hfov=" << hfov << "|width=" << width << "|fps=" << fps
+		<< "|shutter=" << shutter << "|carLen=" << carLen << "|carLengths=" << carLengths << "|preset=" << preset
+		<< "|source=" << source << "|speedLimit=" << speedLimit << "|camLat=" << camLat << "|camLon=" << camLon
+		<< "|laneLat=" << laneLat << "|laneLon=" << laneLon << "|note=" << clean(note) << "|street=" << clean(street);
+	return o.str();
+}
+
+bool PlanState::parse(const std::string& line) {
+	if (line.empty()) return false;
+	PlanState s = *this;
+	std::istringstream in(line);
+	std::string pair;
+	int n = 0;
+	while (std::getline(in, pair, '|')) {
+		size_t eq = pair.find('=');
+		if (eq == std::string::npos) continue;
+		std::string k = pair.substr(0, eq), v = pair.substr(eq + 1);
+		try {
+			if (k == "note") s.note = v;
+			else if (k == "street") s.street = v;
+			else if (k == "preset") s.preset = std::stoi(v);
+			else if (k == "source") s.source = std::stoi(v);
+			else if (k == "speedLimit") s.speedLimit = std::stoi(v);
+			else {
+				double d = std::stod(v);
+				double* f = k == "dist" ? &s.dist : k == "clear" ? &s.clear : k == "hfov" ? &s.hfov : k == "width" ? &s.width
+					: k == "fps" ? &s.fps : k == "shutter" ? &s.shutter : k == "carLen" ? &s.carLen : k == "carLengths" ? &s.carLengths
+					: k == "camLat" ? &s.camLat : k == "camLon" ? &s.camLon : k == "laneLat" ? &s.laneLat : k == "laneLon" ? &s.laneLon : nullptr;
+				if (!f) continue;
+				*f = d;
+			}
+			n++;
+		}
+		catch (...) { return false; }
+	}
+	if (n == 0) return false;
+	*this = s;
+	return true;
 }

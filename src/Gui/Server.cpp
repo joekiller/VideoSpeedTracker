@@ -2,6 +2,7 @@
 #include "Server.h"
 #include "App.h"
 #include "Settings.h"
+#include "Icons.h"
 #include "Theme.h"
 #include "UserPaths.h"
 #include <imgui.h>
@@ -104,16 +105,21 @@ json vehicleJson(const Vehicle& v) {
 	};
 }
 
-// Step 2's site planner for the phone (GET/PUT /api/plan): the street as it stands (and where it came from), the
-// presets, the camera the plan assumes, the verdict in the same words as the desktop, and what the calibration
-// measured.  Lengths in feet, rounded to 0.1.
+// Step 2's site planner for the phone (GET/PUT /api/plan).  It shows Pick your spot's draft, the same one the desktop
+// page previews (App::planDraft_): the street as it stands and where it came from, the presets, the camera the plan
+// assumes, the verdict in the desktop's words, what the calibration measured, and what saving would change (`dirty`,
+// `changes`, `saved`).  Lengths in feet, rounded to 0.1.
 json planJson(App& app) {
 	app.syncPlanFromCalibration(false);
+	app.planSync();
 	auto r1 = [](double v) { return std::round(v * 10) / 10; };
-	const AppPrefs& p = app.prefs;
-	plan::Inputs in = app.planInputs();
-	plan::Source src = plan::Source(std::clamp(p.planSource, 0, 3));
-	plan::Verdict v = plan::verdict(in, app.cfg.g.subFrameTiming != 0);
+	const PlanState& d = app.planDraft_.plan;
+	const PlanState saved = app.planSaved();
+	plan::Inputs in = App::planInputs(d);
+	plan::Source src = plan::sourceOf(d.source);
+	bool shortOn = app.cfg.g.subFrameTiming != 0 || app.planDraft_.shortView;
+	plan::Verdict v = plan::verdict(in, shortOn);
+	plan::Verdict sv = plan::verdict(App::planInputs(saved), app.cfg.g.subFrameTiming != 0);
 	json presets = json::array();
 	for (const plan::StreetPreset& sp : plan::kStreetPresets)
 		presets.push_back({ { "key", sp.key }, { "name", sp.name }, { "hint", sp.hint }, { "distFt", sp.distFt }, { "clearFt", sp.clearFt } });
@@ -122,29 +128,55 @@ json planJson(App& app) {
 	json measured = nullptr;
 	if (app.planFromCalibration(m, how)) measured = { { "coverFt", r1(m.coverFt) }, { "clearFt", r1(m.clearFt) }, { "how", how } };
 	bool finite = std::isfinite(v.at.total);
+	json map = nullptr;
+	if (d.camLat != 0 || d.camLon != 0) {
+		plan::MapPick mp;
+		mp.camLat = d.camLat; mp.camLon = d.camLon; mp.laneLat = d.laneLat; mp.laneLon = d.laneLon;
+		plan::MapResult mr = plan::fromMap(mp);
+		map = { { "camLat", d.camLat }, { "camLon", d.camLon }, { "laneLat", d.laneLat }, { "laneLon", d.laneLon }, { "street", d.street },
+			{ "distFt", r1(mr.distM * plan::kFt) }, { "facing", plan::compass8(mr.facingDeg) } };
+	}
+	const Globals& g = app.cfg.g;
+	const App::PlanDraft& pd = app.planDraft_;
 	return json{
-		{ "street", { { "distFt", r1(p.planDist * plan::kFt) }, { "clearFt", r1(p.planClear * plan::kFt) },
-			{ "coverFt", r1(plan::coverAt(p.planDist, p.planHfov) * plan::kFt) }, { "source", plan::sourceKey(src) },
-			{ "sourceName", plan::sourceName(src) }, { "note", p.planNote }, { "speedLimit", p.speedLimit } } },
+		{ "street", { { "distFt", r1(d.dist * plan::kFt) }, { "clearFt", r1(d.clear * plan::kFt) },
+			{ "coverFt", r1(plan::coverAt(d.dist, d.hfov) * plan::kFt) }, { "source", plan::sourceKey(src) },
+			{ "sourceName", plan::sourceName(src) }, { "note", d.note }, { "speedLimit", d.speedLimit } } },
 		{ "presets", presets },
-		{ "camera", { { "hfov", p.planHfov }, { "width", p.planWidth }, { "fps", p.planFps }, { "shutter", p.planShutter } } },
+		{ "camera", { { "hfov", d.hfov }, { "width", d.width }, { "fps", d.fps }, { "shutter", d.shutter } } },
 		{ "verdict", { { "grade", v.grade }, { "label", plan::gradeName(v.grade) }, { "text", plan::verdictText(v) },
 			{ "checkMph", v.checkMph }, { "errorMph", finite ? json(r1(v.at.total)) : json(nullptr) }, { "zoneFt", r1(v.at.zone * plan::kFt) },
 			{ "shortView", v.shortView }, { "fastest", v.fastestMph > 0 ? json(plan::fastestText(v.fastestMph)) : json(nullptr) },
 			{ "fastest60", v.fastest60 > 0 ? json(plan::fastestText(v.fastest60)) : json(nullptr) },
-			{ "frameRate", p.planFps < 24 ? json(app.frameRateAdvice(p.planFps)) : json(nullptr) } } },
+			{ "frameRate", d.fps < 24 ? json(app.frameRateAdvice(d.fps)) : json(nullptr) } } },
 		{ "measured", measured },
-		{ "carLengths", p.planCarLengths > 0 ? json(r1(p.planCarLengths)) : json(nullptr) },
+		{ "carLengths", d.carLengths > 0 ? json(r1(d.carLengths)) : json(nullptr) },
 		{ "picture", app.planPictureAvailable() },
 		{ "typicalCarFt", plan::kTypicalCarFt },
+		{ "map", map },
+		// One-way and compass as they will be once saved (the map can set them).
+		{ "legalDirection", lowerDir(pd.legal.empty() ? g.LegalDirection : pd.legal) },
+		{ "L2RDirection", pd.l2r.empty() ? g.L2RDirection : pd.l2r }, { "R2LDirection", pd.r2l.empty() ? g.R2LDirection : pd.r2l },
+		{ "shortViewOnSave", pd.shortView },
+		{ "dirty", app.planDirty() },
+		{ "changes", app.planChanges() },
+		{ "autosave", app.prefs.planAutosave },
+		{ "saved", { { "distFt", r1(saved.dist * plan::kFt) }, { "clearFt", r1(saved.clear * plan::kFt) }, { "speedLimit", saved.speedLimit },
+			{ "source", plan::sourceKey(plan::sourceOf(saved.source)) }, { "grade", sv.grade }, { "label", plan::gradeName(sv.grade) },
+			{ "text", plan::verdictText(sv) } } },
 	};
 }
 
-// One change at a time, the way the desktop makes them: a preset ({"preset": "narrow"}), typed numbers
-// ({"distFt", "clearFt"}, either or both), car lengths across the picture ({"carLengths": 6}), or back to what the
-// calibration measured ({"useMeasured": true}).  Returns the problems in words; empty when it was applied.
+// One change at a time, the way the desktop makes them, into Pick your spot's draft (a preview until saved, unless
+// autosave is on): a preset ({"preset": "narrow"}), typed numbers ({"distFt", "clearFt"}, either or both), the speed
+// limit ({"speedLimit": 20}), car lengths across the picture ({"carLengths": 6}), back to what the calibration measured
+// ({"useMeasured": true}), short-view timing on save ({"shortView": true|false}), or the map's two pins and what
+// OpenStreetMap says about the street there ({"map": {...}}).  Then {"save": true} saves the draft and
+// {"discard": true} drops it; {"autosave": true|false} switches autosave.  Returns the problems in words; empty when
+// it was applied.
 std::vector<std::string> applyPlan(App& app, const json& in) {
-	AppPrefs& p = app.prefs;
+	app.planSync();
+	PlanState& d = app.planDraft_.plan;
 	auto num = [&](const char* k, double& out) {
 		if (!in.contains(k)) return false;
 		if (!in[k].is_number()) throw std::string(k) + " must be a number";
@@ -152,37 +184,72 @@ std::vector<std::string> applyPlan(App& app, const json& in) {
 		return true;
 	};
 	try {
-		double d = 0, c = 0, n = 0;
-		if (in.contains("preset")) {
+		double dd = 0, c = 0, n = 0, lim = 0;
+		if (in.contains("save")) { if (in["save"] == true) app.planCommit(); }
+		else if (in.contains("discard")) { if (in["discard"] == true) app.planDiscard(); }
+		else if (in.contains("autosave")) {
+			if (!in["autosave"].is_boolean()) return { "autosave must be true or false" };
+			app.prefs.planAutosave = in["autosave"].get<bool>();
+			if (app.prefs.planAutosave && app.planDirty()) app.planCommit(true);
+		}
+		else if (in.contains("preset")) {
 			const plan::StreetPreset* sp = in["preset"].is_string() ? plan::findStreetPreset(in["preset"].get<std::string>()) : nullptr;
 			if (!sp) return { "unknown preset" };
-			app.setPlanStreet(sp->distFt / plan::kFt, sp->clearFt / plan::kFt, plan::Source::Guess, sp->name);
+			app.setDraftStreet(sp->distFt / plan::kFt, sp->clearFt / plan::kFt, plan::Source::Guess, sp->name);
 		}
 		else if (num("carLengths", n)) {
 			if (!(n >= 1 && n <= 20)) return { "carLengths must be between 1 and 20" };
+			if (!app.planPictureAvailable()) return { "open a picture of your own street first (step 3): the sample video isn't your street" };
 			const Globals& g = app.cfg.g;
 			bool boxed = app.zonesDone();
 			plan::Measured m = plan::fromCarLengths(n, boxed ? g.AnalysisBoxWidth : 0, boxed ? std::max(0, g.obstruction[1] - g.obstruction[0]) : 0);
-			plan::Inputs pi = app.planInputs();
+			plan::Inputs pi = App::planInputs(d);
 			plan::applyMeasured(pi, m);
 			char note[96];
 			std::snprintf(note, sizeof note, "%.1f car lengths across the picture", n);
-			p.planCarLengths = n;
-			app.setPlanStreet(pi.distM, pi.clearM, plan::Source::Picture, note);
+			d.carLengths = n;
+			app.setDraftStreet(pi.distM, pi.clearM, plan::Source::Picture, note);
 		}
 		else if (in.value("useMeasured", false)) {
 			plan::Measured m;
 			std::string how;
 			if (!app.planFromCalibration(m, how)) return { "there is no calibration for this camera yet (step 5)" };
-			p.planCalSig.clear();
-			app.syncPlanFromCalibration(false);
+			plan::Inputs pi = App::planInputs(d);
+			plan::applyMeasured(pi, m);
+			app.setDraftStreet(pi.distM, pi.clearM, plan::Source::Calibration, "Measured by " + how);
+		}
+		else if (in.contains("shortView")) {
+			if (!in["shortView"].is_boolean()) return { "shortView must be true or false" };
+			app.planDraft_.shortView = in["shortView"].get<bool>();
+			app.planEdited();
+		}
+		else if (in.contains("map")) {
+			const json& mj = in["map"];
+			if (!mj.is_object()) return { "map must be an object" };
+			plan::MapPick mp;
+			auto get = [&](const char* k, double& out) {
+				if (!mj.contains(k)) return;
+				if (!mj[k].is_number()) throw std::string("map.") + k + " must be a number";
+				out = mj[k].get<double>();
+			};
+			get("camLat", mp.camLat); get("camLon", mp.camLon); get("laneLat", mp.laneLat); get("laneLon", mp.laneLon);
+			if (mj.contains("wayBearing") && mj["wayBearing"].is_number()) { mp.haveWay = true; mp.wayBearing = mj["wayBearing"].get<double>(); }
+			if (mj.contains("oneway") && mj["oneway"].is_number()) mp.oneway = std::clamp(mj["oneway"].get<int>(), -1, 1);
+			if (mj.contains("maxspeedMph") && mj["maxspeedMph"].is_number()) mp.maxspeedMph = mj["maxspeedMph"].get<int>();
+			if (mj.contains("street") && mj["street"].is_string()) mp.street = mj["street"].get<std::string>().substr(0, 80);
+			for (double x : { mp.camLat, mp.laneLat }) if (!(x >= -90 && x <= 90)) return { "latitudes must be between -90 and 90" };
+			for (double x : { mp.camLon, mp.laneLon }) if (!(x >= -180 && x <= 180)) return { "longitudes must be between -180 and 180" };
+			std::string why;
+			if (!app.applyMapToDraft(mp, why)) return { why };
 		}
 		else {
-			bool hasD = num("distFt", d), hasC = num("clearFt", c);
-			if (!hasD && !hasC) return { "send preset, distFt/clearFt, carLengths or useMeasured" };
-			if (hasD && !(d >= 3 && d <= 1000)) return { "distFt must be between 3 and 1000" };
+			bool hasD = num("distFt", dd), hasC = num("clearFt", c), hasL = num("speedLimit", lim);
+			if (!hasD && !hasC && !hasL) return { "send preset, distFt/clearFt, speedLimit, carLengths, useMeasured, shortView, map, save, discard or autosave" };
+			if (hasD && !(dd >= 3 && dd <= 1000)) return { "distFt must be between 3 and 1000" };
 			if (hasC && !(c >= 3 && c <= 1000)) return { "clearFt must be between 3 and 1000" };
-			app.setPlanStreet(hasD ? d / plan::kFt : p.planDist, hasC ? c / plan::kFt : p.planClear, plan::Source::Typed, "");
+			if (hasL && !(lim >= 5 && lim <= 80)) return { "speedLimit must be between 5 and 80" };
+			if (hasD || hasC) app.setDraftStreet(hasD ? dd / plan::kFt : d.dist, hasC ? c / plan::kFt : d.clear, plan::Source::Typed, "");
+			if (hasL) { d.speedLimit = int(std::lround(lim)); app.planEdited(); }
 		}
 	}
 	catch (const std::string& e) { return { e }; }
@@ -377,13 +444,13 @@ void Server::setAddress(const std::string& ip) {
 	ip_ = !ip.empty() && std::find(all.begin(), all.end(), ip) != all.end() ? ip : lanAddress();
 }
 
-bool Server::start(int port) {
+bool Server::start(int port, bool localOnly) {
 	port_ = port;
 	setAddress(app_.prefs.remoteAddress);
 	setToken(app_.prefs.remoteToken);
 	http_ = std::make_unique<httplib::Server>();
 	routes();
-	if (!http_->bind_to_port("0.0.0.0", port)) {
+	if (!http_->bind_to_port(localOnly ? "127.0.0.1" : "0.0.0.0", port)) {
 		error_ = "the port is in use or not allowed";
 		http_.reset();
 		return false;
@@ -633,8 +700,17 @@ void Server::routes() {
 	http_->Put("/api/plan", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
 		json in;
 		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
-		sendPosted(res, app.post([&app, in] {
+		// From this computer it is the map (or the companion page) in a browser here; otherwise the phone.
+		std::string who = req.remote_addr == "127.0.0.1" || req.remote_addr == "::1" ? "from your browser" : "from the phone";
+		sendPosted(res, app.post([&app, in, who] {
 			auto problems = applyPlan(app, in);
+			// Say so on the desktop, so a change from the phone never lands unnoticed in the middle of someone's edit.
+			if (problems.empty()) {
+				if (in.contains("save")) app.toast("Pick your spot was saved " + who + ".", theme::c::ok, ICON_CHECK);
+				else if (in.contains("discard")) app.toast("Pick your spot's changes were discarded " + who + ".", theme::c::dim, ICON_UNDO);
+				else if (!in.contains("autosave") && !app.prefs.planAutosave)
+					app.toast("Pick your spot changed " + who + ": a preview until it's saved.", theme::c::accent2, ICON_BROADCAST);
+			}
 			return json{ { "ok", problems.empty() }, { "problems", problems }, { "plan", planJson(app) } }.dump();
 		}));   // 200 either way, as for PUT /api/config
 	}));

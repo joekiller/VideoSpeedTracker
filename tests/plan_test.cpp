@@ -118,9 +118,59 @@ static void testVerdicts() {
 	CHECK(w.grade == 0);
 	CHECK(verdictText(w).rfind("About ±", 0) == 0);
 	CHECK(std::string(gradeName(w.grade)) == "Good to go");
+	// An upgrade never reads as a downgrade: on a 42 ft / 54 ft street the 60 fps C922 grades at least as well as a
+	// 30 fps phone (60 fps gives enough whole frames for the old timing, but short-view timing does better there).
+	Inputs phone;
+	phone.distM = 42 / kFt; phone.clearM = 54 / kFt;
+	Inputs c922 = phone;
+	c922.hfovDeg = 70; c922.widthPx = 1280; c922.fps = 60; c922.shutter = 1000;
+	Verdict vp = verdict(phone, false), vc = verdict(c922, false);
+	CHECK(vc.grade <= vp.grade);
+	// Heavy blur can't sit under "Good to go".
+	Inputs blur = phone;
+	blur.distM = 20 / kFt; blur.clearM = 20 / kFt; blur.shutter = 60;
+	Verdict vb = verdict(blur, false);
+	CHECK(vb.blurry && vb.grade >= 1);
+	CHECK(verdictText(vb).find("shutter") != std::string::npos);
+}
+
+// Pick your spot's map: distance between the two pins, the camera's facing, the compass headings across the picture
+// and which way a one-way street runs in it.
+void testMap() {
+	using namespace plan;
+	// About 22 ft due east of the camera: a camera looking east sees cars heading south go left to right.
+	MapPick m;
+	m.camLat = 38.0230; m.camLon = -78.4870;
+	m.laneLat = 38.0230; m.laneLon = -78.4870 + 22 / kFt / (111320 * std::cos(38.023 * 3.14159265358979 / 180));
+	MapResult r = fromMap(m);
+	CHECK(r.valid);
+	CHECK(std::fabs(r.distM * kFt - 22) < .3);
+	CHECK(std::string(compass8(r.facingDeg)) == "E");
+	CHECK(r.l2r == "S" && r.r2l == "N");
+	CHECK(r.legal == "Both" && r.speedLimit == 0);
+	// The street runs NE-SW (drawn toward 45 degrees), one-way that way, 25 mph posted: left to right in the picture is
+	// SW-bound here (the nearer of 45/225 to "right" = 180), so the legal NE-bound traffic goes right to left.
+	m.haveWay = true; m.wayBearing = 45; m.oneway = 1; m.maxspeedMph = 25; m.street = "7th 1/2 Street Southwest";
+	r = fromMap(m);
+	CHECK(r.l2r == "SW" && r.r2l == "NE");
+	CHECK(r.legal == "R2L");
+	CHECK(r.speedLimit == 25);
+	m.oneway = -1;   // one-way against the drawn direction: SW-bound, left to right
+	CHECK(fromMap(m).legal == "L2R");
+	// Pins on top of each other, or a mile apart, aren't a placement.
+	MapPick same = m; same.laneLat = same.camLat; same.laneLon = same.camLon;
+	CHECK(!fromMap(same).valid);
+	MapPick far = m; far.laneLat += .01;
+	CHECK(!fromMap(far).valid);
+	CHECK(std::string(compass8(359)) == "N" && std::string(compass8(-90)) == "W" && std::string(compass8(113)) == "SE");
+	CHECK(std::string(sourceName(Source::Map)) == "From the map");
+	Source s;
+	CHECK(sourceFromKey("map", s) && s == Source::Map);
+	CHECK(sourceOf(9) == Source::Guess);
 }
 
 int main() {
+	testMap();
 	testPresets();
 	testSources();
 	testFromCalibration();

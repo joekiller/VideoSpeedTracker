@@ -32,7 +32,8 @@ class Server {
 public:
 	explicit Server(App& app);
 	~Server();
-	bool start(int port);
+	// localOnly listens on 127.0.0.1 only: Pick your spot's map in this computer's browser, with the companion off.
+	bool start(int port, bool localOnly = false);
 	bool running() const { return running_; }
 	const std::string& error() const { return error_; }
 	std::string baseUrl() const;       // http://<lan-ip>:<port>/

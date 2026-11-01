@@ -68,6 +68,14 @@ struct AppPrefs {
 	int planSource = 0;
 	std::string planNote, planCalSig;
 	double planCarLengths = 0;   // the last "car lengths across the picture" estimate (0 = none yet)
+	// Pick your spot's map ("Find it on the map", companion/js/views/map.js): where the camera sits (0, 0 = not placed;
+	// the lane's spot is siteLat/siteLon below) and the street's name there.
+	double planCamLat = 0, planCamLon = 0;
+	std::string planStreet;
+	// Pick your spot edits a draft and saves it only when asked (App::planCommit); planAutosave saves every edit as it
+	// is made instead.  planDraft keeps an unsaved draft across a restart (PlanState::serialize, "" = none).
+	bool planAutosave = false;
+	std::string planDraft;
 	// Mark your street's "Work it out from the camera" (Perspective.h CameraSetup): the camera's height above the road
 	// and how far it is turned from square to the street (+ = toward the right).  Distance and lens come from step 2.
 	double calcHeightFt = 12, calcYawDeg = 0;
@@ -76,10 +84,35 @@ struct AppPrefs {
 	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config
 	// a calibration was applied to.  A step counts as done only for the camera/config it was done for.
 	std::string zonesFor, calibratedFor;
+	std::string calibratedLines;   // speedLineLeft,speedLineRight,AnalysisBoxWidth when calibrated (App::speedLinesSig)
+	bool planConfirmed = false;    // Pick your spot has been saved at least once: step 2's check in the rail
 
 	void load();
 	void save() const;
+	std::string render() const;   // the file's contents as save() would write them
 	void addRecent(const std::string& path);
 	static std::string file();
 	static std::string newToken();   // 24 random base-32 characters (120 bits)
+};
+
+// Everything Pick your spot (step 2) edits, as one value: the planner's street and camera, the speed limit, and what
+// the map placed.  The page keeps a draft of it apart from the saved copy in AppPrefs, so a change is only a preview
+// until it is saved; comparing the two says whether anything is unsaved.
+struct PlanState {
+	double dist = 35 / 3.28084, clear = 50 / 3.28084;          // metres: camera to the moving lane; clear stretch of it
+	double hfov = 66, width = 1920, fps = 30, shutter = 120;   // the camera (shutter is 1/x s)
+	double carLen = 4.8, carLengths = 0;
+	int preset = 0, source = 0, speedLimit = 25;
+	std::string note;
+	double camLat = 0, camLon = 0, laneLat = 0, laneLon = 0;   // the map's two pins (0, 0 = not placed)
+	std::string street;
+
+	static PlanState of(const AppPrefs& p);
+	void store(AppPrefs& p) const;
+	// Equal to within rounding: the ini keeps six significant digits, so a saved value read back differs in the 7th.
+	bool same(const PlanState& o) const;
+	// One line for vst-studio.ini (AppPrefs::planDraft): key=value pairs separated by '|'.  parse() leaves fields the
+	// line doesn't name as they are, and returns false for an empty or unreadable line.
+	std::string serialize() const;
+	bool parse(const std::string& line);
 };

@@ -69,6 +69,8 @@
 #define ICON_FILE_IMPORT    "\xef\x95\xaf"
 #define ICON_ROTATE         "\xef\x8b\xb1"
 #define ICON_SIGNS          "\xef\x89\xb7"
+#define ICON_MAP            "\xef\x89\xb9"
+#define ICON_CART           "\xef\x81\xba"
 #define ICON_ARROW_UP_RIGHT "\xef\x8d\x9d"
 #define ICON_SUN            "\xef\x86\x85"
 #define ICON_CHEVRON_DOWN   "\xef\x81\xb8"

@@ -22,6 +22,8 @@
 #include "App.h"
 #include "Canvas.h"
 #include "Icons.h"
+#include "Server.h"
+#include <GLFW/glfw3.h>
 #include "Theme.h"
 #include <imgui_internal.h>
 #include <algorithm>
@@ -65,16 +67,6 @@ using plan::kMaxTrackMph;
 using plan::grade;
 using Eval = plan::Eval;
 
-plan::Inputs inputs(const AppPrefs& p) {
-	plan::Inputs in;
-	in.distM = p.planDist; in.clearM = p.planClear; in.carLenM = p.planCarLen;
-	in.hfovDeg = p.planHfov; in.widthPx = p.planWidth; in.fps = p.planFps; in.shutter = p.planShutter;
-	in.speedLimit = p.speedLimit;
-	return in;
-}
-
-Eval evaluate(const AppPrefs& p, double mph, bool shortView) { return plan::evaluate(inputs(p), mph, shortView); }
-
 ImU32 gradeColor(int g) { return g == 0 ? c::ok : g == 1 ? c::warn : c::bad; }
 
 void bullet(const char* icon, ImU32 col, const char* head, const char* text) {
@@ -90,7 +82,9 @@ void bullet(const char* icon, ImU32 col, const char* head, const char* text) {
 	ImGui::PushFont(fonts.strong);
 	ImGui::TextUnformatted(head);
 	ImGui::PopFont();
-	ImGui::PushTextWrapPos(0);
+	// Wraps where the caller's wrap is (a column's edge), or else at the window's edge.
+	float wrap = ImGui::GetCurrentWindow()->DC.TextWrapPos;
+	ImGui::PushTextWrapPos(wrap > 0 ? wrap : 0);
 	dimText("%s", text);
 	ImGui::PopTextWrapPos();
 	ImGui::EndGroup();
@@ -157,14 +151,14 @@ void aimSketch(ImVec2 size) {
 }
 
 // Top-down sketch to scale: camera at the bottom, lane across the top, field-of-view cone, clear stretch and zone.
-void planDiagram(const AppPrefs& pr, const Eval& r, const Globals& g, ImVec2 size) {
+void planDiagram(const PlanState& pr, const Eval& r, const Globals& g, ImVec2 size) {
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 	ImVec2 p = ImGui::GetCursorScreenPos();
 	dl->AddRectFilled(p, p + size, c::rgb(0x0E121A), px(10));
 	float laneY = p.y + size.y * .16f, laneH = size.y * .22f, camY = p.y + size.y * .88f;
-	double span = std::max({ r.cover, pr.planClear, 10.0 }) * 1.15;
+	double span = std::max({ r.cover, pr.clear, 10.0 }) * 1.15;
 	float sx = float(size.x / span), cx = p.x + size.x * .5f;
-	float half = float(r.cover / 2 * sx), clearHalf = float(pr.planClear / 2 * sx), zoneHalf = float(r.zone / 2 * sx);
+	float half = float(r.cover / 2 * sx), clearHalf = float(pr.clear / 2 * sx), zoneHalf = float(r.zone / 2 * sx);
 	float laneMid = laneY + laneH * .5f;
 	dl->AddRectFilled(ImVec2(p.x, laneY), ImVec2(p.x + size.x, laneY + laneH), c::rgb(0x2B2F38));
 	dl->AddTriangleFilled(ImVec2(cx, camY), ImVec2(cx - half, laneMid), ImVec2(cx + half, laneMid), alpha(c::accent, .14f));
@@ -177,7 +171,7 @@ void planDiagram(const AppPrefs& pr, const Eval& r, const Globals& g, ImVec2 siz
 		dl->AddLine(ImVec2(cx + zoneHalf, laneY + px(2)), ImVec2(cx + zoneHalf, laneY + laneH - px(2)), c::warn, px(3));
 	}
 	char t[160];
-	snprintf(t, sizeof t, "zone %.0f ft   ·   clear %.0f ft   ·   in frame %.0f ft", r.zone * 3.281, pr.planClear * 3.281, r.cover * 3.281);
+	snprintf(t, sizeof t, "zone %.0f ft   ·   clear %.0f ft   ·   in frame %.0f ft", r.zone * 3.281, pr.clear * 3.281, r.cover * 3.281);
 	ImVec2 ts = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, t);
 	dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(cx - ts.x * .5f, laneY - ts.y - px(4)), c::text, t);
 	// One-way callout on the lane, using the street's configured legal direction.
@@ -192,40 +186,242 @@ void planDiagram(const AppPrefs& pr, const Eval& r, const Globals& g, ImVec2 siz
 		dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(legalL2R ? p.x + px(10) : p.x + size.x - ws.x - px(10), ty), c::wrong, wrong.c_str());
 	}
 	dl->AddCircleFilled(ImVec2(cx, camY), px(7), c::warn);
-	snprintf(t, sizeof t, ICON_CAMERA "  camera, %.0f ft from the lane", pr.planDist * 3.281);
+	snprintf(t, sizeof t, ICON_CAMERA "  camera, %.0f ft from the lane", pr.dist * 3.281);
 	dl->AddText(fonts.caption, fsz(fonts.caption), ImVec2(cx + px(14), camY - px(8)), c::dim, t);
 	ImGui::Dummy(size);
 }
 
+// What each camera tier is, for "Which camera?" (step 1 and step 2): a suggestion, never a sale.  `preset` is the
+// planner's kPresets entry it plans with; the cost and where-to-buy are the hardware notes' (chain stores first).
+struct Tier { const char* name; const char* cost; const char* where; int preset; const char* note; };
+const Tier kTiers[] = {
+	{ "Your phone, as a webcam", "$0", "already in your pocket", 0, "Live, at 30 fps. The easiest start." },
+	{ "Your phone, recording at 60 fps", "$0", "free Blackmagic Camera app", 1, "Record, then open the video here. Fast shutter, great timing." },
+	{ "Logitech C922 webcam", "about $70-100", "Best Buy, Walmart, Staples", 2, "60 fps at 720p; VST sets its shutter for you." },
+	{ "Raspberry Pi 5 + Camera Module 3", "about $150", "online or Micro Center", 8, "Always on, 60 fps, sips power. For later." },
+};
+
+// Short-view timing's settings for a plan.  The tracker works in a 1280-wide frame: pixels a car moves in two frames at
+// the fastest speed it tracks sets its look-ahead (and the margins scaled from it), and a car length sets how far back
+// it looks on entry.  Speed lines go about 7% in from each side of the analysis box, so the bumper is seen before and
+// after the zone.
+void applyShortView(Globals& g, const PlanState& s) {
+	double coverM = plan::coverAt(s.dist, s.hfov);
+	double pxPerM = 1280 / std::max(coverM, .5);
+	int step = int(std::ceil(pxPerM * kMaxTrackMph * kMph * 2 / std::max(s.fps, 1.0)));
+	g.subFrameTiming = 1;
+	g.maxL2RDistOnEntry = g.maxR2LDistOnEntry = std::clamp(step, 75, 1280);
+	g.entryLookBack = std::clamp(int(pxPerM * s.carLen), 250, g.AnalysisBoxWidth);
+	g.speedLineLeft = int(g.AnalysisBoxWidth * .07);
+	g.speedLineRight = g.AnalysisBoxWidth - g.speedLineLeft;
+}
+
+double now() { return glfwGetTime(); }
+
+std::string feet(double m) { char b[32]; snprintf(b, sizeof b, "%.0f ft", m * plan::kFt); return b; }
+
+const char* directionWords(const std::string& legal) { return legal == "L2R" ? "left to right" : legal == "R2L" ? "right to left" : "both ways"; }
+
 }  // namespace
 
+// ---- Pick your spot's draft: preview until saved ------------------------------------------------------------------
+
+plan::Inputs App::planInputs(const PlanState& s) {
+	plan::Inputs in;
+	in.distM = s.dist; in.clearM = s.clear; in.carLenM = s.carLen;
+	in.hfovDeg = s.hfov; in.widthPx = s.width; in.fps = s.fps; in.shutter = s.shutter;
+	in.speedLimit = s.speedLimit;
+	return in;
+}
+
+plan::Inputs App::planInputs() const { return planInputs(planSaved()); }
+
+bool App::planDirty() const {
+	const PlanDraft& d = planDraft_;
+	return !d.plan.same(planSaved()) || d.shortView || !d.legal.empty() || !d.l2r.empty() || !d.r2l.empty() || !d.siteName.empty();
+}
+
+std::vector<std::string> App::planChanges() const {
+	std::vector<std::string> out;
+	const PlanState s = planSaved(), &d = planDraft_.plan;
+	char b[200];
+	auto len = [&](const char* what, double was, double now) {
+		if (std::fabs(was - now) * plan::kFt < .5) return;
+		snprintf(b, sizeof b, "%s: %.0f → %.0f ft", what, was * plan::kFt, now * plan::kFt);
+		out.push_back(b);
+	};
+	len("Window to the lane", s.dist, d.dist);
+	len("Clear stretch", s.clear, d.clear);
+	if (d.source != s.source) out.push_back(std::string("Street numbers: ") + plan::sourceName(plan::sourceOf(s.source)) + " → " + plan::sourceName(plan::sourceOf(d.source)));
+	if (d.speedLimit != s.speedLimit) { snprintf(b, sizeof b, "Speed limit: %d → %d mph", s.speedLimit, d.speedLimit); out.push_back(b); }
+	int n = int(IM_ARRAYSIZE(kPresets));
+	if (d.preset != s.preset || d.hfov != s.hfov || d.fps != s.fps || d.shutter != s.shutter || d.width != s.width) {
+		snprintf(b, sizeof b, "Camera: %s, %.0f fps → %s, %.0f fps", kPresets[std::clamp(s.preset, 0, n - 1)].name, s.fps,
+			kPresets[std::clamp(d.preset, 0, n - 1)].name, d.fps);
+		out.push_back(b);
+	}
+	if (std::fabs(d.carLen - s.carLen) * plan::kFt >= .1) { snprintf(b, sizeof b, "Car length: %.1f → %.1f ft", s.carLen * plan::kFt, d.carLen * plan::kFt); out.push_back(b); }
+	if (d.camLat != s.camLat || d.camLon != s.camLon || d.laneLat != s.laneLat || d.laneLon != s.laneLon || d.street != s.street)
+		out.push_back(d.street.empty() ? std::string("Map: camera and lane pins placed") : "Map: camera and lane pins on " + d.street);
+	if (planDraft_.shortView) out.push_back(cfg.g.subFrameTiming ? "Re-fit short-view timing to this plan (step 4's settings)" : "Turn on short-view timing (step 4's settings)");
+	if (!planDraft_.legal.empty()) out.push_back(std::string("One-way street: legal direction ") + directionWords(planDraft_.legal) + " in the picture");
+	if (!planDraft_.l2r.empty() || !planDraft_.r2l.empty()) {
+		snprintf(b, sizeof b, "Compass: left to right is %s-bound, right to left %s-bound",
+			(planDraft_.l2r.empty() ? cfg.g.L2RDirection : planDraft_.l2r).c_str(), (planDraft_.r2l.empty() ? cfg.g.R2LDirection : planDraft_.r2l).c_str());
+		out.push_back(b);
+	}
+	if (!planDraft_.siteName.empty()) out.push_back("Site name: " + prefs.siteName + " → " + planDraft_.siteName);
+	return out;
+}
+
+// Called at the top of every frame.  The first call picks up a draft kept over a restart.  After that, when the saved
+// plan has moved (a calibration, the lane card on Mark your street, the Live page's limit, the phone saving), each part
+// the draft hasn't touched follows it; a part both changed keeps the draft's value and says the saved plan moved.
+void App::planSync() {
+	PlanState saved = planSaved();
+	if (!planLoaded_) {
+		planLoaded_ = true;
+		planBase_ = planDraft_.plan = saved;
+		PlanState kept = saved;
+		if (kept.parse(prefs.planDraft) && !kept.same(saved)) planDraft_.plan = kept;
+		else prefs.planDraft.clear();
+		return;
+	}
+	if (saved.same(planBase_)) return;
+	PlanState& d = planDraft_.plan;
+	const PlanState& b = planBase_;
+	auto group = [&](auto equal, auto take) {
+		if (equal(d, b)) take(d, saved);          // untouched: follow the saved plan
+		else if (!equal(saved, b)) planMoved_ = true;   // both changed it
+	};
+	auto eq = [](double x, double y) { return std::fabs(x - y) <= 1e-5 * std::max(1.0, std::fabs(x)); };
+	group([&](const PlanState& x, const PlanState& y) { return eq(x.dist, y.dist) && eq(x.clear, y.clear) && x.source == y.source && x.note == y.note && eq(x.carLengths, y.carLengths); },
+		[](PlanState& x, const PlanState& y) { x.dist = y.dist; x.clear = y.clear; x.source = y.source; x.note = y.note; x.carLengths = y.carLengths; });
+	group([&](const PlanState& x, const PlanState& y) { return eq(x.hfov, y.hfov) && eq(x.width, y.width) && eq(x.fps, y.fps) && eq(x.shutter, y.shutter) && x.preset == y.preset; },
+		[](PlanState& x, const PlanState& y) { x.hfov = y.hfov; x.width = y.width; x.fps = y.fps; x.shutter = y.shutter; x.preset = y.preset; });
+	group([&](const PlanState& x, const PlanState& y) { return eq(x.carLen, y.carLen); }, [](PlanState& x, const PlanState& y) { x.carLen = y.carLen; });
+	group([&](const PlanState& x, const PlanState& y) { return x.speedLimit == y.speedLimit; }, [](PlanState& x, const PlanState& y) { x.speedLimit = y.speedLimit; });
+	group([&](const PlanState& x, const PlanState& y) { return eq(x.camLat, y.camLat) && eq(x.camLon, y.camLon) && eq(x.laneLat, y.laneLat) && eq(x.laneLon, y.laneLon) && x.street == y.street; },
+		[](PlanState& x, const PlanState& y) { x.camLat = y.camLat; x.camLon = y.camLon; x.laneLat = y.laneLat; x.laneLon = y.laneLon; x.street = y.street; });
+	planBase_ = saved;
+	prefs.planDraft = planDirty() ? d.serialize() : "";
+}
+
+bool App::planCommit(bool quiet) {
+	PlanDraft& d = planDraft_;
+	bool wasShort = cfg.g.subFrameTiming != 0;
+	bool cfgTouched = d.shortView || !d.legal.empty() || !d.l2r.empty() || !d.r2l.empty();
+	d.plan.store(prefs);
+	prefs.planConfirmed = true;
+	Globals& g = cfg.g;
+	if (d.shortView) applyShortView(g, d.plan);
+	if (!d.l2r.empty()) g.L2RDirection = d.l2r;
+	if (!d.r2l.empty()) g.R2LDirection = d.r2l;
+	if (!d.legal.empty()) g.LegalDirection = d.legal;
+	if (!d.siteName.empty()) prefs.siteName = d.siteName;
+	bool turnedShort = d.shortView && !wasShort;
+	d = PlanDraft{ planSaved() };
+	planBase_ = d.plan;
+	planMoved_ = false;
+	prefs.planDraft.clear();
+	planSavedAt_ = now();
+	if (persist) prefs.save();      // the step's numbers are saved now, not at exit
+	if (cfgTouched && cfg.path().empty()) toast("Saved here. Open a VST.cfg to keep the one-way and short-view settings too.", c::warn, ICON_WARN);
+	if (!quiet) {
+		if (turnedShort) toast("Saved. Short-view timing is on: check the speed lines in step 4, Mark your street, then calibrate.", c::ok, ICON_CHECK);
+		else toast("Pick your spot saved.", c::ok, ICON_CHECK);
+	}
+	return true;
+}
+
+void App::planDiscard() {
+	planDraft_ = PlanDraft{ planSaved() };
+	planBase_ = planDraft_.plan;
+	planMoved_ = false;
+	prefs.planDraft.clear();
+	toast("Changes discarded. Pick your spot is as it was saved.", c::dim, ICON_UNDO);
+}
+
+void App::planEdited() {
+	prefs.planDraft = planDirty() ? planDraft_.plan.serialize() : "";
+}
+
+void App::setDraftStreet(double distM, double clearM, plan::Source source, const std::string& note) {
+	PlanState& d = planDraft_.plan;
+	d.dist = std::max(distM, 1.0);
+	d.clear = std::max(clearM, 1.0);
+	d.source = int(source);
+	d.note = note;
+	planEdited();
+}
+
+bool App::applyMapToDraft(const plan::MapPick& m, std::string& why) {
+	plan::MapResult r = plan::fromMap(m);
+	if (!r.valid) {
+		why = r.distM > 0 ? "the two pins are " + feet(r.distM) + " apart; put one on your window and one in the middle of the lane in front of it"
+			: "place both pins: your window, then the middle of the lane";
+		return false;
+	}
+	PlanState& d = planDraft_.plan;
+	d.camLat = m.camLat; d.camLon = m.camLon; d.laneLat = m.laneLat; d.laneLon = m.laneLon;
+	d.street = m.street;
+	std::string note = "Measured on the map" + (m.street.empty() ? std::string() : ", " + m.street);
+	// The map knows the distance, not what blocks the view; a clear stretch longer than the whole picture is impossible,
+	// so it's capped at the picture's width there.
+	double clear = std::min(d.clear, plan::coverAt(r.distM, d.hfov));
+	setDraftStreet(r.distM, clear, plan::Source::Map, note);
+	if (r.speedLimit) d.speedLimit = r.speedLimit;
+	const Globals& g = cfg.g;
+	planDraft_.l2r = r.l2r != g.L2RDirection ? r.l2r : "";
+	planDraft_.r2l = r.r2l != g.R2LDirection ? r.r2l : "";
+	planDraft_.legal = r.legal != "Both" && r.legal != g.LegalDirection ? r.legal : "";
+	planDraft_.siteName = !m.street.empty() && (prefs.siteName.empty() || prefs.siteName == "My street") ? m.street : "";
+	planEdited();
+	return true;
+}
+
+void App::openMap() {
+	if (!server || !server->running()) {
+		server = std::make_unique<Server>(*this);
+		if (!server->start(prefs.remotePort, true)) {
+			toast("Can't open the map: port " + std::to_string(prefs.remotePort) + " " + server->error() + ". Change the port on the Companion app page.", c::bad, ICON_WARN);
+			server.reset();
+			return;
+		}
+		localServer_ = true;
+	}
+	openWithSystem("http://127.0.0.1:" + std::to_string(prefs.remotePort) + "/#token=" + prefs.remoteToken + "&to=map");
+	toast("The map is opening in your web browser. Drop the two pins, press \"Send to Pick your spot\", then come back here to save.", c::accent2, ICON_MAP);
+}
+
 // Under the planner's verdict on a short view: what short-view timing is, a button that sets it up from the planner's
-// numbers, and the things that go wrong on a narrow street with parked cars.
+// numbers when the draft is saved, and the things that go wrong on a narrow street with parked cars.
 void App::shortViewNote(double coverM, bool on) {
+	(void)coverM;
+	bool pending = planDraft_.shortView;
 	ImGui::PushTextWrapPos(0);
-	if (on) dimText(ICON_CHECK "  Short-view timing is on: VST times each car's front bumper to a fraction of a frame, so it doesn't need a whole car in view.");
+	if (pending) {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+		ImGui::TextWrapped(ICON_INFO "  Short-view timing will be %s when you save.", on ? "re-fitted to this plan" : "turned on");
+		ImGui::PopStyleColor();
+	}
+	else if (on) dimText(ICON_CHECK "  Short-view timing is on: VST times each car's front bumper to a fraction of a frame, so it doesn't need a whole car in view.");
 	else {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::accent));
 		ImGui::TextWrapped(ICON_INFO "  A short view like this is what short-view timing is for: it times each car's front bumper to a fraction of a frame. One click sets it up.");
 		ImGui::PopStyleColor();
 	}
 	ImGui::PopTextWrapPos();
-	if (ghostButton(on ? ICON_SLIDERS "  Re-fit the short-view settings to this plan" : ICON_SLIDERS "  Use short-view timing")) {
-		// The tracker works in a 1280-wide frame: pixels a car moves in two frames at the fastest speed it tracks
-		// sets its look-ahead (and the margins scaled from it), and a car length sets how far back it looks on entry.
-		Globals& g = cfg.g;
-		double pxPerM = 1280 / std::max(coverM, .5);
-		int step = int(std::ceil(pxPerM * kMaxTrackMph * kMph * 2 / std::max(prefs.planFps, 1.0)));
-		g.subFrameTiming = 1;
-		g.maxL2RDistOnEntry = g.maxR2LDistOnEntry = std::clamp(step, 75, 1280);
-		g.entryLookBack = std::clamp(int(pxPerM * prefs.planCarLen), 250, g.AnalysisBoxWidth);
-		// Speed lines about 7% in from each side of the analysis box, so the bumper is seen before and after the zone.
-		g.speedLineLeft = int(g.AnalysisBoxWidth * .07);
-		g.speedLineRight = g.AnalysisBoxWidth - g.speedLineLeft;
-		toast("Short-view timing is on. Check the speed lines in step 4, Mark your street, then calibrate.", c::ok, ICON_CHECK);
+	if (pending) {
+		if (ghostButton(ICON_UNDO "  Don't change the timing")) { planDraft_.shortView = false; planEdited(); }
+	}
+	else if (ghostButton(on ? ICON_SLIDERS "  Re-fit the short-view settings to this plan" : ICON_SLIDERS "  Use short-view timing")) {
+		planDraft_.shortView = true;
+		planEdited();
 	}
 	if (ImGui::IsItemHovered())
-		ImGui::SetTooltip("Turns on subFrameTiming and sets, from this plan:\n  the look-ahead (max step) for cars up to %.0f mph at %.0f fps\n  the entry look-back to a car length\n  the speed lines 7%% in from each side of the analysis box", kMaxTrackMph, prefs.planFps);
+		ImGui::SetTooltip("On Save, turns on subFrameTiming and sets, from this plan:\n  the look-ahead (max step) for cars up to %.0f mph at %.0f fps\n  the entry look-back to a car length\n  the speed lines 7%% in from each side of the analysis box",
+			kMaxTrackMph, planDraft_.plan.fps);
 	if (ImGui::TreeNode("Narrow streets: parked cars, shadows and wrong-way drivers")) {
 		ImGui::PushTextWrapPos(0);
 		bullet(ICON_CAR, c::accent, "Keep parked cars out of the box",
@@ -235,8 +431,8 @@ void App::shortViewNote(double coverM, bool on) {
 			"Shadows moving in the wind look like motion. Keep them out of the box where you can, or raise Sensitivity a little on sunny days. "
 			"A fixed shutter (not auto) stops the picture brightening and dimming as cars pass.");
 		bullet(ICON_BAN, c::wrong, "Wrong-way drivers",
-			"On a one-way street set the legal direction in step 4, Mark your street. Every car going the other way is logged and flagged as wrong-way, "
-			"timed like any other.");
+			"On a one-way street set the legal direction in step 4, Mark your street (the map in this step can set it for you). Every car going "
+			"the other way is logged and flagged as wrong-way, timed like any other.");
 		bullet(ICON_CAMERA, c::ok, "Through a window",
 			"Take out any insect screen, and put the lens against the glass with a rubber hood so the room doesn't reflect. "
 			"At 30 fps a 15 ft view times cars up to about 45 mph and a 20 ft view up to about 60; at 60 fps both time cars over 70. Use 60 fps and a 1/1000 s shutter if you can.");
@@ -246,8 +442,6 @@ void App::shortViewNote(double coverM, bool on) {
 }
 
 // ---- the street: a rough guess first, refined as setup goes on ------------------------------------------------
-
-plan::Inputs App::planInputs() const { return inputs(prefs); }
 
 void App::setPlanStreet(double distM, double clearM, plan::Source source, const std::string& note) {
 	prefs.planDist = std::max(distM, 1.0);
@@ -282,6 +476,8 @@ bool App::planFromCalibration(plan::Measured& m, std::string& how) {
 	return true;
 }
 
+// A calibration is a measurement the user made on purpose in step 5, so it updates the saved plan directly (once per
+// new calibration) rather than waiting in a draft; an untouched draft follows it (planSync).
 void App::syncPlanFromCalibration(bool announce) {
 	plan::Measured m;
 	std::string how;
@@ -331,14 +527,178 @@ std::string App::frameRateAdvice(double fps) {
 	return b;
 }
 
+// The bar across the top of Pick your spot: whether what's on the page is saved, and Save / Discard.  Nothing on the
+// page changes the app until Save; the bar lists what would change.  The autosave switch (off by default) saves each
+// edit as it's made instead, and the bar then just says so.
+void App::planSaveBar(float width) {
+	bool dirty = planDirty();
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	ImVec2 p = ImGui::GetCursorScreenPos();
+	float h = ImGui::GetFrameHeight() + px(20);
+	ImU32 col = dirty ? c::warn : c::ok;
+	dl->AddRectFilled(p, p + ImVec2(width, h), alpha(col, dirty ? .12f : .07f), px(10));
+	dl->AddRect(p, p + ImVec2(width, h), alpha(col, dirty ? .55f : .25f), px(10));
+	ImGui::SetCursorScreenPos(p + ImVec2(px(14), px(10)));
+	ImGui::AlignTextToFramePadding();
+	std::vector<std::string> changes = dirty ? planChanges() : std::vector<std::string>();
+	if (dirty) {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+		ImGui::PushFont(fonts.strong);
+		ImGui::Text(ICON_WARN "  Preview: %d unsaved change%s", int(changes.size()), changes.size() == 1 ? "" : "s");
+		ImGui::PopFont();
+		ImGui::PopStyleColor();
+		if (ImGui::IsItemHovered()) {
+			std::string tip = "Nothing changes until you save:";
+			for (auto& c : changes) tip += "\n  •  " + c;
+			ImGui::SetTooltip("%s", tip.c_str());
+		}
+		ImGui::SameLine();
+		dimText(planMoved_ ? "The saved plan changed too (a calibration or the phone); saving keeps what's shown here." : "Everything below shows the preview.");
+	}
+	else {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
+		bool justSaved = planSavedAt_ > 0 && now() - planSavedAt_ < 3;
+		ImGui::TextUnformatted(prefs.planAutosave ? (justSaved ? ICON_CHECK "  Saved automatically" : ICON_CHECK "  Every change saves as you make it")
+			: ICON_CHECK "  All changes saved");
+		ImGui::PopStyleColor();
+		ImGui::SameLine();
+		dimText(prefs.planAutosave ? "" : "Try anything: changes here are a preview until you press Save.");
+	}
+	// Right side: autosave switch, Discard, Save.
+	const char* saveLabel = ICON_SAVE "  Save changes";
+	const char* discardLabel = ICON_UNDO "  Discard";
+	float sw = buttonWidth(saveLabel), dw = buttonWidth(discardLabel);
+	const char* autoLabel = "Save automatically";
+	float aw = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(autoLabel).x;
+	float right = p.x + width - px(12);
+	float y = p.y + px(10);
+	ImGui::SetCursorScreenPos(ImVec2(right - sw - dw - aw - px(28), y));
+	bool autoOn = prefs.planAutosave;
+	if (ImGui::Checkbox(autoLabel, &autoOn)) {
+		prefs.planAutosave = autoOn;
+		if (autoOn && planDirty()) planCommit(true);
+		if (persist) prefs.save();
+	}
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: changes are a preview until you press Save.\nOn: every change is saved as you make it.");
+	ImGui::SetCursorScreenPos(ImVec2(right - sw - dw - px(8), y));
+	ImGui::BeginDisabled(!dirty);
+	if (ghostButton(discardLabel, ImVec2(dw, 0))) planDiscard();
+	ImGui::SetCursorScreenPos(ImVec2(right - sw, y));
+	if (primaryButton(saveLabel, ImVec2(sw, 0), dirty ? c::warn : c::accent)) planCommit();
+	ImGui::EndDisabled();
+	ImGui::SetCursorScreenPos(p + ImVec2(0, h + px(12)));
+}
+
+// "Find it on the map": the map itself is a page of the companion app (OpenStreetMap, companion/js/views/map.js),
+// opened in a browser here or on the phone; what it sends lands in the draft like any other change.
+void App::mapCard(float width) {
+	beginCard("map", ICON_MAP, "Find it on the map", ImVec2(width, 0));
+	const PlanState& d = planDraft_.plan;
+	ImGui::PushTextWrapPos(0);
+	bool placed = (d.camLat != 0 || d.camLon != 0) && (d.laneLat != 0 || d.laneLon != 0);
+	if (placed) {
+		plan::MapPick m;
+		m.camLat = d.camLat; m.camLon = d.camLon; m.laneLat = d.laneLat; m.laneLon = d.laneLon;
+		plan::MapResult r = plan::fromMap(m);
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
+		ImGui::TextWrapped(ICON_CHECK_CIRCLE "  %s: your window is about %.0f ft from the lane, looking %s.", d.street.empty() ? "On the map" : d.street.c_str(),
+			r.distM * plan::kFt, plan::compass8(r.facingDeg));
+		ImGui::PopStyleColor();
+		const Globals& g = cfg.g;
+		std::string legal = planDraft_.legal.empty() ? g.LegalDirection : planDraft_.legal;
+		std::string l2r = planDraft_.l2r.empty() ? g.L2RDirection : planDraft_.l2r, r2l = planDraft_.r2l.empty() ? g.R2LDirection : planDraft_.r2l;
+		if (legal == "L2R" || legal == "R2L")
+			dimText("One-way: traffic should go %s in the picture (%s-bound). Anyone going the other way is flagged wrong-way.", directionWords(legal), (legal == "L2R" ? l2r : r2l).c_str());
+		else dimText("Cars crossing left to right head %s, right to left %s.", l2r.c_str(), r2l.c_str());
+	}
+	else dimText("Search your address on OpenStreetMap, put one pin on your window and one in the middle of the lane. It works out the distance, "
+		"and reads the street's one-way direction and speed limit for you.");
+	ImGui::PopTextWrapPos();
+	if (primaryButton(placed ? ICON_MAP "  Move the pins on the map" : ICON_MAP "  Open the map", ImVec2(-FLT_MIN, 0))) openMap();
+	ImGui::PushTextWrapPos(0);
+	ImGui::PushFont(fonts.caption);
+	dimText("Opens in your web browser. On the phone: Setup, step 2. The map and address search come from OpenStreetMap; nothing else leaves this computer.");
+	ImGui::PopFont();
+	ImGui::PopTextWrapPos();
+	endCard();
+}
+
+// "Which camera?": four ways in, cheapest first, each worked out on the street being planned, so "do I need to buy
+// anything?" has an answer before anything is bought.  On Pick your spot (`draft`) a row can be planned with.
+void App::cameraTiers(float width) {
+	bool onPlanner = flowStep() == 1;
+	beginCard("tiers", ICON_CART, onPlanner ? "Which camera? Worked out for this street" : "Which camera? Start with what you have", ImVec2(width, 0));
+	ImGui::PushTextWrapPos(0);
+	dimText(onPlanner ? "Suggestions only: VST sells nothing. Start free with your phone; buy only if your street needs it."
+		: "Suggestions only: VST sells nothing. Your phone is a fine first camera; step 2 works out whether your street needs more.");
+	ImGui::PopTextWrapPos();
+	PlanState base = onPlanner ? planDraft_.plan : planSaved();
+	bool shortOn = cfg.g.subFrameTiming != 0 || planDraft_.shortView;
+	int n = int(IM_ARRAYSIZE(kPresets));
+	if (ImGui::BeginTable("tiers", onPlanner ? 4 : 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
+		ImGui::TableSetupColumn("Camera", 0, 2.2f);
+		ImGui::TableSetupColumn("Cost, where", 0, 1.6f);
+		ImGui::TableSetupColumn(onPlanner ? "On your street" : "Good for", 0, 2.2f);
+		if (onPlanner) ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, px(120));
+		ImGui::TableHeadersRow();
+		for (const Tier& t : kTiers) {
+			const Preset& q = kPresets[std::clamp(t.preset, 0, n - 1)];
+			PlanState s = base;
+			s.hfov = q.hfov; s.width = q.width; s.fps = q.fps; s.shutter = q.shutter;
+			plan::Verdict v = plan::verdict(planInputs(s), shortOn);
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+			ImGui::PushFont(fonts.strong);
+			ImGui::TextWrapped("%s", t.name);
+			ImGui::PopFont();
+			ImGui::PushFont(fonts.caption);
+			dimText("%s", t.note);
+			ImGui::PopFont();
+			ImGui::TableNextColumn();
+			ImGui::TextWrapped("%s", t.cost);
+			ImGui::PushFont(fonts.caption);
+			dimText("%s", t.where);
+			ImGui::PopFont();
+			ImGui::TableNextColumn();
+			if (onPlanner) {
+				linePill(plan::gradeName(v.grade), c::bg0, gradeColor(v.grade), fonts.caption);
+				ImGui::PushFont(fonts.caption);
+				if (v.shortView && v.fastestMph > 0) dimText("times cars %s", plan::fastestText(v.fastestMph).c_str());
+				else if (std::isfinite(v.at.total)) dimText("about ±%.1f mph at %d mph", v.at.total, v.checkMph);
+				ImGui::PopFont();
+			}
+			else {
+				ImGui::PushFont(fonts.caption);
+				ImGui::TextWrapped("%s", q.fps >= 59 ? "Short views too: times cars over 70 mph on 15-20 ft" : "Most streets; on a 15 ft view, cars up to about 45 mph");
+				ImGui::PopFont();
+			}
+			if (onPlanner) {
+				ImGui::TableNextColumn();
+				bool current = planDraft_.plan.preset == t.preset;
+				ImGui::PushID(t.name);
+				if (current) dimText(ICON_CHECK "  Planned");
+				else if (ghostButton("Plan with it", ImVec2(-FLT_MIN, 0))) {
+					PlanState& d = planDraft_.plan;
+					d.preset = t.preset; d.hfov = q.hfov; d.width = q.width; d.fps = q.fps; d.shutter = q.shutter;
+					planEdited();
+				}
+				ImGui::PopID();
+			}
+		}
+		ImGui::EndTable();
+	}
+	endCard();
+}
+
 // Under "Your street": the ways to turn a rough guess into real numbers, in the order setup reaches them.
 void App::zeroInCard(float width) {
 	if (showZeroIn_) { ImGui::SetScrollHereY(0); showZeroIn_ = false; }
 	beginCard("zeroin", ICON_BULLSEYE, "Zero in on it", ImVec2(width, 0));
 	ImGui::PushTextWrapPos(0);
-	dimText("Start rough. These firm the numbers up as you go, no tape measure needed.");
+	dimText("Start rough. These firm the numbers up as you go, no tape measure needed: the map above, your camera's picture, and step 5's calibration.");
 	ImGui::PopTextWrapPos();
 	ImGui::Dummy(ImVec2(0, px(4)));
+	PlanState& d = planDraft_.plan;
 
 	// 1. From the picture: how many car lengths fit across it.  A ruler of that many blocks is drawn over the picture
 	// at lane height, so matching one block to a car is the whole job.
@@ -348,38 +708,65 @@ void App::zeroInCard(float width) {
 	if (planPictureAvailable()) {
 		float w = ImGui::GetContentRegionAvail().x;
 		View v = drawFrame(player.texture().imguiId(), ImVec2(w, w * 9 / 16));
-		if (prefs.planCarLengths <= 0) {
-			// Start the ruler at what the plan says now, so a good guess needs no change.
-			prefs.planCarLengths = std::clamp(plan::coverAt(prefs.planDist, prefs.planHfov) * plan::kFt / plan::kTypicalCarFt, 1.0, 20.0);
-		}
+		// The ruler starts at what the plan says now, so a good guess needs no change.  It's a working value, not part of
+		// the plan, until "Use it".
+		if (rulerCars_ <= 0) rulerCars_ = d.carLengths > 0 ? d.carLengths
+			: std::clamp(plan::coverAt(d.dist, d.hfov) * plan::kFt / plan::kTypicalCarFt, 1.0, 20.0);
 		const Globals& g = cfg.g;
 		bool boxed = zonesDone();
-		float y = boxed ? float(g.AnalysisBoxTop + g.AnalysisBoxHeight / 2) : 720 * .55f;
+		// The stripes sit at lane height (the analysis box's middle once it's marked) until dragged.  Dragging the picture
+		// slides them sideways and up or down, so one block can sit exactly over a parked car or a car in a frozen frame;
+		// the wheel (or the slider) changes their size.  Only the size measures anything; where they sit is just for
+		// lining up, so it's a working value of this card, not part of the plan.
+		if (rulerY_ < 0) rulerY_ = boxed ? float(g.AnalysisBoxTop + g.AnalysisBoxHeight / 2) : 720 * .55f;
+		double blockPx = plan::kFrameWidthPx / rulerCars_;
+		ImVec2 after = ImGui::GetCursorScreenPos();
+		ImGui::SetCursorScreenPos(v.origin);
+		ImGui::InvisibleButton("##rulerdrag", v.size);
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+			float wheel = ImGui::GetIO().MouseWheel;
+			if (wheel != 0) { rulerCars_ = std::clamp(rulerCars_ * std::pow(0.95, wheel), 1.0, 20.0); ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY); }
+		}
+		if (ImGui::IsItemActive()) {
+			ImVec2 dlt = ImGui::GetIO().MouseDelta;
+			rulerShift_ += dlt.x / v.scale;
+			rulerY_ = std::clamp(rulerY_ + dlt.y / v.scale, 20.f, 700.f);
+		}
+		ImGui::SetCursorScreenPos(after);
+		blockPx = plan::kFrameWidthPx / rulerCars_;
+		rulerShift_ = float(std::fmod(std::fmod(double(rulerShift_), blockPx) + blockPx, blockPx));   // 0 .. one block
+		float y = rulerY_;
 		ImDrawList* dl = ImGui::GetWindowDrawList();
-		double blockPx = plan::kFrameWidthPx / prefs.planCarLengths;
-		for (int i = 0; i * blockPx < plan::kFrameWidthPx; i++) {
-			float x0 = float(i * blockPx), x1 = float(std::min((i + 1) * blockPx, plan::kFrameWidthPx));
-			ImU32 col = i % 2 ? c::accent2 : c::warn;
+		dl->PushClipRect(v.origin, v.origin + v.size, true);
+		for (int i = -1; (i + 1) * blockPx + rulerShift_ < plan::kFrameWidthPx + blockPx; i++) {
+			float x0 = float(rulerShift_ + i * blockPx), x1 = float(rulerShift_ + (i + 1) * blockPx);
+			ImU32 col = (i + 2) % 2 ? c::accent2 : c::warn;
 			dl->AddRectFilled(v.at(x0, y - 16), v.at(x1, y + 16), alpha(col, .5f));
 			dl->AddLine(v.at(x0, y - 40), v.at(x0, y + 40), col, px(2));
 		}
+		dl->PopClipRect();
 		ImGui::SetNextItemWidth(-FLT_MIN);
-		float n = float(prefs.planCarLengths);
-		if (ImGui::SliderFloat("##carlengths", &n, 1, 20, "%.1f car lengths across", ImGuiSliderFlags_Logarithmic)) prefs.planCarLengths = n;
+		float nCars = float(rulerCars_);
+		if (ImGui::SliderFloat("##carlengths", &nCars, 1, 20, "Size: %.1f car lengths across", ImGuiSliderFlags_Logarithmic)) rulerCars_ = nCars;
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		float shiftPct = float(rulerShift_ / blockPx * 100);
+		if (ImGui::SliderFloat("##carshift", &shiftPct, 0, 100, "Slide sideways: %.0f%% of a block")) rulerShift_ = float(shiftPct / 100 * blockPx);
 		ImGui::PushTextWrapPos(0);
-		dimText("Slide until one block is as long as a car in the picture, ideally one driving past (a car parked on the far side reads a little short).");
+		dimText("Drag the stripes on the picture onto a car (a parked one is fine, or pause a video on one), then size them until one block "
+			"matches it bumper to bumper. Scroll over the picture to size them too.");
 		ImGui::PopTextWrapPos();
-		plan::Measured m = plan::fromCarLengths(prefs.planCarLengths, boxed ? g.AnalysisBoxWidth : 0,
+		plan::Measured m = plan::fromCarLengths(rulerCars_, boxed ? g.AnalysisBoxWidth : 0,
 			boxed ? std::max(0, g.obstruction[1] - g.obstruction[0]) : 0);
 		char b[96];
 		snprintf(b, sizeof b, ICON_CHECK "  Use it: about %.0f ft across", m.coverFt);
 		if (ghostButton(b, ImVec2(-FLT_MIN, 0)) && m.valid) {
-			plan::Inputs in = planInputs();
+			plan::Inputs in = planInputs(d);
 			plan::applyMeasured(in, m);
 			char note[96];
-			snprintf(note, sizeof note, "%.1f car lengths across the picture", prefs.planCarLengths);
-			setPlanStreet(in.distM, in.clearM, plan::Source::Picture, note);
-			toast("Planned from your picture. A calibration in step 5 will measure it exactly.", c::ok, ICON_CHECK);
+			snprintf(note, sizeof note, "%.1f car lengths across the picture", rulerCars_);
+			d.carLengths = rulerCars_;
+			setDraftStreet(in.distM, in.clearM, plan::Source::Picture, note);
 		}
 	}
 	else {
@@ -401,9 +788,10 @@ void App::zeroInCard(float width) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
 		ImGui::TextWrapped(ICON_CHECK_CIRCLE "  Measured: %.0f ft across the picture, %.0f ft of it clear (%s).", m.coverFt, m.clearFt, how.c_str());
 		ImGui::PopStyleColor();
-		if (prefs.planSource != int(plan::Source::Calibration) && ghostButton(ICON_UNDO "  Use the measured numbers again")) {
-			prefs.planCalSig.clear();
-			syncPlanFromCalibration(false);
+		if (d.source != int(plan::Source::Calibration) && ghostButton(ICON_UNDO "  Use the measured numbers")) {
+			plan::Inputs in = planInputs(d);
+			plan::applyMeasured(in, m);
+			setDraftStreet(in.distM, in.clearM, plan::Source::Calibration, "Measured by " + how);
 		}
 	}
 	else {
@@ -415,75 +803,83 @@ void App::zeroInCard(float width) {
 }
 
 void App::sitePlanner() {
-	syncPlanFromCalibration();
 	float avail = ImGui::GetContentRegionAvail().x;
-	float inW = px(360);
+	planSaveBar(avail);
+	float inW = px(380);
 	float outW = avail - inW - px(20);
+	PlanDraft before = planDraft_;
+	PlanState& d = planDraft_.plan;
 
-	// Street first: it's what the user knows from their window, roughly.  A preset is a fine answer on day one; the
-	// numbers are there for anyone who has measured, and "Zero in" below firms them up.  The camera comes second and
-	// starts as a guess (a phone, the commonest first camera), so the planner answers "is my window good enough?"
-	// before anything is bought.  Prefs stay in metres (the model's units); the street is entered in feet.
+	// Street first: it's what the user knows from their window, roughly.  The map, a preset or typed numbers are all fine
+	// answers on day one, and "Zero in" below firms them up.  The camera comes second and starts as a guess (a phone, the
+	// commonest first camera), so the planner answers "is my window good enough?" before anything is bought.  The
+	// draft is in metres (the model's units); the street is entered in feet.
 	constexpr double kFt = plan::kFt;
 	ImGui::BeginGroup();
+	mapCard(inW);
+	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("planin", ICON_SLIDERS, "Your street", ImVec2(inW, 0));
 	const float col = px(190);
 	int n = int(IM_ARRAYSIZE(kPresets));
-	plan::Source src = plan::Source(std::clamp(prefs.planSource, 0, 3));
+	plan::Source src = plan::sourceOf(d.source);
 	ImGui::PushTextWrapPos(0);
-	dimText("Which is closest to your view? A rough guess is fine to start.");
+	dimText("No map handy? Pick the closest view. A rough guess is fine to start.");
 	ImGui::PopTextWrapPos();
 	for (const plan::StreetPreset& sp : plan::kStreetPresets) {
-		bool on = src == plan::Source::Guess && std::fabs(prefs.planDist * kFt - sp.distFt) < .5 && std::fabs(prefs.planClear * kFt - sp.clearFt) < .5;
+		bool on = src == plan::Source::Guess && std::fabs(d.dist * kFt - sp.distFt) < .5 && std::fabs(d.clear * kFt - sp.clearFt) < .5;
 		ImGui::PushID(sp.key);
 		ImGui::PushStyleColor(ImGuiCol_Header, v4(alpha(c::accent, .22f)));
 		std::string label = std::string(on ? ICON_CHECK_CIRCLE "  " : ICON_CIRCLE "  ") + sp.name;
 		if (ImGui::Selectable(label.c_str(), on, 0, ImVec2(0, px(26))))
-			setPlanStreet(sp.distFt / kFt, sp.clearFt / kFt, plan::Source::Guess, sp.name);
+			setDraftStreet(sp.distFt / kFt, sp.clearFt / kFt, plan::Source::Guess, sp.name);
 		ImGui::PopStyleColor();
 		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", sp.hint);
 		ImGui::PopID();
 	}
 	ImGui::Dummy(ImVec2(0, px(4)));
-	auto num = [&](const char* label, double* v, double step, const char* fmt, const char* help, bool camera) {
+	// A number box edits a copy; the draft takes the value once it's sensible (typing "1" on the way to "18" doesn't
+	// flash a ruined plan) and is clamped when the box is left.
+	auto num = [&](const char* label, double* v, double step, const char* fmt, const char* help, double lo, double hi) {
 		formLabel(label, col);
 		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));
 		ImGui::PushID(label);
-		bool changed = ImGui::InputDouble("##v", v, step, step * 5, fmt);
-		if (changed && camera) prefs.planPreset = n - 1;
+		double shown = *v;
+		bool changed = ImGui::InputDouble("##v", &shown, step, step * 5, fmt);
+		if (changed && shown >= lo && shown <= hi) *v = shown;
+		else changed = false;
 		ImGui::PopID();
 		if (help) helpMarker(help);
 		return changed;
 	};
-	// The same, shown and typed in another unit (feet, inches) while the pref keeps metres.
-	auto numIn = [&](const char* label, double* metres, double scale, double step, const char* fmt, const char* help) {
+	// The same, shown and typed in another unit (feet, inches) while the draft keeps metres.
+	auto numIn = [&](const char* label, double* metres, double scale, double step, const char* fmt, const char* help, double lo, double hi) {
 		double shown = *metres * scale;
-		num(label, &shown, step, fmt, help, false);
-		if (std::fabs(shown - *metres * scale) > 1e-9) { *metres = shown / scale; return true; }
+		if (num(label, &shown, step, fmt, help, lo, hi) && std::fabs(shown - *metres * scale) > 1e-9) { *metres = shown / scale; return true; }
 		return false;
 	};
-	bool typed = numIn("Window to the lane (ft)", &prefs.planDist, kFt, 1, "%.0f", "Straight-line distance from where the camera will sit to the middle of the nearer moving lane.\nNo tape measure? See \"Quick ways to estimate\" below.");
-	typed |= numIn("Clear stretch (ft)", &prefs.planClear, kFt, 1, "%.0f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 14-25 ft; that works with short-view timing, down to about 14 ft.");
-	if (typed) { prefs.planSource = int(plan::Source::Typed); prefs.planNote.clear(); }
+	bool typed = numIn("Window to the lane (ft)", &d.dist, kFt, 1, "%.0f", "Straight-line distance from where the camera will sit to the middle of the nearer moving lane.\nNo tape measure? Use the map above, or \"Quick ways to estimate\" below.\n3 to 1000 ft.", 3, 1000);
+	typed |= numIn("Clear stretch (ft)", &d.clear, kFt, 1, "%.0f", "The longest stretch of the moving lane you can see with nothing in the way: no trees, poles or parked trucks. A narrow old-city street seen from a front window is often only 14-25 ft; that works with short-view timing, down to about 14 ft.\n3 to 1000 ft.", 3, 1000);
+	if (typed) { d.source = int(plan::Source::Typed); d.note.clear(); }
 	formLabel("Speed limit (mph)", col);
 	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // lines up with the inputs above
-	ImGui::InputInt("##lim", &prefs.speedLimit, 5);
+	int lim = d.speedLimit;
+	if (ImGui::InputInt("##lim", &lim, 5) && lim >= 5 && lim <= 80) d.speedLimit = lim;
 	// Where the numbers came from, in the source's colour: amber while it's a guess, green once measured.
-	src = plan::Source(std::clamp(prefs.planSource, 0, 3));
+	src = plan::sourceOf(d.source);
 	ImU32 srcCol = src == plan::Source::Calibration ? c::ok : src == plan::Source::Guess ? c::warn : c::accent2;
 	ImGui::Dummy(ImVec2(0, px(2)));
 	pill(plan::sourceName(src), c::bg0, srcCol);
 	ImGui::SameLine();
 	ImGui::PushTextWrapPos(0);
 	if (src == plan::Source::Guess) dimText("Zero in below whenever you're ready.");
-	else if (!prefs.planNote.empty()) dimText("%s", prefs.planNote.c_str());
+	else if (!d.note.empty()) dimText("%s", d.note.c_str());
 	else dimText("As you typed them.");
 	ImGui::PopTextWrapPos();
 	if (ImGui::TreeNode("Quick ways to estimate")) {
 		ImGui::PushTextWrapPos(0);
 		bullet(ICON_ROAD, c::accent2, "Pace it", "One easy step is about 2.5 ft. Pace from the house to the curb, then add half the street.");
 		bullet(ICON_RULER, c::accent2, "Count what's there", "Sidewalk slabs are usually 5 ft, a parked car about 15 ft, a parking space about 20 ft.");
-		bullet(ICON_LOCATE, c::accent2, "On a map", "Most map apps measure distance: right-click (or long-press) your window, then the middle of the lane.");
+		bullet(ICON_MAP, c::accent2, "On a map", "\"Open the map\" above does it for you; any map app's measure tool works too.");
 		ImGui::PopTextWrapPos();
 		ImGui::TreePop();
 	}
@@ -494,63 +890,52 @@ void App::sitePlanner() {
 	dimText("No camera yet? Leave this on a phone. You'll connect the real one in step 3, and can come back to check it.");
 	ImGui::PopTextWrapPos();
 	ImGui::SetNextItemWidth(-FLT_MIN);
-	prefs.planPreset = std::clamp(prefs.planPreset, 0, n - 1);
-	// Presets are saved by position, and new ones get inserted (the Pi cameras and 60 fps webcams were).  A saved choice
-	// whose numbers no longer match the preset now at that position moves to the preset that has its numbers, or else
-	// shows as Custom, keeping the numbers the user had either way.
-	auto matches = [&](const Preset& q) { return q.hfov == prefs.planHfov && q.width == prefs.planWidth && q.fps == prefs.planFps
-		&& q.shutter == prefs.planShutter; };
-	if (kPresets[prefs.planPreset].hfov > 0 && !matches(kPresets[prefs.planPreset])) {
-		prefs.planPreset = n - 1;
-		for (int i = 0; i < n - 1; i++) if (matches(kPresets[i])) { prefs.planPreset = i; break; }
-	}
-	if (ImGui::BeginCombo("##preset", kPresets[prefs.planPreset].name)) {
+	d.preset = std::clamp(d.preset, 0, n - 1);
+	// The combo names the preset whose numbers the draft has, or Custom.  It never changes the draft by itself (the
+	// numbers stay), so a camera typed in by hand doesn't flip back and forth as the page is left and opened again.
+	auto matches = [&](const Preset& q) { return q.hfov == d.hfov && q.width == d.width && q.fps == d.fps && q.shutter == d.shutter; };
+	int shownPreset = n - 1;
+	if (kPresets[d.preset].hfov > 0 && matches(kPresets[d.preset])) shownPreset = d.preset;
+	else for (int i = 0; i < n - 1; i++) if (matches(kPresets[i])) { shownPreset = i; break; }
+	if (ImGui::BeginCombo("##preset", kPresets[shownPreset].name)) {
 		for (int i = 0; i < n; i++)
-			if (ImGui::Selectable(kPresets[i].name, prefs.planPreset == i)) {
-				prefs.planPreset = i;
-				if (kPresets[i].hfov > 0) {
-					prefs.planHfov = kPresets[i].hfov; prefs.planWidth = kPresets[i].width;
-					prefs.planFps = kPresets[i].fps; prefs.planShutter = kPresets[i].shutter;
-				}
+			if (ImGui::Selectable(kPresets[i].name, shownPreset == i)) {
+				d.preset = i;
+				if (kPresets[i].hfov > 0) { d.hfov = kPresets[i].hfov; d.width = kPresets[i].width; d.fps = kPresets[i].fps; d.shutter = kPresets[i].shutter; }
 			}
 		ImGui::EndCombo();
 	}
 	// A connected camera knows its own size and frame rate; planning with them shows what a 15 fps webcam means.
 	if (planPictureAvailable() && player.info().kind != SourceInfo::Image && player.info().fps > 0
-		&& (std::fabs(player.info().fps - prefs.planFps) > .5 || player.info().width != int(prefs.planWidth))) {
+		&& (std::fabs(player.info().fps - d.fps) > .5 || player.info().width != int(d.width))) {
 		char b[120];
 		snprintf(b, sizeof b, ICON_CAMERA "  Plan with your camera: %d × %d, %.0f fps", player.info().width, player.info().height, player.info().fps);
 		if (ghostButton(b, ImVec2(-FLT_MIN, 0))) {
-			prefs.planWidth = player.info().width;
-			prefs.planFps = std::round(player.info().fps);
-			prefs.planPreset = n - 1;
+			d.width = player.info().width;
+			d.fps = std::round(player.info().fps);
+			d.preset = n - 1;
 		}
 	}
-	if (prefs.planFps < 24) {
+	if (d.fps < 24) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
 		ImGui::PushTextWrapPos(0);
-		ImGui::TextWrapped(ICON_INFO "  %s", frameRateAdvice(prefs.planFps).c_str());
+		ImGui::TextWrapped(ICON_INFO "  %s", frameRateAdvice(d.fps).c_str());
 		ImGui::PopTextWrapPos();
 		ImGui::PopStyleColor();
 	}
 	if (ImGui::TreeNode("Camera details")) {
-		num("Field of view (°)", &prefs.planHfov, 1, "%.0f", "Horizontal angle the camera sees. Phones and webcams: 60-80°. Wide IP cameras: 90-110°.", true);
-		num("Frame width (px)", &prefs.planWidth, 10, "%.0f", nullptr, true);
-		num("Frame rate (fps)", &prefs.planFps, 1, "%.0f", nullptr, true);
-		num("Shutter (1/x s)", &prefs.planShutter, 10, "%.0f", "Faster shutters freeze motion. Phones choose this themselves and can drop to 1/60 in shade.", true);
+		bool cam = false;
+		cam |= num("Field of view (°)", &d.hfov, 1, "%.0f", "Horizontal angle the camera sees. Phones and webcams: 60-80°. Wide IP cameras: 90-110°.\n5 to 170°.", 5, 170);
+		cam |= num("Frame width (px)", &d.width, 10, "%.0f", "320 to 8000.", 320, 8000);
+		cam |= num("Frame rate (fps)", &d.fps, 1, "%.0f", "5 to 240.", 5, 240);
+		cam |= num("Shutter (1/x s)", &d.shutter, 10, "%.0f", "Faster shutters freeze motion. Phones choose this themselves and can drop to 1/60 in shade.\n15 to 20000.", 15, 20000);
+		if (cam) d.preset = n - 1;
 		ImGui::TreePop();
 	}
 	if (ImGui::TreeNode("Fine-tuning")) {
-		numIn("Car length (ft)", &prefs.planCarLen, kFt, .5, "%.1f", "A typical car is 15-16 ft. Whole-frame timing needs one fully in the zone; short-view timing doesn't.");
+		numIn("Car length (ft)", &d.carLen, kFt, .5, "%.1f", "A typical car is 15-16 ft. Whole-frame timing needs one fully in the zone; short-view timing doesn't.\n8 to 30 ft.", 8, 30);
 		ImGui::TreePop();
 	}
-	prefs.planHfov = std::clamp(prefs.planHfov, 5.0, 170.0);
-	prefs.planFps = std::clamp(prefs.planFps, 5.0, 240.0);
-	prefs.planShutter = std::max(prefs.planShutter, 15.0);
-	prefs.planDist = std::max(prefs.planDist, 1.0);
-	prefs.planClear = std::max(prefs.planClear, 1.0);
-	prefs.planWidth = std::max(prefs.planWidth, 320.0);
-	prefs.speedLimit = std::clamp(prefs.speedLimit, 5, 80);
 	endCard();
 	ImGui::Dummy(ImVec2(0, px(2)));
 	zeroInCard(inW);
@@ -558,8 +943,8 @@ void App::sitePlanner() {
 
 	ImGui::SameLine(0, px(20));
 	ImGui::BeginGroup();
-	bool shortOn = cfg.g.subFrameTiming != 0;
-	plan::Verdict pv = plan::verdict(planInputs(), shortOn);
+	bool shortOn = cfg.g.subFrameTiming != 0 || planDraft_.shortView;
+	plan::Verdict pv = plan::verdict(planInputs(d), shortOn);
 	int check = pv.checkMph;
 	bool shortView = pv.shortView;
 	const Eval& r = pv.at;
@@ -569,6 +954,13 @@ void App::sitePlanner() {
 	ImGui::SameLine();
 	ImGui::AlignTextToFramePadding();
 	ImGui::TextUnformatted(plan::verdictText(pv).c_str());
+	// The saved plan's verdict next to the preview's, so a change's effect is plain before it's saved.
+	if (planDirty()) {
+		plan::Verdict sv = plan::verdict(planInputs(), cfg.g.subFrameTiming != 0);
+		ImGui::PushTextWrapPos(0);
+		dimText(ICON_SAVE "  Saved plan: %s. %s", plan::gradeName(sv.grade), plan::verdictText(sv).c_str());
+		ImGui::PopTextWrapPos();
+	}
 	// How firm that is: a verdict on a guessed street says so, and says it's fine.
 	if (src == plan::Source::Guess) {
 		ImGui::PushTextWrapPos(0);
@@ -579,13 +971,17 @@ void App::sitePlanner() {
 		// The fastest car this view can time, and what 60 fps would make of it: the spec a short view is bought on.
 		ImGui::PushTextWrapPos(0);
 		// The 60 fps sentence only when it says something new: "over 70 mph" twice reads like a mistake.
-		if (prefs.planFps < 59 && plan::fastestText(pv.fastest60) != plan::fastestText(pv.fastestMph)) dimText(ICON_GAUGE "  At %.0f fps this view times cars %s. A 60 fps camera would time them %s.",
-			prefs.planFps, plan::fastestText(pv.fastestMph).c_str(), plan::fastestText(pv.fastest60).c_str());
-		else dimText(ICON_GAUGE "  At %.0f fps this view times cars %s.", prefs.planFps, plan::fastestText(pv.fastestMph).c_str());
+		if (d.fps < 59 && plan::fastestText(pv.fastest60) != plan::fastestText(pv.fastestMph)) dimText(ICON_GAUGE "  At %.0f fps this view times cars %s. A 60 fps camera would time them %s.",
+			d.fps, plan::fastestText(pv.fastestMph).c_str(), plan::fastestText(pv.fastest60).c_str());
+		else dimText(ICON_GAUGE "  At %.0f fps this view times cars %s.", d.fps, plan::fastestText(pv.fastestMph).c_str());
 		ImGui::PopTextWrapPos();
 	}
-	if (shortView) shortViewNote(r.cover, shortOn);
-	planDiagram(prefs, r, cfg.g, ImVec2(ImGui::GetContentRegionAvail().x, px(230)));
+	if (shortView) shortViewNote(r.cover, cfg.g.subFrameTiming != 0);
+	Globals shown = cfg.g;   // the diagram's one-way callout, as it will be once saved
+	if (!planDraft_.legal.empty()) shown.LegalDirection = planDraft_.legal;
+	if (!planDraft_.l2r.empty()) shown.L2RDirection = planDraft_.l2r;
+	if (!planDraft_.r2l.empty()) shown.R2LDirection = planDraft_.r2l;
+	planDiagram(d, r, shown, ImVec2(ImGui::GetContentRegionAvail().x, px(230)));
 	ImGui::Dummy(ImVec2(0, px(4)));
 	float tw = (ImGui::GetContentRegionAvail().x - px(30)) / 4, th = px(96);
 	char v[48], sub[64];
@@ -604,7 +1000,7 @@ void App::sitePlanner() {
 	statTile(ICON_STOPWATCH, "Timing error", v, shortView ? "mph, fitted bumper track" : "mph, one-frame slip", gradeColor(grade(r.quant, 1, 2)), ImVec2(tw, th));
 	ImGui::SameLine(0, px(10));
 	snprintf(v, sizeof v, "%.0f px", r.blurPx);
-	snprintf(sub, sizeof sub, "%.1f in at 1/%.0f s", r.blurCm / 2.54, prefs.planShutter);
+	snprintf(sub, sizeof sub, "%.1f in at 1/%.0f s", r.blurCm / 2.54, d.shutter);
 	statTile(ICON_WAVE, "Motion blur", v, sub, gradeColor(grade(r.blurPx, 10, 25)), ImVec2(tw, th));
 	ImGui::SameLine(0, px(10));
 	snprintf(v, sizeof v, "%.0f", r.pxPerM / 3.281);
@@ -613,14 +1009,17 @@ void App::sitePlanner() {
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
+	cameraTiers(outW);
+
+	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("plantable", ICON_TABLE, "Worst-case error by speed", ImVec2(outW, 0));
 	if (ImGui::BeginTable("errs", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
 		for (const char* h : { "Speed", shortView ? "Positions" : "Frames", "Timing ±", "Calibration ±", "Combined ±", "Blur" }) ImGui::TableSetupColumn(h);
 		ImGui::TableHeadersRow();
-		for (int mph : { prefs.speedLimit, prefs.speedLimit + 5, prefs.speedLimit + 10, prefs.speedLimit + 20, prefs.speedLimit + 30 }) {
-			Eval e = evaluate(prefs, mph, shortView);
+		for (int mph : { d.speedLimit, d.speedLimit + 5, d.speedLimit + 10, d.speedLimit + 20, d.speedLimit + 30 }) {
+			Eval e = plan::evaluate(planInputs(d), mph, shortView);
 			ImGui::TableNextRow();
-			ImGui::TableNextColumn(); ImGui::TextColored(v4(speedColor(mph, prefs.speedLimit, prefs.egregious)), "%d mph", mph);
+			ImGui::TableNextColumn(); ImGui::TextColored(v4(speedColor(mph, d.speedLimit, std::max(prefs.egregious, d.speedLimit))), "%d mph", mph);
 			ImGui::TableNextColumn(); ImGui::Text("%.0f", shortView ? e.samples : e.frames);
 			if (!std::isfinite(e.total)) {
 				ImGui::TableNextColumn(); ImGui::TextColored(v4(c::warn), "past this view");
@@ -638,6 +1037,9 @@ void App::sitePlanner() {
 	dimText("Night is a separate check: a fast shutter at night needs streetlights and high gain, or infrared.");
 	endCard();
 	ImGui::EndGroup();
+
+	bool changed = !before.plan.same(planDraft_.plan) || before.shortView != planDraft_.shortView;
+	if (changed) planEdited();
 }
 
 // "Aim it like this", on the Connect the camera page: where to put the camera once the spot is picked.
@@ -652,6 +1054,7 @@ void App::aimCard(float width) {
 	endCard();
 }
 
+
 // Steps 1 and 2 of the setup flow.  The stepper and the header's Next are shared with steps 3-5; the button at the
 // bottom says the same thing as the header's, for someone who has just read to the end of the page.
 void App::pageGuide() {
@@ -660,7 +1063,7 @@ void App::pageGuide() {
 	float avail = ImGui::GetContentRegionAvail().x;
 
 	auto lead = [&](const char* text) {
-		ImGui::PushTextWrapPos(std::min(avail, px(900)));
+		ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::min(avail, px(900)));
 		dimText("%s", text);
 		ImGui::PopTextWrapPos();
 		ImGui::Dummy(ImVec2(0, px(6)));
@@ -676,44 +1079,47 @@ void App::pageGuide() {
 		// One card per later step, in step order, each naming its step, so the list reads as the plan.
 		float cw = (avail - px(48)) / 4, ch = px(222);
 		gearCard("g2", ICON_LOCATE, c::accent2, "A window on the street", "Step 2 · Pick your spot",
-			"Somewhere that sees the street from the side; about 14 ft of clear street is enough. A rough guess is fine: you'll zero in as you go.", ImVec2(cw, ch));
+			"Find your window on the map, or pick the closest kind of street; about 14 ft of clear street is enough. A rough guess is fine: you'll zero in as you go.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g3", ICON_CAMERA, c::accent, "A camera, held still", "Step 3 · Connect the camera",
-			"Whatever you have: a phone, webcam, IP or Raspberry Pi camera, on a window clamp or tripod. 30 fps is fine; 60 fps times faster cars on a short view.", ImVec2(cw, ch));
+			"Whatever you have: your phone, a webcam, an IP or Raspberry Pi camera, on a window clamp or a stack of books. 30 fps is fine to start.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g4", ICON_VECTOR, c::warn, "A few minutes with the picture", "Step 4 · Mark your street",
 			"Drag a box around the moving lane and two lines to time between. Say which way a one-way street runs.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
-		gearCard("g5", ICON_CAR, c::l2r, "One drive past", "Step 5 · Calibrate",
-			"Drive past at a known speed (cruise control, a Tesla clip, or VST Ride-along on a phone; a bike works too). No car? Two cones or a pole, or a car of known length.", ImVec2(cw, ch));
+		gearCard("g5", ICON_CAR, c::l2r, "One drive past, or no car at all", "Step 5 · Calibrate",
+			"Drive past at a known speed (a bike works too), or with no car: two cones or a pole, or a parked car of known length.", ImVec2(cw, ch));
+		ImGui::Dummy(ImVec2(0, px(8)));
+		cameraTiers(avail);
 		ImGui::Dummy(ImVec2(0, px(8)));
 		beginCard("need2", ICON_CHECK_CIRCLE, "What makes a good setup", ImVec2(avail, 0));
-		float half = (ImGui::GetContentRegionAvail().x - px(20)) * .5f;
+		// Two columns, each wrapping inside its own half (a bare text wrap goes to the card's edge and runs under the other column).
+		float half = (ImGui::GetContentRegionAvail().x - px(24)) * .5f;
+		float x0 = ImGui::GetCursorPosX();
 		ImGui::BeginGroup();
-		ImGui::PushItemWidth(half);
+		ImGui::PushTextWrapPos(x0 + half);
 		bullet(ICON_ROAD, c::accent2, "A clear view of the moving lane", "Nothing in the way between the lines. A tree trunk in front, or cars parked behind the lane, is OK.");
-		bullet(ICON_STOPWATCH, c::accent2, "Enough frames per car", "At 30 fps a short view times cars up to about 45 mph, at 60 fps over 70. Webcams can drop to 15 fps in dim light, so set 30 or 60 if you can.");
+		bullet(ICON_STOPWATCH, c::accent2, "Enough pictures per second", "Frames per second (fps) is how many pictures the camera takes each second. At 30 fps a short view times cars up to about 45 mph, at 60 fps over 70. Webcams can drop to 15 fps in dim light, so pick 30 or 60 if you can.");
 		bullet(ICON_ARROWS_LR, c::accent2, "Square-on to the street", "Point straight across, so cars move left-right across the middle of the picture.");
 		bullet(ICON_LOCATE, c::accent2, "Any mount that holds still", "A clamp, a tripod or a stack of books all work. VST checks the view stays put and tells you if it moves.");
-		ImGui::PopItemWidth();
+		ImGui::PopTextWrapPos();
 		ImGui::EndGroup();
-		ImGui::SameLine(0, px(20));
+		ImGui::SameLine(x0 + half + px(24));
 		ImGui::BeginGroup();
+		ImGui::PushTextWrapPos(x0 + half * 2 + px(24));
 		bullet(ICON_SUN, c::accent2, "Lens to the glass", "Take out the insect screen, press the lens to the window and put black foam or a dark cloth around it, so the room doesn't reflect.");
-		bullet(ICON_EYE, c::accent2, "Fixed focus and exposure", "Turn off auto-zoom and stabilisation. Lock focus and exposure, with a fast shutter (1/500 s or faster) if the camera lets you. "
-			"VST fixes a USB webcam's shutter for you where the camera allows it.");
+		bullet(ICON_EYE, c::accent2, "Fixed focus and a fast shutter", "Turn off auto-zoom and stabilisation, and lock focus. The shutter is how long each picture is exposed: 1/1000 s freezes a passing car, "
+			"1/250 s will do. VST fixes a USB webcam's shutter for you where the camera allows it.");
 		bullet(ICON_BOLT, c::accent2, "Daylight first", "Start with daytime video. Night through glass needs streetlights; infrared bounces off the window.");
 		bullet(ICON_FOLDER, c::accent2, "Your data stays yours", "Results are CSV files and videos in a folder on this computer. VST makes traffic studies, not tickets, and reads no plates.");
-		ImGui::EndGroup();
-		ImGui::PushTextWrapPos(0);
-		dimText(ICON_ARROW_UP_RIGHT "  Start with what you have. Later, to time faster cars on a short view: a 60 fps webcam (Logitech C922 at 720p, "
-			"or Elgato Facecam), or a Raspberry Pi 5 with the Global Shutter Camera.");
 		ImGui::PopTextWrapPos();
+		ImGui::EndGroup();
 		endCard();
 	}
 	else {
-		lead("Start with the street, as you see it from the window. Leave the camera on a phone until you know which one you'll "
-			"use. The planner shows how long the timing zone will be and how close the speeds can get.");
+		lead("Where will the camera go, and what can it measure from there? Find your window on the map (or pick the closest kind of street), "
+			"leave the camera on a phone until you know which one you'll use, and the planner shows how close the speeds can get. "
+			"Try anything: nothing here changes until you save.");
 		sitePlanner();
 	}
 
@@ -728,6 +1134,15 @@ void App::pageGuide() {
 	std::string next = std::string("Next: ") + kFlow[here + 1].name + "  " ICON_ARROW_RIGHT;
 	float nw = ImGui::CalcTextSize(next.c_str()).x + px(36);
 	// Flush with the right edge of the cards above (the content starts at the window padding, not at 0).
-	ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetCursorStartPos().x + avail - nw));
+	float nx = ImGui::GetCursorStartPos().x + avail - nw;
+	if (here == 1 && planDirty()) {
+		// Leaving keeps the draft (it's still here when you come back), but say so where the eye is.
+		const char* note = ICON_WARN "  Unsaved changes stay as a preview";
+		ImVec2 ns = pillSize(note, fonts.body);
+		ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), nx - ns.x - px(12)));
+		linePill(note, c::warn, alpha(c::warn, .14f), fonts.body);
+		ImGui::SameLine();
+	}
+	ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), nx));
 	if (primaryButton(next.c_str(), ImVec2(nw, 0))) goFlow(here + 1);
 }

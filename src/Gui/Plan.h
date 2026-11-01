@@ -8,9 +8,12 @@
 //   Source::Guess        a street preset or the first-run default; the planner says it is rough
 //   Source::Typed        numbers the user typed (paced out, a map's measure tool, a tape)
 //   Source::Picture      sized from the connected camera's picture: how many car lengths fit across it
+//   Source::Map          measured on the map (Pick your spot's "Find it on the map"): the camera's pin to the lane's
 //   Source::Calibration  measured by a calibration in step 5 (any method: a drive past, Ride-along, a Tesla clip, a
 //                        known car, cones or a pole).  A calibration knows the speed zone's length in feet, and the
 //                        speed lines say how many pixels that is, so it gives the scale of the whole picture.
+// (Source::Map sits between Picture and Calibration in trust: a map knows the distance to a few feet but nothing about
+// what blocks the view, so the clear stretch stays whatever it was.)
 //
 // Lengths are metres here (the model's units; the pages show feet).  "Cover" is the width of street the whole
 // picture spans at the lane's distance; "clear" is the part of it with nothing in the way.
@@ -60,6 +63,7 @@ struct Verdict {
 	int checkMph = 35;
 	bool shortView = false;   // planned with short-view timing (on already, or needed because the view is short)
 	bool tooFew = false;      // short view with too few bumper positions at checkMph
+	bool blurry = false;      // motion blur over 25 px at checkMph: graded no better than "a bit rougher"
 	int grade = 2;
 	Eval at;                  // evaluate() at checkMph with the timing above
 	double fastestMph = 0;    // short view only: fastest car timed at in.fps (0 = not a short view)
@@ -82,9 +86,11 @@ inline int grade(double x, double good, double warn) { return x <= good ? 0 : x 
 
 // ---- where the street numbers came from ---------------------------------------------------------------------
 
-enum class Source { Guess = 0, Typed = 1, Picture = 2, Calibration = 3 };
-const char* sourceName(Source s);   // "Rough guess", "Your numbers", "From your picture", "Measured"
-const char* sourceKey(Source s);    // "guess", "typed", "picture", "calibration" (the API's spelling)
+enum class Source { Guess = 0, Typed = 1, Picture = 2, Calibration = 3, Map = 4 };
+constexpr int kSourceCount = 5;
+inline Source sourceOf(int saved) { return Source(saved < 0 || saved >= kSourceCount ? 0 : saved); }
+const char* sourceName(Source s);   // "Rough guess", "Your numbers", "From your picture", "Measured", "From the map"
+const char* sourceKey(Source s);    // "guess", "typed", "picture", "calibration", "map" (the API's spelling)
 bool sourceFromKey(const std::string& key, Source& out);
 
 // A view a first-time user can pick without measuring anything.  Feet, because that is how they're shown.
@@ -123,5 +129,39 @@ Measured fromCarLengths(double carLengths, double boxWidthPx, double obstruction
 // Applies a measurement to the inputs: the cover sets the camera distance through the field of view (so the
 // planner's picture width matches what was measured) and the clear stretch is taken as it is.
 void applyMeasured(Inputs& in, const Measured& m);
+
+// ---- the map --------------------------------------------------------------------------------------------------
+//
+// Pick your spot's map (companion/js/views/map.js, opened in a browser from Studio or on the phone) places two pins
+// on OpenStreetMap: the camera (the window) and the middle of the moving lane in front of it, and reads the street
+// under the lane pin from OpenStreetMap: its name, its direction there, whether it is one-way and its posted limit.
+// From that the planner gets the distance to the lane, and Mark your street gets which compass heading a car going
+// left to right in the picture has, and which way is legal.  The camera looks from its pin toward the lane pin, so
+// "right" in the picture is that bearing plus 90 degrees; a car going left to right moves along whichever of the
+// street's two directions is nearer to it.
+
+struct MapPick {
+	double camLat = 0, camLon = 0, laneLat = 0, laneLon = 0;
+	bool haveWay = false;       // OpenStreetMap had a street under the lane pin
+	double wayBearing = 0;      // degrees from north, clockwise, along the street's drawn direction there
+	int oneway = 0;             // 0 two-way, 1 one-way along wayBearing, -1 one-way against it
+	int maxspeedMph = 0;        // posted limit (0 = not on the map)
+	std::string street;         // the street's name ("" = unnamed)
+};
+
+struct MapResult {
+	bool valid = false;         // both pins placed, 2-500 ft apart
+	double distM = 0;           // camera to the lane
+	double facingDeg = 0;       // the camera's heading (camera pin toward the lane pin)
+	double l2rDeg = 0;          // heading of a car crossing the picture left to right
+	std::string l2r, r2l;       // the same as 8-point compass names for VST.cfg (L2RDirection, R2LDirection)
+	std::string legal = "Both"; // LegalDirection for a one-way street: "L2R" or "R2L"
+	int speedLimit = 0;         // the posted limit, when the map has one
+};
+
+double groundDistanceM(double lat1, double lon1, double lat2, double lon2);   // great-circle (haversine)
+double bearingDeg(double lat1, double lon1, double lat2, double lon2);        // initial bearing, 0-360
+const char* compass8(double deg);                                             // "N", "NE", ... "NW"
+MapResult fromMap(const MapPick& m);
 
 }  // namespace plan
