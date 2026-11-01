@@ -200,7 +200,8 @@ can turn into one: cones a taped distance apart, or a car whose length you know.
   default; type any other speed under **I drove at**), run tracking, drive past at that speed, pick your pass from
   the list and enter the speed you drove. Any steady speed calibrates equally well, and a slow pass is counted in more
   frames (each one-frame miss is a smaller share), so there's no need to drive faster than your street is comfortable
-  with. Passes slower than **Slowest logged** (18 mph by default) aren't written to the csv or Results, but they are
+  with. Passes slower than **Slowest logged** (5 mph under the posted limit, at most 18, unless you set it yourself)
+  aren't written to the csv or Results, but they are
   listed here, marked "slow", so a 10 or 15 mph drive can still be picked. Most cruise control won't hold under
   25 mph; hold it steady by eye, or let VST Ride-along read the speed (below). **Check it with a second drive**
   suggests a speed 5 mph away from the first. From the Results page, **This was me** on a selected vehicle does the

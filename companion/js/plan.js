@@ -168,5 +168,14 @@ export function targetPresets(speedLimit) {
 export const defaultTarget = (saved, speedLimit) => clampMph(saved > 0 ? saved : speedLimit > 0 ? speedLimit : 25);
 /** A different speed for the check drive: 5 mph faster, or 5 slower from 20 up so it stays near a quiet street's limit. */
 export const checkTarget = (calibratedAt) => clampMph(calibratedAt >= 20 ? calibratedAt - 5 : calibratedAt + 5);
+/**
+ * minLoggedSpeed for a posted limit (Calibration.h minLoggedForLimit): 5 under it, between 5 and the default 18, so a
+ * 15 mph street logs its legal 12-17 mph traffic. It moves with the limit only while it is still automatic
+ * (minLoggedFollows); a hand-set value stays.
+ */
+export const DEFAULT_MIN_LOGGED = 18;
+export const minLoggedForLimit = (limit) => Math.min(DEFAULT_MIN_LOGGED, Math.max(5, limit - 5));
+export const minLoggedFollows = (minLogged, limit) => minLogged === DEFAULT_MIN_LOGGED || minLogged === minLoggedForLimit(limit);
+
 /** Many cars' cruise control won't engage below about 20-25 mph. */
 export const belowCruiseControl = (mph) => mph < 25;

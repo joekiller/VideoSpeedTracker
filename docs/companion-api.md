@@ -223,7 +223,8 @@ companion-facing settings:
 
 `minLoggedSpeed` (mph, `VST.cfg`'s key of the same name) is the slowest timed vehicle written to the
 stats csv; slower ones are only counted in the run manifest. 0 logs every timed vehicle; negative values
-are refused.
+are refused. While it is automatic (18, or the value the limit last gave it), a `speedLimit` change moves it to 5 under
+the new limit, at most 18 (15 mph → 10), unless the same body sets `minLoggedSpeed`; a value set by hand stays.
 
 `subFrameTiming` (0 or 1) turns on short-view timing for a view of about 14 to 25 ft of street, where a car
 fills most of the frame. `maxL2RDistOnEntry` and `maxR2LDistOnEntry` are the tracker's look-ahead, the

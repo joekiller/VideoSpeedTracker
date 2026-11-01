@@ -137,6 +137,9 @@ bool App::loadConfig(const std::string& path) {
 	if (tracker.running()) { toast("Stop tracking before switching configs", c::warn, ICON_WARN); return false; }
 	if (!cfg.load(path)) return false;
 	prefs.configPath = path;
+	// A config still on the engine's default 18 on a slower street (set before minLoggedSpeed followed the limit):
+	// bring it in line once, so legal traffic at 12-17 mph on a 15 mph street is logged.  Autosave writes it.
+	if (cfg.g.minLoggedSpeed == calib::kDefaultMinLogged) cfg.g.minLoggedSpeed = calib::minLoggedForLimit(prefs.speedLimit);
 	return true;
 }
 
@@ -294,6 +297,15 @@ void App::startTracking() {
 
 void App::stopTracking() {
 	tracker.stop();
+}
+
+bool App::followSpeedLimit(int before) {
+	Globals& g = cfg.g;
+	if (prefs.speedLimit == before || !calib::minLoggedFollows(g.minLoggedSpeed, before)) return false;
+	int want = calib::minLoggedForLimit(prefs.speedLimit);
+	if (g.minLoggedSpeed == want) return false;
+	g.minLoggedSpeed = want;   // autosave writes VST.cfg
+	return true;
 }
 
 void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
@@ -1836,7 +1848,7 @@ void App::zoneInspector() {
 		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Entry look-back", &g.entryLookBack, 0, 1280);
-		intRow("Slowest logged", &g.minLoggedSpeed, 0, 100, "Vehicles timed below this many mph (walkers, cyclists) are counted in the run manifest but not written to the csv. 0 logs every timed vehicle.");
+		intRow("Slowest logged", &g.minLoggedSpeed, 0, 100, "Vehicles timed below this many mph (walkers, cyclists) are counted in the run manifest but not written to the csv. 0 logs every timed vehicle. Follows the speed limit (5 mph under it, at most 18) until you change it here.");
 	}
 
 	// Validation from the engine itself, then save/revert.
@@ -2906,9 +2918,11 @@ void App::runOptions() {
 	beginCard("runopts", ICON_SLIDERS, "Run settings");
 	formLabel("Speed limit", px(130));
 	ImGui::BeginDisabled(run);
+	int limitBefore = prefs.speedLimit;
 	if (ImGui::InputInt("##limit", &prefs.speedLimit, 5, 5)) {
 		prefs.speedLimit = std::clamp(prefs.speedLimit, 5, 80);
 		prefs.egregious = std::max(prefs.egregious, prefs.speedLimit);
+		followSpeedLimit(limitBefore);
 	}
 	formLabel("Way over from", px(130));
 	if (ImGui::InputInt("##egr", &prefs.egregious, 5, 5)) prefs.egregious = std::max(prefs.egregious, prefs.speedLimit);

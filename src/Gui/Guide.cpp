@@ -311,7 +311,9 @@ bool App::planCommit(bool quiet) {
 	PlanDraft& d = planDraft_;
 	bool wasShort = cfg.g.subFrameTiming != 0;
 	bool cfgTouched = d.shortView || !d.legal.empty() || !d.l2r.empty() || !d.r2l.empty();
+	int limitBefore = prefs.speedLimit;
 	d.plan.store(prefs);
+	followSpeedLimit(limitBefore);   // a slower limit logs slower traffic too (Calibration.h minLoggedForLimit)
 	prefs.planConfirmed = true;
 	Globals& g = cfg.g;
 	if (d.shortView) applyShortView(g, d.plan);

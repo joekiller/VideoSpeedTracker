@@ -379,8 +379,10 @@ std::vector<std::string> applyConfig(App& app, const json& in) {
 	// A run in progress keeps the settings it started with; changes apply from the next run.
 	app.cfg.g.~Globals();
 	new (&app.cfg.g) Globals(g);
+	int limitBefore = app.prefs.speedLimit;
 	app.prefs.speedLimit = limit;
 	app.prefs.egregious = std::max(egregious, limit);
+	if (!in.contains("minLoggedSpeed")) app.followSpeedLimit(limitBefore);   // an explicit minLoggedSpeed wins
 	app.prefs.siteName = site;
 	app.prefs.save();
 	if (app.cfg.dirty() && !app.cfg.save()) problems.push_back(app.cfg.error);

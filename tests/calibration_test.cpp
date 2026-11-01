@@ -63,6 +63,13 @@ int main() {
 	CHECK(calib::checkTarget(25) == 20);
 	CHECK(calib::checkTarget(5) == 10);
 	CHECK(calib::belowCruiseControl(15) && !calib::belowCruiseControl(25));
+	// The logging minimum follows the limit downward only: 15 -> 10, 20 -> 15, 25 and up keep the default 18.
+	CHECK(calib::minLoggedForLimit(15) == 10);
+	CHECK(calib::minLoggedForLimit(20) == 15);
+	CHECK(calib::minLoggedForLimit(25) == 18);
+	CHECK(calib::minLoggedForLimit(45) == 18);
+	CHECK(calib::minLoggedForLimit(5) == 5);
+	CHECK(calib::minLoggedFollows(18, 15) && calib::minLoggedFollows(10, 15) && !calib::minLoggedFollows(12, 15));
 	// A slower drive-by measures the same zone: the 30 ft zone above takes a 15 mph car 25/15 as many frames, and the
 	// cones' CalibrationFrames is the same whatever CalibrationSpeed the config is expressed in, once scaled back.
 	CHECK(approx(calib::framesForDistance(200, 10, 600, 15, 30), cones * 25 / 15, 1e-9));

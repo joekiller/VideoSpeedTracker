@@ -133,6 +133,17 @@ inline int defaultTarget(int saved, int speedLimit) {
 inline int checkTarget(int calibratedAt) {
 	return std::clamp(calibratedAt >= 20 ? calibratedAt - 5 : calibratedAt + 5, kTargetMin, kTargetMax);
 }
+// The engine's minLoggedSpeed for a posted limit: 5 mph under it, never above the engine default of 18 nor below 5.
+// 18 was chosen for 25 mph streets (walkers and cyclists out, traffic in); on a 15 mph street it also drops legal
+// traffic at 12-17 mph, which skews the share over the limit.  So 15 -> 10, 20 -> 15, 25 and up -> 18.
+inline constexpr int kDefaultMinLogged = 18;
+inline int minLoggedForLimit(int speedLimit) { return std::clamp(speedLimit - 5, 5, kDefaultMinLogged); }
+// Whether a minLoggedSpeed is still the automatic one (the default, or what minLoggedForLimit gave for `speedLimit`),
+// so a new limit may move it.  A value the user typed in Run settings or VST.cfg stays as it is.
+inline bool minLoggedFollows(int minLogged, int speedLimit) {
+	return minLogged == kDefaultMinLogged || minLogged == minLoggedForLimit(speedLimit);
+}
+
 // Many cars' cruise control won't engage below about 20-25 mph, so a slower target needs a steady foot, or a speed
 // read afterwards from VST Ride-along or a Tesla dashcam clip.
 inline bool belowCruiseControl(int mph) { return mph < 25; }

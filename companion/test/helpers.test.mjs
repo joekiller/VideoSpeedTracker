@@ -301,4 +301,8 @@ describe('plan.js drive-by target matches src/Gui/Calibration.h', () => {
     assert.equal(plan.checkTarget(5), 10);
     assert.ok(plan.belowCruiseControl(15) && !plan.belowCruiseControl(25));
   });
+  it('sets the logging minimum 5 under the limit, at most 18, and only moves an automatic one', () => {
+    assert.deepEqual([15, 20, 25, 45, 5].map(plan.minLoggedForLimit), [10, 15, 18, 18, 5]);
+    assert.ok(plan.minLoggedFollows(18, 15) && plan.minLoggedFollows(10, 15) && !plan.minLoggedFollows(12, 15));
+  });
 });

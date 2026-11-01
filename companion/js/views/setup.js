@@ -637,14 +637,29 @@ function drive({ vst, body, cfg, st, n }) {
     $('#result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
-  /** Confirms and applies a pass as the calibration for its direction. */
+  /**
+   * "That was me": confirms the pass and asks the speed actually driven, filled in with the target (the drive may not
+   * have hit it, or there was no target, as when the pass was picked from its detail page). The answer becomes the
+   * page's speed too, so a check afterwards starts from it.
+   */
   const choose = async (v) => {
+    let drove = speed;
     const okd = await sheet(html`
-      <h2>Calibrate from this pass?</h2>
-      <p>You drove <b>${DIR_WORDS[v.dir]}</b> at <b>${speed} mph</b> and took <b>${v.frames} frames</b> to cross the zone. VST will use this for every ${v.dir === 'L2R' ? 'left-to-right' : 'right-to-left'} vehicle.</p>
+      <h2>That was me</h2>
+      <p>You drove <b>${DIR_WORDS[v.dir]}</b> and took <b>${v.frames} frames</b> to cross the zone. What speed were you going?</p>
+      <div class="stepper" style="margin:12px 0"><button data-d="-1" aria-label="Slower">−</button><output id="drove" aria-live="polite">${drove} mph</output><button data-d="1" aria-label="Faster">+</button></div>
+      <p class="small muted">Your speedometer or GPS app, as close as you can. VST will use this for every ${v.dir === 'L2R' ? 'left-to-right' : 'right-to-left'} vehicle.</p>
       <div class="btn-row"><button class="btn" data-v="0">Cancel</button><button class="btn primary" data-v="1">Calibrate</button></div>`,
-    (el, close) => $$('[data-v]', el).forEach((b) => b.onclick = () => close(b.dataset.v === '1')));
+    (el, close) => {
+      $$('[data-v]', el).forEach((b) => b.onclick = () => close(b.dataset.v === '1'));
+      $$('[data-d]', el).forEach((b) => b.onclick = () => {
+        drove = Math.max(TARGET_MIN, Math.min(TARGET_MAX, drove + Number(b.dataset.d)));
+        $('#drove', el).textContent = `${drove} mph`;
+      });
+    });
     if (!okd) return;
+    speed = drove;
+    paintSpeed();
     const r = await vst.calibrationApply({ dir: v.dir, speed, vehicleId: v.id });
     if (!r.ok) { toast(r.problems.join('. ')); return; }
     toast(html`${icon('check')}<span>Calibrated ${DIR_WORDS[v.dir]} from your ${speed} mph pass (${v.frames} frames)</span>`);

@@ -111,7 +111,10 @@ public:
 	// Appends a "check" row to the history and returns the comparison.
 	CalCheck checkCalibration(bool l2r, double mph, int frames, double fps);
 	void dashcamSpeed(const Vehicle* picked);   // Calibrate: fill the driven speed from a Tesla dashcam clip
-	void targetSpeedChips();                    // Calibrate: the drive-by target speed (10/15/20/25, the limit)
+	void targetSpeedChips();
+	// After prefs.speedLimit changed from `before`: moves cfg.g.minLoggedSpeed to calib::minLoggedForLimit() when it was
+	// still the automatic value for `before` (a hand-set value stays).  Returns whether it moved.
+	bool followSpeedLimit(int before);                    // Calibrate: the drive-by target speed (10/15/20/25, the limit)
 	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
 	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
 	// was made against) and the check pass imply; recorded as an apply.

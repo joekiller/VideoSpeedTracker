@@ -312,6 +312,24 @@ describe('PUT /api/config', () => {
       await api.put('/api/config', { siteName: before.siteName });
     }
   });
+
+  it('a new speedLimit moves an automatic minLoggedSpeed (5 under, at most 18); an explicit one wins', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
+    const { data: before } = await api.get('/api/config');
+    try {
+      await api.put('/api/config', { speedLimit: 25, minLoggedSpeed: 18 });
+      let r = await api.put('/api/config', { speedLimit: 15 });
+      assert.equal(r.data.config.minLoggedSpeed, 10, '15 mph street logs from 10');
+      r = await api.put('/api/config', { speedLimit: 25 });
+      assert.equal(r.data.config.minLoggedSpeed, 18, 'and back to 18 at 25');
+      r = await api.put('/api/config', { speedLimit: 15, minLoggedSpeed: 12 });
+      assert.equal(r.data.config.minLoggedSpeed, 12, 'an explicit value in the same body wins');
+      r = await api.put('/api/config', { speedLimit: 20 });
+      assert.equal(r.data.config.minLoggedSpeed, 12, 'a hand-set value stays');
+    } finally {
+      await api.put('/api/config', { speedLimit: before.speedLimit, minLoggedSpeed: before.minLoggedSpeed });
+    }
+  });
 });
 
 const PLAN = {
