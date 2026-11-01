@@ -84,9 +84,9 @@ static void cameraModelTests() {
 	for (double yaw : { 20.0, -20.0, 45.0, -60.0, 5.0 }) {
 		CameraSetup c{ 30, 12, yaw, 70 };
 		double xV = vanishingFrameX(c, 1280);
-		Pixel far = projectPoint(c, 1280, 720, yaw > 0 ? 1e11 : -1e11, 12 - 1.1, 30);   // converges as 1/X
-		CHECK(far.ok);
-		NEAR(far.u, xV, 1e-3);
+		Pixel horizon = projectPoint(c, 1280, 720, yaw > 0 ? 1e11 : -1e11, 12 - 1.1, 30);   // converges as 1/X
+		CHECK(horizon.ok);
+		NEAR(horizon.u, xV, 1e-3);
 		CHECK(yaw > 0 ? xV > 640 : xV < 640);
 		// The same point as where two street-parallel lines cross in the picture (the street edge's job).
 		auto lineOf = [&](double Y, double Z) {

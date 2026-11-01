@@ -54,9 +54,11 @@ jobs:
             libopencv-dev libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
             xvfb libgl1-mesa-dri \
             > "$RUNNER_TEMP/apt.log" 2>&1 || { cat "$RUNNER_TEMP/apt.log"; exit 1; }
+      # VST_WERROR: a new compiler warning in our code fails the PR rather than piling up in release logs.
       - name: Build
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
-      # Sample video regression, config parsing, first run, and the companion API smoke test, which drives VST
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVST_WERROR=ON && cmake --build build -j"$(nproc)"
+      # Sample video regression, config parsing, first run, the windows.h macro check (portability_windows_macros), and
+      # the companion API smoke test, which drives VST
       # Studio under Xvfb (xvfb installed above; curl and Node come with the runner). VST_REQUIRE_API_SMOKE makes
       # that test fail rather than skip if anything it needs goes missing. Independent tests run side by side
       # (the min_logged_speed_* pair still waits for sample_video_baseline, whose output it reads).
@@ -83,3 +85,39 @@ jobs:
         with:
           name: vst-studio-screenshots
           path: shots/*.png
+
+  # Pull requests build only against the distro's OpenCV 4, while every release links OpenCV 5, which deprecates APIs
+  # 4 still takes quietly (PR #43 removed 18 such warnings found in main's release logs).  This compiles every source,
+  # syntax only, against the OpenCV 5 that release.yml builds and caches on main, with deprecations as errors
+  # (tests/portability_check.py).  It reuses that cache rather than building OpenCV, so it costs about two minutes;
+  # in the same container image as the release job so the cache entry matches.  If main hasn't saved one yet (a
+  # change to packaging/build-opencv.sh), it says so and passes.
+  opencv5-headers:
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    steps:
+      - name: Install the compiler and VST Studio's build headers
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
+          printf '%s\n' force-unsafe-io 'path-exclude=/usr/share/doc/*' 'path-exclude=/usr/share/man/*' > /etc/dpkg/dpkg.cfg.d/90-ci
+          apt-get -qq update
+          apt-get install -y -qq -o Dpkg::Use-Pty=0 --no-install-recommends ca-certificates git cmake make g++ python3 \
+            pkg-config libgl-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            > "$RUNNER_TEMP/apt.log" 2>&1 || { cat "$RUNNER_TEMP/apt.log"; exit 1; }
+      - uses: actions/checkout@v7
+      - name: Restore main's OpenCV 5 build
+        id: opencv
+        uses: actions/cache/restore@v6
+        with:
+          path: /opt/opencv
+          key: opencv-5.0.0-ubuntu-24.04-amd64-${{ hashFiles('packaging/build-opencv.sh') }}
+      - name: Compile every source against OpenCV 5's headers
+        run: |
+          if [ "${{ steps.opencv.outputs.cache-hit }}" != true ]; then
+            echo "::notice::No OpenCV 5 build cached on main for this build-opencv.sh yet; skipped (main's release run saves one)."
+            exit 0
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/opencv
+          python3 tests/portability_check.py build . --opencv5 /opt/opencv
