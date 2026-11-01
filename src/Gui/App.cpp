@@ -1643,8 +1643,15 @@ void App::zoneInspector() {
 	beginCard("zone", ICON_STOPWATCH, "Speed zone");
 	dimText("Timing starts when a front bumper crosses one white line and stops at the other. Put them as far apart as the lane stays clear; "
 		"with short-view timing (step 2) even a short stretch works.");
-	intRow("Left line", &g.speedLineLeft, 0, g.AnalysisBoxWidth);
-	intRow("Right line", &g.speedLineRight, 0, g.AnalysisBoxWidth);
+	// On the rails (Globals::railZone()): inside the box, at least kMinZone apart.  A typed value (Ctrl+click) can go past
+	// the drag limits, so the rails are applied after either field changes, moving the other line if it must.
+	{
+		const int sl0 = g.speedLineLeft, sr0 = g.speedLineRight;
+		intRow("Left line", &g.speedLineLeft, 0, std::max(g.AnalysisBoxWidth - Globals::kMinZone, 0));
+		intRow("Right line", &g.speedLineRight, std::min(Globals::kMinZone, g.AnalysisBoxWidth), g.AnalysisBoxWidth);
+		if (g.speedLineLeft != sl0 || g.speedLineRight != sr0) g.railZone(g.speedLineLeft != sl0);
+		dimText("The lines stay inside the box and at least %d px apart. Right on the box's edge is fine: VST times cars as they come into view.", Globals::kMinZone);
+	}
 	// How long a car at the limit spends between the lines, from the calibration (the legal direction's lane on a
 	// one-way street).  Before calibrating, the numbers in VST.cfg belong to some other street, so it says nothing
 	// yet; with short-view timing a short time is expected, not a problem.
@@ -1666,7 +1673,11 @@ void App::zoneInspector() {
 	dimText("Just the street: leave out treetops, parked cars and the sidewalk so they can't fool the tracker.");
 	intRow("Left", &g.AnalysisBoxLeft, 0, 1279);
 	intRow("Top", &g.AnalysisBoxTop, 0, 719);
-	intRow("Width", &g.AnalysisBoxWidth, 40, 1280);
+	{
+		const int w0 = g.AnalysisBoxWidth;
+		intRow("Width", &g.AnalysisBoxWidth, Globals::kMinZone, 1280);
+		if (g.AnalysisBoxWidth != w0) { g.AnalysisBoxWidth = std::max(g.AnalysisBoxWidth, Globals::kMinZone); g.railZone(false); }  // the right side moved: the lines stay inside
+	}
 	intRow("Height", &g.AnalysisBoxHeight, 30, 720);
 	endCard();
 
@@ -2227,7 +2238,7 @@ void App::pageCalibrate() {
 				ImGui::PushID(it->id);
 				char label[180];
 				snprintf(label, sizeof label, "%s   %d frames   measured %d mph   %s%s",
-					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
+					it->ev.leftToRight ? "L→R" : "L←R", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
 					it->id == calibAppliedId_ ? "   calibrated from" : "");
 				if (ImGui::Selectable(label, calibPickId_ == it->id)) calibPickId_ = it->id;
 				ImGui::PopID();

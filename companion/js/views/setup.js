@@ -19,7 +19,7 @@
  * Step 5 uses POST /api/calibration/apply with the chosen pass, then POST /api/calibration/check with a second one.
  */
 import { html, $, $$, icon, sign, band, arrow, clock, ago, toast, sheet, confirmSheet } from '../ui.js';
-import { zonesSvg, applyHandle, handlePoint, HANDLE_AXES, geometry, oneLane, W, H, LANE } from '../overlay.js';
+import { zonesSvg, applyHandle, handlePoint, HANDLE_AXES, geometry, oneLane, MIN_ZONE, W, H, LANE } from '../overlay.js';
 import { frameStage, nudgePad, carRuler } from '../touch.js';
 
 export const STEPS = ['What you need', 'Pick your spot', 'Connect the camera', 'Mark your street', 'Calibrate'];
@@ -290,6 +290,8 @@ function mark({ vst, body, cfg, st, n, guard }) {
     </div>
     <div class="legend" id="legend"></div>
     <div class="callout" id="hint">${icon('info')}<p>Start with the box: drag its top-left and bottom-right corners to the edges of the road.</p></div>
+    ${Math.abs(cfg.levelDegrees || 0) >= 0.05 ? html`<p class="small muted" id="level-note" style="margin-top:8px">${icon('check')} This picture is already turned ${Math.abs(cfg.levelDegrees).toFixed(1)}° to level the street (set in VST Studio's step 4, Mark your street). The tracker sees it turned the same way, so draw on it as it is.</p>` : ''}
+    <p class="small muted" style="margin-top:8px">The speed lines stay inside the box and at least ${MIN_ZONE} px apart, so whatever you draw, VST can time it. A line right on the box's edge is fine.</p>
     <div class="list" style="margin-top:12px">
       <div class="item"><div class="label"><b>Something blocks the view</b><small>A post, tree trunk or sign in front of the road</small></div>
         <label class="switch"><input type="checkbox" id="obs" aria-label="Something blocks the view" ${draft.obstruction[1] > draft.obstruction[0] ? 'checked' : ''}><i></i></label></div>

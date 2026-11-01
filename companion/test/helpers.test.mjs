@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { esc, raw, html, band, passPills } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
-import { geometry, applyHandle, laneYAt, laneHandleX } from '../js/overlay.js';
+import { geometry, applyHandle, laneYAt, laneHandleX, railZone, MIN_ZONE } from '../js/overlay.js';
 import * as plan from '../js/plan.js';
 
 describe('ui.js esc', () => {
@@ -138,9 +138,34 @@ describe('overlay.js geometry', () => {
     assert.equal(geometry({ ...cfg, obstruction: [0, 0] }).obs, null);
   });
   it('keeps dragged speed lines inside the box and apart', () => {
-    assert.deepEqual(applyHandle(cfg, 'sr', 5000, 0), { speedLineRight: 1269 });
-    assert.deepEqual(applyHandle(cfg, 'sl', 5000, 0), { speedLineLeft: 909 - 40 });
-    assert.deepEqual(applyHandle(cfg, 'sl', -50, 0), { speedLineLeft: 0 });
+    assert.deepEqual(applyHandle(cfg, 'sr', 5000, 0), { AnalysisBoxWidth: 1269, speedLineLeft: 350, speedLineRight: 1269 });
+    assert.deepEqual(applyHandle(cfg, 'sl', 5000, 0), { speedLineLeft: 909 - MIN_ZONE, speedLineRight: 909 });
+    assert.deepEqual(applyHandle(cfg, 'sl', -50, 0), { AnalysisBoxLeft: 0, AnalysisBoxWidth: 1279, speedLineLeft: 0, speedLineRight: 919, obstruction: [261, 321] });
+  });
+  // The rails (VST's Globals::railZone): whatever is drawn, the lines stay inside the box and MIN_ZONE apart.
+  it('keeps the speed lines on the rails, moving the one not being edited', () => {
+    assert.deepEqual(railZone(cfg, true), { speedLineLeft: 350, speedLineRight: 909 });
+    assert.deepEqual(railZone({ ...cfg, speedLineLeft: 800 }, true), { speedLineLeft: 800, speedLineRight: 1000 });
+    assert.deepEqual(railZone({ ...cfg, speedLineLeft: 1200 }, true), { speedLineLeft: 1269 - MIN_ZONE, speedLineRight: 1269 });
+    assert.deepEqual(railZone({ ...cfg, speedLineRight: 400 }, false), { speedLineLeft: 200, speedLineRight: 400 });
+    assert.deepEqual(railZone({ ...cfg, speedLineLeft: -30, speedLineRight: 5000 }, true), { speedLineLeft: 0, speedLineRight: 1269 });
+  });
+  it('lets a speed line drag the box side out with it, up to the picture edge', () => {
+    const c = { ...cfg, AnalysisBoxLeft: 300, AnalysisBoxWidth: 700, speedLineLeft: 50, speedLineRight: 600, obstruction: [100, 160] };
+    const out = applyHandle(c, 'sl', 120, 0);
+    assert.deepEqual(out, { AnalysisBoxLeft: 120, AnalysisBoxWidth: 880, speedLineLeft: 0, speedLineRight: 780, obstruction: [280, 340] });
+    const after = geometry({ ...c, ...out });
+    assert.equal(after.sr, geometry(c).sr);  // the other line stays put on the picture
+    assert.equal(after.sl, 120);
+    assert.deepEqual(applyHandle(c, 'sr', 1100, 0), { AnalysisBoxWidth: 800, speedLineLeft: 50, speedLineRight: 800 });
+    assert.deepEqual(applyHandle(c, 'sr', 5000, 0), { AnalysisBoxWidth: 979, speedLineLeft: 50, speedLineRight: 979 });
+  });
+  it('carries a line along when the box side is pushed past it, keeping the zone wide enough', () => {
+    const c = applyHandle(cfg, 'tl', 500, 220);  // past the left line at x 360
+    assert.equal(c.speedLineLeft, 0);
+    assert.ok(c.speedLineRight - c.speedLineLeft >= MIN_ZONE);
+    const b = applyHandle(cfg, 'br', 400, 410);  // the box 390 wide: right line in to its side, left line out of the way
+    assert.deepEqual([b.speedLineLeft, b.speedLineRight], [190, 390]);
   });
   it('keeps lines still on screen when the box corner moves', () => {
     const c = applyHandle(cfg, 'tl', 110, 240);

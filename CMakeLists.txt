@@ -107,6 +107,18 @@ foreach(min 0 30)
       -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
   set_tests_properties(min_logged_speed_${min} PROPERTIES FIXTURES_REQUIRED sample_run)
 endforeach()
+# A speed line on the analysis box's edge (a box drawn hard against the side of the picture), on each side in turn,
+# and 100 px in from it (a car first seen just before the line):
+# a full pass over the sample each, timed against the same baseline (tests/flush_zone.cmake).
+foreach(side left left100 right)
+  add_test(NAME flush_zone_${side}
+    COMMAND ${CMAKE_COMMAND}
+      -DVST=$<TARGET_FILE:VideoSpeedTracker>
+      -DSRC=${CMAKE_SOURCE_DIR}
+      -DOUT=${CMAKE_BINARY_DIR}/test-flush-zone
+      -DSIDE=${side}
+      -P ${CMAKE_SOURCE_DIR}/tests/flush_zone.cmake)
+endforeach()
 add_test(NAME software_level COMMAND level_test)
 add_test(NAME frame_input COMMAND frame_input_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-frame-input)
 add_test(NAME perspective COMMAND perspective_test)

@@ -78,6 +78,12 @@ public:
 	// track picked up again after it was lost), so it can never be timed.
 	bool firstSeenInZone() const { return seenInZone; }
 
+	// For a vehicle first seen just coming in at the box's edge, already a little past a speed line that sits on (or
+	// within a frame pair of) that edge: it can't have been seen sooner, so it is timed, but there is no frame in which
+	// its front bumper was seen at the entry line.  Its speed comes from a fit through the front bumpers seen in the zone
+	// (subFrameSpeed()), as in a short view, rather than from counting frames between the lines.
+	void markEnteredAtEdge() { fitTiming = true; }
+
 	int getFinalSpeed();
 
 	void holdFrame(Mat inMat);
@@ -142,6 +148,7 @@ private:
 	int trackStartPixel = 0;
 	int trackEndPixel= 0;
 	bool seenInZone = false;  // see firstSeenInZone()
+	bool fitTiming = false;   // see markEnteredAtEdge()
 	int trackStartFrame = 0;
 	int trackEndFrame = 0;
 

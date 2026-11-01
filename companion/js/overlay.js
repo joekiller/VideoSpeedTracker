@@ -33,6 +33,26 @@ export function geometry(c) {
   };
 }
 
+/**
+ * The speed zone's rails, the same as VST's (Globals::railZone, Globals::kMinZone): the lines sit inside the box, at
+ * least MIN_ZONE px apart, so a car is seen several times between them. A line may sit right on the box's side; VST
+ * times cars as they come into view there. keepLeft says which line (or box side) the user just moved; the other one
+ * gives way. Returns the two line keys.
+ */
+export const MIN_ZONE = 200;
+export function railZone(c, keepLeft) {
+  const w = c.AnalysisBoxWidth, clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  let sl = c.speedLineLeft, sr = c.speedLineRight;
+  if (keepLeft) {
+    sl = clamp(sl, 0, Math.max(w - MIN_ZONE, 0));
+    sr = clamp(sr, Math.min(sl + MIN_ZONE, w), w);
+  } else {
+    sr = clamp(sr, Math.min(MIN_ZONE, w), w);
+    sl = clamp(sl, 0, Math.max(sr - MIN_ZONE, 0));
+  }
+  return { speedLineLeft: Math.round(sl), speedLineRight: Math.round(sr) };
+}
+
 /** A lane line's y at frame x, between its left end yl and right end yr across the box. */
 export function laneYAt(g, yl, yr, fx) {
   return yl + (yr - yl) * (fx - g.box.x) / (g.box.w || 1);
@@ -70,7 +90,7 @@ export function applyHandle(c, handle, fx, fy, k = 2) {
       const dx = nx - g.box.x, dy = ny - g.box.y;
       return {
         AnalysisBoxLeft: nx, AnalysisBoxTop: ny, AnalysisBoxWidth: right - nx, AnalysisBoxHeight: bottom - ny,
-        speedLineLeft: Math.max(0, c.speedLineLeft - dx), speedLineRight: Math.max(1, c.speedLineRight - dx),
+        ...railZone({ AnalysisBoxWidth: right - nx, speedLineLeft: c.speedLineLeft - dx, speedLineRight: c.speedLineRight - dx }, true),
         R2LStreetY: clamp(c.R2LStreetY - dy, 0, bottom - ny), L2RStreetY: clamp(c.L2RStreetY - dy, 0, bottom - ny),
         ...(c.R2LStreetYRight ? { R2LStreetYRight: clamp(c.R2LStreetYRight - dy, 1, bottom - ny) } : {}),
         ...(c.L2RStreetYRight ? { L2RStreetYRight: clamp(c.L2RStreetYRight - dy, 1, bottom - ny) } : {}),
@@ -82,15 +102,29 @@ export function applyHandle(c, handle, fx, fy, k = 2) {
       const w = clamp(fx, g.box.x + 200, W - 1) - g.box.x, h = clamp(fy, g.box.y + 60, H - 1) - g.box.y;
       return {
         AnalysisBoxWidth: w, AnalysisBoxHeight: h,
-        speedLineRight: Math.min(c.speedLineRight, w), speedLineLeft: Math.min(c.speedLineLeft, w - 20),
+        ...railZone({ AnalysisBoxWidth: w, speedLineLeft: c.speedLineLeft, speedLineRight: c.speedLineRight }, false),
         R2LStreetY: Math.min(c.R2LStreetY, h), L2RStreetY: Math.min(c.L2RStreetY, h),
         ...(c.R2LStreetYRight ? { R2LStreetYRight: Math.min(c.R2LStreetYRight, h) } : {}),
         ...(c.L2RStreetYRight ? { L2RStreetYRight: Math.min(c.L2RStreetYRight, h) } : {}),
         ...(g.edge ? { streetEdge: c.streetEdge.map((e) => Math.min(e, h)) } : {}),
       };
     }
-    case 'sl': return { speedLineLeft: clamp(fx - g.box.x, 0, c.speedLineRight - 40) };
-    case 'sr': return { speedLineRight: clamp(fx - g.box.x, c.speedLineLeft + 40, g.box.w) };
+    // A speed line dragged out past the box's side takes the side with it, up to the picture's edge (as in VST
+    // Studio), so the zone can go where the road is without resizing the box first. Then the rails (railZone).
+    case 'sl': {
+      const sr = c.speedLineRight;
+      if (fx >= g.box.x) return railZone({ ...c, speedLineLeft: Math.min(fx - g.box.x, sr - MIN_ZONE) }, true);
+      const nx = clamp(fx, 0, g.box.x), dx = nx - g.box.x;
+      const grown = { AnalysisBoxLeft: nx, AnalysisBoxWidth: right - nx };
+      return { ...grown, ...railZone({ ...grown, speedLineLeft: 0, speedLineRight: sr - dx }, true),
+        obstruction: g.obs ? [c.obstruction[0] - dx, c.obstruction[1] - dx] : c.obstruction };
+    }
+    case 'sr': {
+      const sl = c.speedLineLeft;
+      if (fx <= right) return railZone({ ...c, speedLineRight: Math.max(fx - g.box.x, sl + MIN_ZONE) }, false);
+      const w = clamp(fx, right, W - 1) - g.box.x;
+      return { AnalysisBoxWidth: w, ...railZone({ AnalysisBoxWidth: w, speedLineLeft: sl, speedLineRight: w }, false) };
+    }
     case 'r2l': return moveLane(c, g, 'R2L', fy, k);
     case 'l2r': return moveLane(c, g, 'L2R', fy, k);
     case 'o0': return { obstruction: [clamp(fx - g.box.x, 0, c.obstruction[1] - 10), c.obstruction[1]] };
