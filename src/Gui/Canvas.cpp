@@ -383,7 +383,7 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 				A(col), ImDrawFlags_None, hotL ? 3.f : 2.5f);
 		}
 		grips(g.lane(legalL2R), col, H_LaneOne);
-		std::string label = std::string(legalL2R ? "One-way  L→R " : "One-way  R→L ") + (legalL2R ? g.L2RDirection : g.R2LDirection);
+		std::string label = std::string(legalL2R ? "One-way  L→R " : "One-way  L←R ") + (legalL2R ? g.L2RDirection : g.R2LDirection);
 		float lx = legalL2R ? a.x + px(6) : b.x - px(6) - pillSize(label.c_str()).x;
 		ImVec2 at(lx, std::min(yAt(a, b, lx), yAt(a, b, lx + pillSize(label.c_str()).x)) - px(24));
 		tag(dl, at, label.c_str(), A(c::rgb(0x0B0E14)), A(col, .92f));
@@ -405,7 +405,7 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 			float fx = lane.l2r ? mid - half : mid + half, tx = lane.l2r ? mid + half : mid - half;
 			laneArrow(dl, ImVec2(fx, yAt(a, b, fx)), ImVec2(tx, yAt(a, b, tx)), A(wrong ? c::wrong : col), px(4));
 			grips(g.lane(lane.l2r), col, lane.h);
-			std::string label = std::string(lane.l2r ? "L→R " : "R→L ") + (lane.l2r ? g.L2RDirection : g.R2LDirection);
+			std::string label = std::string(lane.l2r ? "L→R " : "L←R ") + (lane.l2r ? g.L2RDirection : g.R2LDirection);
 			if (wrong) label += "  " ICON_WARN " wrong way";
 			float lx = lane.l2r ? a.x + px(6) : b.x - px(6) - pillSize(label.c_str()).x;
 			ImVec2 at(lx, std::min(yAt(a, b, lx), yAt(a, b, lx + pillSize(label.c_str()).x)) - px(24));

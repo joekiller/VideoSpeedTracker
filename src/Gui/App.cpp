@@ -2238,7 +2238,7 @@ void App::pageCalibrate() {
 				ImGui::PushID(it->id);
 				char label[180];
 				snprintf(label, sizeof label, "%s   %d frames   measured %d mph   %s%s",
-					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
+					it->ev.leftToRight ? "L→R" : "L←R", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
 					it->id == calibAppliedId_ ? "   calibrated from" : "");
 				if (ImGui::Selectable(label, calibPickId_ == it->id)) calibPickId_ = it->id;
 				ImGui::PopID();
