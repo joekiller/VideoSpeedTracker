@@ -383,6 +383,12 @@ if(Python3_Interpreter_FOUND AND NOT MSVC)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/portability_check.py ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
   set_tests_properties(portability_windows_macros PROPERTIES SKIP_REGULAR_EXPRESSION "PORTABILITY_CHECK_SKIPPED")
 endif()
+# Standard names used without their header (std::max with only <cmath>): libstdc++ forgives it, MSVC doesn't.
+# A text scan of src/ and tests/, so it also covers Windows- and macOS-only code (tests/std_headers_check.py).
+if(Python3_Interpreter_FOUND)
+  add_test(NAME std_headers_included
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/std_headers_check.py ${CMAKE_SOURCE_DIR})
+endif()
 
 if(VST_WERROR AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_webcam webcam_test vst_engine vst_report VSTStudio level_test frame_input_test

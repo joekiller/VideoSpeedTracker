@@ -12,6 +12,7 @@
 // and disagreeing when the phone reads high.  Also the user-facing errors: not an
 // MP4, no telemetry (older firmware), no TeslaCam timestamp in the name.
 #include "DashCam.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>

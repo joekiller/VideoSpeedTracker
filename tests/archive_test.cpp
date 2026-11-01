@@ -16,6 +16,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <cstdio>
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
