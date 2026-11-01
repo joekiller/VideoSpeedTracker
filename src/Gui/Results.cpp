@@ -26,7 +26,7 @@ bool readStatsCsv(const std::string& path, std::vector<StatsRow>& rows, std::str
 		// Columns: Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed,
 		// Flag, Timestamp.  Csvs written before Flag and Timestamp existed end at estSpeed, with a 14th "*****" only when flagged,
 		// so both formats are read the same way: column 13 is the flag if present, column 14 the time if present.  Columns 15-19
-		// (v1.10+) are the speed trend: EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, all empty when unknown.
+		// (v1.10+) are the speed trend: EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, all empty when unknown.  Column 20 is LengthPx.
 		std::vector<std::string> f;
 		std::stringstream ss(line);
 		for (std::string cell; std::getline(ss, cell, ',');) f.push_back(trim(cell));
@@ -51,6 +51,7 @@ bool readStatsCsv(const std::string& path, std::vector<StatsRow>& rows, std::str
 			}
 			catch (...) { r.trend.clear(); }   // a hand-edited row: keep the vehicle, drop its trend
 		}
+		if (f.size() > 20) toInt(f[20], r.lengthPx);
 		rows.push_back(r);
 	}
 	if (skipped) *skipped = bad;
@@ -61,16 +62,16 @@ bool writeStatsCsv(const std::string& path, const std::vector<StatsRow>& rows) {
 	std::ofstream out(path);
 	if (!out) return false;
 	out << "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, "
-		"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft\n";
+		"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx\n";
 	for (const StatsRow& r : rows) {
 		out << r.date << ", " << r.time << ", " << r.frame << ", " << r.compass << ", " << r.startFrame << ", " << r.endFrame << ", "
 			<< r.frames << ", " << r.startPix << ", " << r.endPix << ", " << r.deltaPix << ", " << r.area << ", , " << r.speed << ", "
 			<< (r.flagged ? "*****" : "") << ", " << r.timestamp << ", ";
-		if (r.trend.empty()) out << ", , , , \n";
+		if (r.trend.empty()) out << ", , , , , " << r.lengthPx << "\n";
 		else {
 			char a[32];
 			snprintf(a, sizeof a, "%.1f", r.accel);
-			out << r.entryMph << ", " << r.exitMph << ", " << a << ", " << r.trend << ", " << r.mphIn20ft << "\n";
+			out << r.entryMph << ", " << r.exitMph << ", " << a << ", " << r.trend << ", " << r.mphIn20ft << ", " << r.lengthPx << "\n";
 		}
 	}
 	return bool(out);

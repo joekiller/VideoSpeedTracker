@@ -20,6 +20,7 @@ struct StatsRow {
 	int entryMph = 0, exitMph = 0;  // at the two speed lines
 	double accel = 0;              // mph per second, + speeding up
 	int mphIn20ft = 0;             // projected 20 ft past the exit line
+	int lengthPx = 0;              // LengthPx (v1.10+): side-on length in pixels, 0 when unknown or the csv predates it
 };
 
 // Reads a stats csv.  Returns false with error set if the file can't be read; malformed rows are skipped and counted.

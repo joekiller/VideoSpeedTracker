@@ -153,9 +153,11 @@ struct EngineExit { int code; };  // thrown by quit() so an embedded run unwinds
 // now always there so that Timestamp (ISO 8601 local time with UTC offset, empty when unknown) is always the 15th column.
 // The speed trend follows (v1.10+, SpeedTrend.h): EntryMph and ExitMph at the two speed lines, AccelMphPerSec (+ speeding
 // up), Trend (decelerating, steady, accelerating or rapid) and MphIn20ft, the speed projected 20 ft past the exit line.
-// All five are empty when the trend can't be told.  Readers of the older 15 columns ignore them.
+// All five are empty when the trend can't be told.  LengthPx (v1.10+) is the vehicle's side-on length in analysis-box
+// pixels (VehicleDynamics::getLengthPx), which VST Studio turns into feet with the calibration, so sizes survive a
+// reopen, Open and an archive.  Readers of the older 15 columns ignore them all.
 const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, "
-	"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft";
+	"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx";
 
 // The five speed-trend cells of a stats row (see statsHeader), "" in each when unknown.
 string trendCells(const vst::SpeedTrend& t){
@@ -1154,7 +1156,7 @@ void logL2Rstats(bool isOK, int index){
 			<< vehiclesGoingRight[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << ", " << trendCells(vehiclesGoingRight[index].getSpeedTrend()) << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingRight[index].getSpeedTrend()) << ", " << vehiclesGoingRight[index].getLengthPx(g) << endl;
 		reportVehicle(true, vehiclesGoingRight[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingRight[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
@@ -1225,7 +1227,7 @@ void logR2Lstats(bool isOK, int index){
 			<< vehiclesGoingLeft[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << ", " << trendCells(vehiclesGoingLeft[index].getSpeedTrend()) << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingLeft[index].getSpeedTrend()) << ", " << vehiclesGoingLeft[index].getLengthPx(g) << endl;
 		reportVehicle(false, vehiclesGoingLeft[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingLeft[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());

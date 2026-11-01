@@ -58,9 +58,9 @@ kill "$VPID"; wait "$VPID" 2>/dev/null
 lost=$(grep -m1 -oE "^<[0-9]+> +Lost " "$LOG" | grep -oE "[0-9]+")
 today=$(date +%Y-%m-%d)
 awk -F', *' -v lost="$lost" -v today="$today" '
-	NR == 1 { if ($0 !~ /, estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft$/) { print "bad header: " $0; bad = 1 }; next }
+	NR == 1 { if ($0 !~ /, estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx$/) { print "bad header: " $0; bad = 1 }; next }
 	{
-		if (NF != 20) { print "row has " NF " columns: " $0; bad = 1; next }
+		if (NF != 21) { print "row has " NF " columns: " $0; bad = 1; next }
 		# Live rows: Date and Time are the clock when logged, and Timestamp is the same moment in ISO 8601 with offset.
 		d = substr($15, 1, 4) substr($15, 6, 2) substr($15, 9, 2); t = substr($15, 12, 2) substr($15, 15, 2) substr($15, 18, 2)
 		if ($15 !~ ("^" today "T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][+-][0-9][0-9]:[0-9][0-9]$") || $1 != d || $2 != t) { print "bad time columns: " $0; bad = 1 }
