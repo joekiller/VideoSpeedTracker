@@ -96,8 +96,8 @@ Apple Developer Program, $99/year.
 The binaries are then signed with the hardened runtime and notarized with `notarytool`. VST Studio ships as
 `VSTStudio.app` with the ticket stapled, so it opens offline: Gatekeeper refuses a double-clicked bare executable
 ("Apple could not verify…") even when it's notarized. The command-line tools live in `Contents/MacOS` beside
-VST Studio and are signed first (inside-out, no `--deep`), so the bundle seals them and one notarization covers the
-lot. The `.dmg` holds only the stapled app and an Applications link; it is then signed,
+VST Studio and the FFmpeg dylibs in `Contents/Frameworks`; they are signed first (inside-out, no `--deep`), so the
+bundle seals them and one notarization covers the lot. The `.dmg` holds only the stapled app and an Applications link; it is then signed,
 notarized and stapled itself (a second, short notary submission). The job ends with `spctl --assess` on the app, so a release whose
 app Gatekeeper would refuse fails instead of publishing; the README shows the same checks for a downloaded copy.
 
