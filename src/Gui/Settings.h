@@ -85,6 +85,17 @@ struct AppPrefs {
 	// a calibration was applied to.  A step counts as done only for the camera/config it was done for.
 	std::string zonesFor, calibratedFor;
 	std::string calibratedLines;   // speedLineLeft,speedLineRight,AnalysisBoxWidth when calibrated (App::speedLinesSig)
+	// The pass the calibration in force came from ("<VST.cfg>|<frame>|<time it passed>"), so Results can mark it, and
+	// whether Results hides the passes logged before that calibration (timed with the old one).
+	std::string calPass;
+	bool hideBeforeCal = true;
+	// How many rows each stats csv already had when that calibration was applied ("<VST.cfg>|<csv>|<rows>|<csv>|<rows>..."):
+	// those rows were timed with the old calibration.  By row, not by time, because a recording's rows carry the time
+	// the video was shot, which says nothing about when it was analysed.
+	std::string calCuts;
+	// Pick your spot's distance came from the user (typed, the map, step 4/5's "to the lane"), so a calibration keeps it
+	// and works out the lens's field of view from the measured picture width instead (App::syncPlanFromCalibration).
+	bool planDistMeasured = false;
 	bool planConfirmed = false;    // Pick your spot has been saved at least once: step 2's check in the rail
 
 	void load();

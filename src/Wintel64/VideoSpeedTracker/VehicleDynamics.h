@@ -53,6 +53,7 @@ public:
 	int getTrackEndFrame();
 
 	int getArea();
+	int getLengthPx(const Globals& g);  // pixels, the vehicle's side-on length (see the .cpp)
 
 	double getFBSlope();
 

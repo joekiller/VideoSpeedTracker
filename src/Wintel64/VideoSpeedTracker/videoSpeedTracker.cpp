@@ -1085,7 +1085,7 @@ void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed, const str
 #ifdef VST_EMBEDDED
 	if (hooks && hooks->onVehicle)
 		hooks->onVehicle({ leftToRight, wrongWay, compass, estSpeed, frameNumber, v.getTrackStartFrame(), v.getTrackEndFrame(),
-			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp });
+			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp, v.getLengthPx(g) });
 #else
 	(void)v;
 	(void)timestamp;

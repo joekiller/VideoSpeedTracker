@@ -55,6 +55,12 @@ static std::string jobStem(const std::string& input) {
 	}
 }
 
+// The stats csv a run of this input writes.  The engine starts it afresh each run, so a recording analysed again
+// replaces its rows; a live source gets a new name each time.
+std::string Tracker::statsPathFor(const std::string& dataDir, const std::string& input) {
+	return (fs::path(dataDir) / "Stats" / ("stats_" + jobStem(input) + ".csv")).string();
+}
+
 Tracker::~Tracker() {
 	stop();
 }
@@ -107,7 +113,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 		Job& job = jobs[i];
 		currentInput_ = job.input;
 		std::string stem = jobStem(job.input);
-		job.statsPath = (data / "Stats" / ("stats_" + stem + ".csv")).string();
+		job.statsPath = (data / "Stats" / ("stats_" + stem + ".csv")).string();   // statsPathFor()
 		job.manifestPath = vst::manifestPathFor(job.statsPath);
 		std::vector<std::string> args = {
 			"--input", job.input, "--config", opt.configPath, "--stats", job.statsPath,
@@ -232,6 +238,7 @@ void Tracker::onVehicle(const vst::VehicleEvent& e) {
 		if (liveSource_) v.time = e.timestamp.substr(0, 19);
 		else v.recorded = e.timestamp.substr(0, 19);
 	}
+	v.statsPath = lastStats_;
 	v.large = e.area >= opt_.largeArea;
 	v.speeding = e.speed > opt_.speedLimit;
 	v.egregious = e.speed >= opt_.egregious;
@@ -347,6 +354,12 @@ Counts Tracker::counts() {
 	c.untimed = untimed_;
 	c.tries = c.vehicles + slow_ + untimed_;
 	return c;
+}
+
+void Tracker::removeVehicles(const std::vector<int>& ids) {
+	std::lock_guard<std::mutex> l(mu_);
+	vehicles_.erase(std::remove_if(vehicles_.begin(), vehicles_.end(),
+		[&](const Vehicle& v) { return std::find(ids.begin(), ids.end(), v.id) != ids.end(); }), vehicles_.end());
 }
 
 void Tracker::clearVehicles() {

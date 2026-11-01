@@ -311,6 +311,12 @@ bool App::planCommit(bool quiet) {
 	PlanDraft& d = planDraft_;
 	bool wasShort = cfg.g.subFrameTiming != 0;
 	bool cfgTouched = d.shortView || !d.legal.empty() || !d.l2r.empty() || !d.r2l.empty();
+	// Where the saved distance came from decides what a later calibration keeps (syncPlanFromCalibration).
+	plan::Source src = plan::sourceOf(d.plan.source);
+	if (std::fabs(d.plan.dist - prefs.planDist) > 1e-4 || d.plan.source != prefs.planSource) {
+		if (src == plan::Source::Typed || src == plan::Source::Map) prefs.planDistMeasured = true;
+		else if (src == plan::Source::Guess || src == plan::Source::Picture) prefs.planDistMeasured = false;
+	}
 	d.plan.store(prefs);
 	prefs.planConfirmed = true;
 	Globals& g = cfg.g;
@@ -499,16 +505,75 @@ void App::syncPlanFromCalibration(bool announce) {
 		g.LegalDirection.c_str());
 	if (prefs.planCalSig == sig) return;
 	prefs.planCalSig = sig;
+	planSync();   // pick up a draft kept over a restart before the saved plan moves under it
+	retuneLargeVehicles();
 	double wasFt = plan::coverAt(prefs.planDist, prefs.planHfov) * plan::kFt;
 	plan::Inputs in = planInputs();
-	plan::applyMeasured(in, m);
-	setPlanStreet(in.distM, in.clearM, plan::Source::Calibration, "Measured by " + how);
+	// A calibration measures how wide the picture is at the lane.  That is distance and lens together (cover = 2 d
+	// tan(fov / 2)), so it can only fix one of them: when the user gave the distance (typed it, the map, the "to the lane"
+	// box on Mark your street), the distance stays and the field of view is worked out; otherwise the lens is the guess
+	// and the distance follows from it.
+	double coverM = m.coverFt / plan::kFt;
+	double fov = 2 * std::atan(coverM / (2 * std::max(prefs.planDist, 1.0))) * 180 / 3.14159265358979;
+	bool keepDist = prefs.planDistMeasured && fov >= 20 && fov <= 150;
+	if (keepDist) {
+		prefs.planHfov = fov;
+		in = planInputs();
+		in.clearM = std::max(m.clearFt / plan::kFt, 1.0);
+	}
+	else plan::applyMeasured(in, m);
+	setPlanStreet(in.distM, in.clearM, plan::Source::Calibration,
+		"Measured by " + how + (keepDist ? " (your distance to the lane kept)" : ""));
+	// A calibration is a measurement made on purpose, so it beats a preview nobody saved: the draft's street (and lens)
+	// take the measured numbers, and planSync doesn't count it as "the saved plan moved under your changes".
+	PlanState saved = planSaved();
+	for (PlanState* x : { &planDraft_.plan, &planBase_ }) {
+		x->dist = saved.dist; x->clear = saved.clear; x->source = saved.source; x->note = saved.note; x->carLengths = saved.carLengths;
+		if (keepDist) { x->hfov = saved.hfov; x->preset = saved.preset; }
+	}
+	planEdited();
 	if (announce) {
-		char t[320];
-		snprintf(t, sizeof t, "Step 2 updated: the calibration measured about %.0f ft of street across the picture (the plan had %.0f ft), "
-			"so the camera is about %.0f ft from the lane with your lens.", m.coverFt, wasFt, in.distM * plan::kFt);
+		char t[360];
+		if (keepDist)
+			snprintf(t, sizeof t, "Step 2 updated: the calibration measured about %.0f ft of street across the picture. Your %.0f ft to the lane "
+				"is kept, so your lens sees about %.0f degrees across.", m.coverFt, in.distM * plan::kFt, fov);
+		else
+			snprintf(t, sizeof t, "Step 2 updated: the calibration measured about %.0f ft of street across the picture (the plan had %.0f ft), "
+				"so the camera is about %.0f ft from the lane with your lens.", m.coverFt, wasFt, in.distM * plan::kFt);
 		toast(t, c::accent2, ICON_RULER);
 	}
+}
+
+// The user's own camera-to-lane distance from outside Pick your spot (the ghost car's "To the lane" on Mark your
+// street, the known-car card): saved at once, as the user's number, which a later calibration keeps.  An untouched
+// draft follows it (planSync); a draft that changed the distance too keeps its own and says the saved plan moved.
+void App::setMeasuredDistance(double distM, const char* why) {
+	distM = std::clamp(distM, 1.0, 500 / plan::kFt);
+	if (std::fabs(distM - prefs.planDist) < 1e-4) return;
+	planSync();
+	prefs.planDist = distM;
+	prefs.planSource = int(plan::Source::Typed);
+	prefs.planNote = why ? why : "";
+	prefs.planDistMeasured = true;
+	prefs.planCalSig.clear();   // the next calibration (or this one again) works the lens out from this distance
+}
+
+// A truck or bus is told apart by its size on the picture (largeVehicleArea, in the engine's units: box pixels / 300 in
+// the 1280-wide frame).  That only means something at one distance, so once a calibration says how many pixels a foot is
+// at the lane, the threshold is set to a real size: a side-on box of about 190 sq ft (a box truck is about 25 x 10 ft,
+// a bus 40 x 10; a big pickup with its shadow is about 20 x 8).  Results shows sizes in square feet the same way.
+double App::pxPerFtAtLane() {
+	plan::Measured m;
+	std::string how;
+	if (!planFromCalibration(m, how) || m.pxPerFt <= 0) return 0;
+	return m.pxPerFt;
+}
+
+void App::retuneLargeVehicles() {
+	double ppf = pxPerFtAtLane();
+	if (ppf <= 0) return;
+	int area = int(std::lround(kLargeVehicleSqFt * ppf * ppf / 300));
+	cfg.g.largeVehicleArea = std::clamp(area, 5, 100000);
 }
 
 std::string App::frameRateAdvice(double fps) {

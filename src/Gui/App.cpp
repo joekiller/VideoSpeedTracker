@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <map>
 #include <random>
 
 namespace fs = std::filesystem;
@@ -282,7 +283,15 @@ void App::startTracking() {
 	o.trace = prefs.trace;
 	o.largeArea = cfg.g.largeVehicleArea;
 	std::vector<Job> jobs;
-	for (auto& in : inputs) { Job j; j.input = in; jobs.push_back(j); }
+	for (auto& in : inputs) {
+		Job j;
+		j.input = in;
+		jobs.push_back(j);
+		// Its csv starts afresh: rows timed with today's calibration, and no longer the rows of this session's earlier runs.
+		std::string csv = Tracker::statsPathFor(o.dataDir, in);
+		forgetCalibrationCut(csv);
+		csvRestartedAt_[fs::path(csv).lexically_normal().string()] = tracker.lastVehicleId();
+	}
 	live_ = Tracker::Live();
 	liveTexSerial_ = fedSerial_ = -1;
 	runLevel_ = cfg.g.levelDegrees;   // the run copy carries this angle, so the frames it hands back are already turned by it
@@ -431,6 +440,14 @@ void App::recordCalibration(CalEvent e) {
 	e.config = cfg.path();
 	calibrationHistory();   // make sure the cache is for this config before adding to it
 	calHistory_.push_back(e);
+	// A new calibration: its pass (if it came from one) is set by the caller after this, and every pass logged so far
+	// was timed with the old one (Results marks them).
+	if (!e.check) {
+		prefs.calPass.clear();
+		calWatermark_ = tracker.lastVehicleId();
+		markCalibrationCuts();
+	}
+	annotateRows();   // a page of results already open shows the new marks at once
 	std::string err;
 	if (!screenshotMode && !calib::append(e, err)) toast(err, c::bad, ICON_WARN);
 }
@@ -481,6 +498,7 @@ void App::loadResultsCsv(const std::string& path) {
 	const Globals& g = cfg.g;
 	for (const StatsRow& s : stats) {
 		ResultRow r;
+		r.csvIndex = int(rows.size());
 		r.source = fs::path(path).filename().string();
 		r.frame = s.frame;
 		r.compass = s.compass;
@@ -496,9 +514,11 @@ void App::loadResultsCsv(const std::string& path) {
 		// The Timestamp column says when this vehicle passed; drop its UTC offset to match session rows ("yyyy-mm-ddThh:mm:ss").
 		// Older csvs only have Date/Time, which for Foscam recordings is when the recording started.
 		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
+		r.statsPath = path;
 		rows.push_back(r);
 	}
 	rowsFrom = path;
+	annotateRows();
 	selectedRow_ = -1;
 	if (skipped) toast(std::to_string(skipped) + " rows in that file weren't in VST's format and were skipped", c::warn, ICON_WARN);
 }
@@ -519,9 +539,158 @@ void App::showSessionResults() {
 		r.large = v.large;
 		r.fps = v.fps;
 		r.time = v.passed();   // empty for recordings without a start time
+		r.statsPath = v.statsPath;
+		r.widthPx = v.ev.width;
 		rows.push_back(r);
 	}
 	rowsFrom.clear();
+	annotateRows();
+}
+
+// ---- Results and the calibration ------------------------------------------------------------------------------
+//
+// A pass's identity across the session and its csv row: the frame it was logged at and when it passed.
+
+namespace {
+std::string passKey(const std::string& config, int frame, const std::string& time) {
+	return config + "|" + std::to_string(frame) + "|" + time;
+}
+std::string normPath(const std::string& p) { return fs::path(p).lexically_normal().string(); }
+
+// prefs.calCuts <-> { csv -> rows it had at the calibration }, for this VST.cfg only (another config's calibration says
+// nothing about these rows).
+std::map<std::string, int> parseCuts(const std::string& s, const std::string& config) {
+	std::map<std::string, int> cuts;
+	std::vector<std::string> f;
+	size_t a = 0;
+	for (size_t b; (b = s.find('|', a)) != std::string::npos; a = b + 1) f.push_back(s.substr(a, b - a));
+	f.push_back(s.substr(a));
+	if (f.empty() || f[0] != config) return cuts;
+	for (size_t i = 1; i + 1 < f.size(); i += 2) cuts[f[i]] = std::atoi(f[i + 1].c_str());
+	return cuts;
+}
+std::string joinCuts(const std::map<std::string, int>& cuts, const std::string& config) {
+	std::string s = config;
+	for (const auto& [csv, n] : cuts) s += "|" + csv + "|" + std::to_string(n);
+	return s;
+}
+// "yyyy-mm-ddThh:mm:ss" or "yyyy-mm-dd hh:mm:ss" -> comparable; anything else (old csvs' "yyyymmdd hhmmss") -> "".
+std::string isoKey(std::string t) {
+	if (t.size() < 19 || t[4] != '-' || t[7] != '-') return "";
+	t = t.substr(0, 19);
+	t[10] = 'T';
+	return t;
+}
+}
+
+void App::rememberCalibrationPass(const Vehicle& v) {
+	prefs.calPass = passKey(cfg.path(), v.ev.frame, v.passed());
+	annotateRows();
+}
+
+std::string App::lastCalibrationTime() {
+	const auto& h = calibrationHistory();
+	for (auto it = h.rbegin(); it != h.rend(); ++it)
+		if (!it->check && it->config == cfg.path()) return isoKey(it->time);
+	return "";
+}
+
+// A new calibration: every row already in a stats csv was timed with the old one.  Notes how many rows each csv in the
+// Stats folder (and any csv on the Results page) has right now; rows appended later were timed with this calibration.
+void App::markCalibrationCuts() {
+	std::map<std::string, int> cuts;
+	std::vector<std::string> files;
+	std::error_code ec;
+	for (const auto& e : fs::directory_iterator(fs::path(dataDir()) / "Stats", ec))
+		if (e.path().extension() == ".csv" && e.path().string().find(".before-cleanup") == std::string::npos) files.push_back(e.path().string());
+	for (const ResultRow& r : rows) if (!r.statsPath.empty()) files.push_back(r.statsPath);
+	for (const std::string& f : files) {
+		std::vector<StatsRow> all;
+		std::string err;
+		if (readStatsCsv(f, all, err)) cuts[normPath(f)] = int(all.size());
+	}
+	prefs.calCuts = joinCuts(cuts, cfg.path());
+}
+
+void App::forgetCalibrationCut(const std::string& csv) {
+	std::map<std::string, int> cuts = parseCuts(prefs.calCuts, cfg.path());
+	if (cuts.erase(normPath(csv))) prefs.calCuts = joinCuts(cuts, cfg.path());
+}
+
+// Marks the calibration's own pass and the passes logged before it, and sizes each vehicle in feet when the calibration
+// gives the scale.  "Before" goes by when the pass was analysed, not when it happened (a recording's rows carry the time
+// it was shot): a csv row is before when it was already in its csv at the calibration (markCalibrationCuts), a session
+// row when it was logged this session before the calibration was applied.
+void App::annotateRows() {
+	std::map<std::string, int> cuts = parseCuts(prefs.calCuts, cfg.path());
+	double ppf = pxPerFtAtLane();
+	for (ResultRow& r : rows) {
+		r.calPass = !prefs.calPass.empty() && prefs.calPass == passKey(cfg.path(), r.frame, r.time);
+		bool before;
+		if (r.csvIndex >= 0) {
+			auto it = cuts.find(normPath(r.statsPath));
+			before = it != cuts.end() && r.csvIndex < it->second;
+		}
+		else before = r.vehicleId > 0 && r.vehicleId <= calWatermark_;
+		r.beforeCal = !r.calPass && before;
+		r.lengthFt = ppf > 0 && r.widthPx > 0 ? r.widthPx / ppf : 0;
+		// With a scale, a truck or bus is told by its real size: about 24 ft long or more, or (no width: a csv row) the
+		// area threshold retuneLargeVehicles() set from the same calibration.
+		if (r.lengthFt > 0) r.large = r.lengthFt >= kLargeVehicleFt;
+		else if (ppf > 0) r.large = r.area >= cfg.g.largeVehicleArea;
+	}
+}
+
+// Takes the passes logged before the calibration out of their stats csvs (each csv kept first as
+// <name>.before-cleanup.csv) and out of this session.  Not while tracking runs: the engine is still writing the csv.
+//
+// A csv row is dropped by its place in the file.  A session row is matched in its csv by frame and time, taking the
+// last match: the same recording analysed twice logs identical rows, and the session's run is the latest one appended.
+void App::removeRowsBeforeCalibration() {
+	std::map<std::string, std::vector<const ResultRow*>> byFile;
+	std::vector<int> ids;
+	for (const ResultRow& r : rows)
+		if (r.beforeCal) {
+			// A session row whose csv a later run started afresh has no row there any more (only look-alikes).
+			auto restarted = csvRestartedAt_.find(normPath(r.statsPath));
+			bool inCsv = r.vehicleId == 0 || restarted == csvRestartedAt_.end() || r.vehicleId > restarted->second;
+			if (!r.statsPath.empty() && inCsv) byFile[normPath(r.statsPath)].push_back(&r);
+			if (r.vehicleId) ids.push_back(r.vehicleId);
+		}
+	std::map<std::string, int> cuts = parseCuts(prefs.calCuts, cfg.path());
+	int removed = 0;
+	for (auto& [path, gone] : byFile) {
+		std::vector<StatsRow> all;
+		std::string err;
+		if (!readStatsCsv(path, all, err)) { toast("Couldn't read " + fs::path(path).filename().string() + ": " + err, c::bad, ICON_WARN); continue; }
+		std::vector<bool> drop(all.size(), false);
+		for (const ResultRow* r : gone) {
+			if (r->csvIndex >= 0) { if (r->csvIndex < int(all.size())) drop[r->csvIndex] = true; continue; }
+			for (int i = int(all.size()) - 1; i >= 0; i--) {
+				const StatsRow& s = all[i];
+				std::string t = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
+				if (!drop[i] && s.frame == r->frame && t == r->time) { drop[i] = true; break; }
+			}
+		}
+		std::vector<StatsRow> kept;
+		int cut = cuts.count(path) ? cuts[path] : 0, cutNow = cut;
+		for (size_t i = 0; i < all.size(); i++) {
+			if (!drop[i]) { kept.push_back(all[i]); continue; }
+			removed++;
+			if (int(i) < cut) cutNow--;
+		}
+		fs::path backup = fs::path(path).parent_path() / (fs::path(path).stem().string() + ".before-cleanup.csv");
+		std::error_code ec;
+		if (!fs::exists(backup, ec)) fs::copy_file(path, backup, ec);
+		if (ec || !writeStatsCsv(path, kept)) { toast("Couldn't rewrite " + fs::path(path).filename().string(), c::bad, ICON_WARN); continue; }
+		if (cuts.count(path)) cuts[path] = std::max(cutNow, 0);
+	}
+	prefs.calCuts = joinCuts(cuts, cfg.path());
+	if (!ids.empty()) tracker.removeVehicles(ids);
+	if (rowsFrom.empty()) showSessionResults();
+	else loadResultsCsv(rowsFrom);
+	toast("Removed " + std::to_string(std::max(removed, int(ids.size()))) + " passes from before the calibration."
+		+ (removed ? " The csv as it was is kept beside it as .before-cleanup.csv." : ""), c::ok, ICON_CHECK);
 }
 
 Texture* App::snapshotTexture(int id) {
@@ -1754,8 +1923,10 @@ void App::zoneInspector() {
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", help);
 			};
 			double distFt = prefs.planDist * plan::kFt;
+			double wasFt = distFt;
 			numRow("To the lane (ft)", &distFt, 1, "%.0f", 4, 300, "From the camera to the middle of the lane, square to the street. The same as step 2.");
-			prefs.planDist = distFt / plan::kFt;
+			// Through the plan, as the user's own number: a calibration later keeps it (Guide.cpp setMeasuredDistance).
+			if (distFt != wasFt) setMeasuredDistance(distFt / plan::kFt, "Your distance, from the ghost car on Mark your street");
 			numRow("Camera height (ft)", &prefs.calcHeightFt, 1, "%.0f", 0, 100, "Above the road. A second-floor window is about 12-15 ft.");
 			numRow("Field of view (°)", &prefs.planHfov, 1, "%.0f", perspective::kMinHfovDeg, perspective::kMaxHfovDeg,
 				"Horizontal angle the camera sees. Phones and webcams: 60-80°. Wide IP cameras: 90-110°. The same as step 2.");
@@ -2250,6 +2421,7 @@ void App::pageCalibrate() {
 			ImGui::BeginDisabled(!have);
 			if (primaryButton(ICON_CHECK "  Use this pass", ImVec2(-FLT_MIN, 0))) {
 				applyCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
+				rememberCalibrationPass(picked);
 				calibAppliedId_ = picked.id;
 			}
 			ImGui::EndDisabled();
@@ -2982,7 +3154,11 @@ void App::pageResults() {
 	std::string search = searchBuf_;
 	try { if (!search.empty()) minSpeed = std::stoi(search); } catch (...) {}
 	std::vector<const ResultRow*> shown;
+	int nBefore = 0;
+	for (const ResultRow& r : rows) nBefore += r.beforeCal;
+	const bool hideBefore = prefs.hideBeforeCal && nBefore > 0;
 	for (const ResultRow& r : rows) {
+		if (hideBefore && r.beforeCal) continue;
 		if (resultsFilter_ == 1 && r.speed <= prefs.speedLimit) continue;
 		if (resultsFilter_ == 2 && r.speed < prefs.egregious) continue;
 		if (resultsFilter_ == 3 && !r.wrongWay) continue;
@@ -2991,6 +3167,44 @@ void App::pageResults() {
 		shown.push_back(&r);
 	}
 	dimText("%s  ·  %zu of %zu vehicles", rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string().c_str(), shown.size(), rows.size());
+
+	// Passes from before the calibration in force were timed with the old one: say so, hide them (the default) or take
+	// them out of the csv for good.
+	if (nBefore > 0) {
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		ImVec2 p = ImGui::GetCursorScreenPos();
+		float h = ImGui::GetFrameHeight() + px(16);
+		dl->AddRectFilled(p, p + ImVec2(avail, h), alpha(c::warn, .10f), px(10));
+		dl->AddRect(p, p + ImVec2(avail, h), alpha(c::warn, .45f), px(10));
+		ImGui::SetCursorScreenPos(p + ImVec2(px(12), px(8)));
+		ImGui::AlignTextToFramePadding();
+		std::string when = lastCalibrationTime();
+		ImGui::TextColored(v4(c::warn), ICON_RULER "  %d pass%s from before your calibration%s%s were timed with the old one.", nBefore, nBefore == 1 ? "" : "es",
+			when.empty() ? "" : " on ", when.empty() ? "" : (when.substr(0, 10) + " at " + when.substr(11, 5)).c_str());
+		const char* removeLabel = ICON_TRASH "  Remove them";
+		const char* hideLabel = "Hide them";
+		float rw = buttonWidth(removeLabel), hw = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(hideLabel).x;
+		ImGui::SameLine(avail - rw - hw - px(36));
+		if (ImGui::Checkbox(hideLabel, &prefs.hideBeforeCal) && persist) prefs.save();
+		ImGui::SameLine(avail - rw - px(12));
+		bool running = tracker.running();
+		ImGui::BeginDisabled(running);
+		if (ghostButton(removeLabel)) ImGui::OpenPopup("Remove passes");
+		ImGui::EndDisabled();
+		if (running && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Stop tracking first: the csv is still being written.");
+		ImGui::SetCursorScreenPos(p + ImVec2(0, h + px(8)));
+		if (ImGui::BeginPopupModal("Remove passes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::PushTextWrapPos(px(460));
+			ImGui::Text("Remove the %d pass%s logged before your calibration?", nBefore, nBefore == 1 ? "" : "es");
+			dimText("They come out of this session and of their stats csv files, so reports and the phone stop counting them. "
+				"Each csv is copied first to a .before-cleanup.csv beside it, so nothing is lost for good.");
+			ImGui::PopTextWrapPos();
+			if (ghostButton("Cancel")) ImGui::CloseCurrentPopup();
+			ImGui::SameLine();
+			if (primaryButton(ICON_TRASH "  Remove", ImVec2(0, 0), c::bad)) { removeRowsBeforeCalibration(); ImGui::CloseCurrentPopup(); }
+			ImGui::EndPopup();
+		}
+	}
 
 	if (rows.empty()) {
 		ImGui::Dummy(ImVec2(0, px(40)));
@@ -3007,7 +3221,11 @@ void App::pageResults() {
 	int over = 0, way = 0, wrong = 0, top = 0;
 	double sum = 0;
 	std::vector<int> speeds;
-	for (const ResultRow& r : rows) {
+	std::vector<const ResultRow*> counted;
+	for (const ResultRow& r : rows) if (!(hideBefore && r.beforeCal)) counted.push_back(&r);
+	if (counted.empty()) counted.push_back(&rows.front());   // every row hidden: the tiles still need something to divide by
+	for (const ResultRow* rp : counted) {
+		const ResultRow& r = *rp;
 		over += r.speed > prefs.speedLimit;
 		way += r.speed >= prefs.egregious;
 		wrong += r.wrongWay;
@@ -3019,9 +3237,9 @@ void App::pageResults() {
 	int p85 = report::percentile(speeds, 85);   // nearest rank, the same definition as the street report and the phone
 	float tw = (avail - px(48)) / 5, th = px(100);
 	char sub[64];
-	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
+	statTile(ICON_CAR, "Vehicles", std::to_string(counted.size()), hideBefore ? "since the calibration" : rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / rows.size()), prefs.speedLimit);
+	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / counted.size()), prefs.speedLimit);
 	statTile(ICON_GAUGE, "Speeding", std::to_string(over), sub, c::warn, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
 	snprintf(sub, sizeof sub, "%d mph or more", prefs.egregious);
@@ -3029,7 +3247,7 @@ void App::pageResults() {
 	ImGui::SameLine(0, px(12));
 	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), cfg.g.LegalDirection == "Both" ? "one-way? set it in step 4" : "against the one-way", c::wrong, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / rows.size(), top);
+	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / counted.size(), top);
 	statTile(ICON_CHART, "85th percentile", std::to_string(p85) + " mph", sub, c::accent2, ImVec2(tw, th));
 
 	ImGui::Dummy(ImVec2(0, px(2)));
@@ -3049,7 +3267,7 @@ void App::pageResults() {
 		ImGui::TableSetupColumn("Direction", 0, 1.3f);
 		ImGui::TableSetupColumn("When", 0, 1.2f);
 		ImGui::TableSetupColumn("Frames", ImGuiTableColumnFlags_WidthFixed, px(70));
-		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(70));
+		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(80));
 		ImGui::TableSetupColumn("Source", 0, 1.4f);
 		ImGui::TableHeadersRow();
 		// Sorting: by speed (default, fastest first) or by the order they were logged.
@@ -3094,6 +3312,8 @@ void App::pageResults() {
 				ImGui::Text("%s %s", r.l2r ? "→" : "←", r.compass.c_str());
 				ImGui::PopStyleColor();
 				if (r.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
+				if (r.calPass) { ImGui::SameLine(); linePill(ICON_RULER " calibration", c::bg0, c::accent2); }
+				else if (r.beforeCal) { ImGui::SameLine(); linePill("before calibration", c::text, c::bg3); }
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				if (!r.time.empty()) ImGui::TextUnformatted(r.time.size() > 11 ? r.time.substr(11).c_str() : r.time.c_str());
@@ -3103,7 +3323,9 @@ void App::pageResults() {
 				ImGui::Text("%d", r.frames);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
-				if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
+				// Feet long when the calibration gives the scale; the engine's area units otherwise.
+				if (r.lengthFt > 0) ImGui::Text(r.large ? ICON_TRUCK " %.0f ft" : "%.0f ft", r.lengthFt);
+				else if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
 				else ImGui::Text("%d", r.area);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
@@ -3158,10 +3380,18 @@ void App::pageResults() {
 		};
 		kv("Direction", std::string(r.l2r ? "Left to right, " : "Right to left, ") + r.compass);
 		kv("In the zone", std::to_string(r.frames) + " frames (" + std::to_string(r.frames / r.fps).substr(0, 4) + " s)");
-		kv("Size", std::to_string(r.area) + (r.large ? "  (truck or bus)" : ""));
+		{
+			char sz[96];
+			if (r.lengthFt > 0) snprintf(sz, sizeof sz, "about %.0f ft long  (%s)", r.lengthFt, r.large ? "truck or bus" : r.lengthFt >= 19 ? "pickup or van" : "car");
+			else snprintf(sz, sizeof sz, "%d%s", r.area, r.large ? "  (truck or bus)" : "");
+			kv("Size", sz);
+		}
 		kv("Frame", std::to_string(r.frame));
 		if (!r.time.empty()) { std::string t = r.time; if (t.size() > 10 && t[10] == 'T') t[10] = ' '; kv("Passed at", t); }
 		kv("Source", r.source);
+		if (r.calPass) { ImGui::PushTextWrapPos(0); ImGui::TextColored(v4(c::accent2), ICON_RULER "  Your calibration came from this pass."); ImGui::PopTextWrapPos(); }
+		else if (r.beforeCal) { ImGui::PushTextWrapPos(0); dimText(ICON_INFO "  Logged before your calibration, so timed with the old one."); ImGui::PopTextWrapPos(); }
+		if (r.lengthFt <= 0 && r.area > 0 && pxPerFtAtLane() <= 0) { ImGui::PushTextWrapPos(0); dimText("Calibrate in step 5 and sizes show in feet."); ImGui::PopTextWrapPos(); }
 		ImGui::Dummy(ImVec2(0, px(4)));
 		Vehicle v;
 		if (r.vehicleId && tracker.vehicle(r.vehicleId, v) && !v.clipPath.empty())
