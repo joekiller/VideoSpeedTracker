@@ -68,8 +68,8 @@ the picture. The search and the map pictures come from OpenStreetMap's servers; 
   a ruler of car-length blocks across the lane. Drag the stripes sideways or up and down onto a parked car (or use
   **Slide sideways**), scroll or use **Size** until one block is as long as the car, then **Use it**: that many
   15.5 ft car lengths is the width of street the picture spans, which sets the plan.
-- **From your calibration.** Any calibration in step 5 (a drive past, VST Ride-along, a Tesla clip, a car of known
-  length, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
+- **From your calibration.** Any calibration in step 5 (a drive past, VST Ride-along, a Tesla clip, a car of a known
+  model, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
   measures the whole picture. Step 2 updates by itself after each new calibration (a toast says so), and a number
   typed afterwards stays until the next one. On a one-way street the legal direction's lane is used; on a two-way
   street, the mean of the two.
@@ -183,6 +183,15 @@ feet of street lie between the white lines. **Calibrate from it** sets both dire
 past afterwards still checks it. On the 2016 sample, 95 ft away, 20 ft up and a 60° lens put the ghost on a passing
 car and give 47 ft between the lines; the sample's own calibration drive works out to 43 to 49 ft.
 
+**Parking lane.** If cars park along the street, tick **Cars park along this street** on the Parking lane card and
+drag the blue dashed line onto the middle of a parked car's wheels, the way the lane line sits on a moving car's
+hubcaps (drag an end if the street runs at an angle). The tracker ignores it. It is for step 5's **Known car**: it
+lets Studio tell a parked car from a passing one by itself, and tells it how much farther away (or nearer) the
+parked cars are. The card works that out from the gap between the two lines, the camera's height and step 2's
+distance (the same camera model as the ghost car), or you can type a measured distance across the street, from a
+passing car's wheels to a parked car's. The line is Studio's own setting (`vst-studio.ini` `parkY0`, `parkY1`,
+`parkFt`), not a `VST.cfg` key.
+
 ![Mark your street](images/studio/04-zones.jpg)
 
 ![Level the picture](images/studio/04b-zones-level.jpg)
@@ -191,10 +200,12 @@ car and give 47 ft between the lines; the sample's own calibration drive works o
 
 ![A ghost car drawn from the camera setup, sitting on a real car at the right-hand white line](images/studio/04d-zones-ghost.jpg)
 
+![The blue parking lane laid on the parked cars' wheels](images/studio/04e-zones-parking.jpg)
+
 ### 5 Calibrate
 
 VST counts frames rather than measuring distance, so it needs one pass at a known speed, or a measured distance it
-can turn into one: cones a taped distance apart, or a car whose length you know.
+can turn into one: cones a taped distance apart, or a car whose model you know.
 
 - **Drive-through:** run tracking, drive past on cruise control, pick your pass from the list and enter the
   speed you drove. From the Results page, **This was me** on a selected vehicle does the same.
@@ -224,24 +235,36 @@ can turn into one: cones a taped distance apart, or a car whose length you know.
 ![Cones or pole](images/studio/07d-calibrate-cones.jpg)
 
 - **Known car:** no tape and no trip outside. Any car of a known model in the picture is the measuring stick: find a
-  frame with it side-on in the zone, near the middle of the picture, click its front and rear bumpers at the corners
-  facing the camera, and pick the model (the list gives each generation's overall length) or type the length. The
-  arithmetic is the cones' with the bumpers as the two spots.
+  frame with it side-on in the zone, near the middle of the picture, click the **centre of each wheel** on the side
+  facing the camera, and pick the model (the list gives each generation's wheelbase) or type the wheelbase. The
+  arithmetic is the cones' with the wheels as the two spots.
+
+  Why wheel centres: a wheel's middle is a sharp point at the same height as the lane line (which sits on moving cars'
+  hubcaps), so it's easy to click, and a car a little off square to the camera, rounded corners, a tow hitch or a bike
+  rack don't change it. A bumper's "corner" is fuzzy, and off to one side the camera also sees part of the nose or
+  tail, which looks like extra length. **Bumpers** is still there for a car whose wheels are hidden (by snow, a
+  parked car in front): click the front and rear bumpers at the corners facing the camera, with the model's overall
+  length.
 
   Where the car is matters. Things look smaller the farther they are from the camera, and VST times bumpers in the
   lane traffic drives in, so a car parked beyond that lane looks shorter than it would driving by and every speed
-  would read high (7 ft beyond a lane 30 ft away is +23%). Choose **Parked beyond traffic** and enter the camera's
-  distance to the lane (the same number as step 2's *Window to the lane*) and how much farther the car is; VST scales
-  the bumper marks to the lane's depth (`marks × (lane + farther) ÷ lane`). Each foot that guess is off moves speeds
-  about 100 ÷ (lane + farther) percent, and the page shows that figure. A car driving by needs no correction: step
-  through a recording to a sharp frame of it. Off to one side, the camera also sees part of the car's nose or tail,
-  which looks like extra length; marking the corners facing the camera with the car near the middle keeps it small.
+  would read high. With a parking lane drawn in step 4, Studio says on the picture which line the wheels are on:
+  **PARKED · scaled ×N to the travel lane** in blue, **IN THE TRAVEL LANE** in the lane's colour, or **Not on a
+  line** when the clicks are well away from both (usually not the wheel centres). A parked car's span is scaled to
+  the travel lane with the same camera model as the ghost car: how much a foot of street shrinks between the parked
+  cars' depth and the lane's at that spot in the picture. For a camera up at a window that is noticeably less than
+  the plain ratio of distances, so it is worked out rather than guessed. You can override parked or in the lane.
+  Without a parking lane, choose **Parked** and type how much farther the car is than moving cars (negative for
+  nearer); the page links to step 4 to draw one instead. A car driving by needs no correction: step through a
+  recording to a sharp frame of it. On a two-way street, **Both ways** calibrates each direction from its own lane.
 
   How it compares with cones: a tape over 10 ft or more is good to well under 1%, and the cones stand right at the
-  white lines and the depth the bumpers run at. A model's length is good to about 0.5% once the generation is right,
-  but the car usually spans less than the zone, a parked car needs the depth guess, and clicking a bumper's corner
-  is fuzzier than clicking a pole. Expect a few percent (about 1 mph at 25 mph) from a passing car or a corrected
-  parked one, which makes it a good start; like the cones it is **Not checked** until a drive past checks it.
+  white lines and the depth the bumpers run at. A model's wheelbase is good to about 0.5% once the generation is right,
+  but the car usually spans less than the zone and a parked car needs the depth correction. Expect a few percent
+  (about 1 mph at 25 mph) from a passing car or a corrected parked one, which makes it a good start; like the cones it
+  is **Not checked** until a drive past checks it.
+
+![Known car: a parked car's wheel centres, scaled to the travel lane](images/studio/07e-calibrate-car.jpg)
 
 All four keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
 `CalibrationFPS`. The page shows what crossing times read as which speeds.

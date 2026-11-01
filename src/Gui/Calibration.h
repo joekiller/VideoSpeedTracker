@@ -67,39 +67,51 @@ inline double framesForDistance(double markPx, double markFt, double zonePx, dou
 	return zoneFt / (calSpeed * 5280.0 / 3600.0) * calFps;
 }
 
-// Calibration from a car of known length (the Calibrate page's "Known car" mode) is framesForDistance with the car's
-// two bumpers as the marks and its overall length as the distance.  The catch is depth: on the picture, size goes
+// Calibration from a car of a known model (the Calibrate page's "Known car" mode) is framesForDistance with the car's
+// two wheel centres (or bumpers) as the marks and its wheelbase (or overall length) as the distance.  The catch is depth: on the picture, size goes
 // as 1 / distance from the camera, so a car parked `fartherFt` beyond the middle of the lane traffic uses looks
 // shorter than the same car driving there.  Its bumpers `markPx` apart stand for
 //     markPx × (laneFt + fartherFt) / laneFt
 // pixels at the lane's depth, where `laneFt` is the camera's distance to the middle of that lane (the site planner's
 // "Window to the lane").  Uncorrected, a car parked 7 ft beyond a lane 30 ft away reads every speed ~23% high.
 // fartherFt = 0 (a passing car, or one parked in the lane itself) or an unknown laneFt leaves markPx as it is.
+// This plain ratio is right for a camera at the cars' height.  From a window above the street the picture shrinks less
+// than that with depth, so Studio scales with the camera model instead (ParkingLane.h scaleBeyond, Perspective.h
+// laneScale) and keeps this only as the fallback when the camera model can't place the car.
 inline double markPxAtLane(double markPx, double laneFt, double fartherFt) {
 	if (markPx <= 0 || laneFt <= 0 || fartherFt <= 0) return markPx;
 	return markPx * (laneFt + fartherFt) / laneFt;
 }
 
-// Common cars' overall (bumper to bumper) lengths for the Known car picker, from the makers' published specs and
-// rounded to the inch.  Trims and model years within a generation differ by about an inch (0.5%); different
-// generations can differ by several, which is why each entry names its years.
-struct KnownCar { const char* name; double inches; };
+// Common cars' sizes for the Known car picker, from the makers' published specs and rounded to the inch: overall length
+// (bumper to bumper) and wheelbase (front wheel centre to rear wheel centre).  Trims and model years within a generation
+// differ by about an inch (0.5%); different generations can differ by several, which is why each entry names its years.
+//
+// The wheelbase is what the page asks for first.  Wheel centres are two sharp points on the side facing the camera, at the
+// same height (the lane line's, hubcap height), so where to click is never in doubt: a car at a slight angle to the curb
+// or the camera, rounded bumper corners, a tow hitch or bike rack change nothing.  A bumper's "corner facing the camera"
+// is a guess on a rounded car, and off to one side the camera sees some of the front or back as well, which reads as
+// extra length.  The wheelbase is shorter (about 60% of the length), so a click a pixel off weighs more, which is why the
+// page wants the car big in the picture.
+struct KnownCar { const char* name; double inches; double wheelbaseIn; };
 inline constexpr KnownCar kKnownCars[] = {
-	{ "Toyota Highlander 2020-on", 195 },
-	{ "Toyota Highlander 2014-2019", 192 },
-	{ "Toyota RAV4 2019-2025", 181 },
-	{ "Toyota Camry 2018-2024", 192 },
-	{ "Toyota Corolla sedan 2019-on", 182 },
-	{ "Honda CR-V 2023-on", 185 },
-	{ "Honda CR-V 2017-2022", 182 },
-	{ "Honda Civic sedan 2022-on", 184 },
-	{ "Honda Accord 2018-2022", 192 },
-	{ "Subaru Outback 2020-2025", 191 },
-	{ "Subaru Forester 2019-2024", 182 },
-	{ "Tesla Model 3", 185 },
-	{ "Tesla Model Y", 187 },
-	{ "Ford F-150 SuperCrew, 5.5 ft bed, 2015-on", 232 },
+	{ "Toyota Highlander 2020-on", 195, 112 },
+	{ "Toyota Highlander 2014-2019", 192, 110 },
+	{ "Toyota RAV4 2019-2025", 181, 106 },
+	{ "Toyota Camry 2018-2024", 192, 111 },
+	{ "Toyota Corolla sedan 2019-on", 182, 106 },
+	{ "Honda CR-V 2023-on", 185, 106 },
+	{ "Honda CR-V 2017-2022", 182, 105 },
+	{ "Honda Civic sedan 2022-on", 184, 108 },
+	{ "Honda Accord 2018-2022", 192, 111 },
+	{ "Subaru Outback 2020-2025", 191, 108 },
+	{ "Subaru Forester 2019-2024", 182, 105 },
+	{ "Tesla Model 3", 185, 113 },
+	{ "Tesla Model Y", 187, 114 },
+	{ "Ford F-150 SuperCrew, 5.5 ft bed, 2015-on", 232, 145 },
 };
+// A typical car's wheelbase, for "Other" before anything is typed (a mid-size sedan's, about 9 ft 3 in).
+constexpr double kTypicalWheelbaseFt = 111.0 / 12;
 
 // A direction's state from its history.  `currentFrames` is the CalibrationFrames<dir> now in VST.cfg and
 // `calibratedOffRecord` says whether the setup counts as calibrated without a history row (a v1.1 calibration made

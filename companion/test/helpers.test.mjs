@@ -9,6 +9,7 @@ import { esc, raw, html, band, passPills } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
 import { geometry, applyHandle, laneYAt, laneHandleX } from '../js/overlay.js';
 import * as plan from '../js/plan.js';
+import * as ground from '../js/ground.js';
 
 describe('ui.js esc', () => {
   it('escapes the five HTML metacharacters', () => {
@@ -276,5 +277,31 @@ describe('map.js reads OpenStreetMap tags', async () => {
     assert.equal(s.maxspeedMph, 25);
     assert.ok(Math.abs(s.wayBearing - 321.8) < 1, `bearing ${s.wayBearing}`);
     assert.equal(map.nearestStreet(ways, 38.01, -78.01), null, 'nothing within 30 m');
+  });
+});
+
+// The demo's copy of VST Studio's parking-lane camera model (js/ground.js) against numbers printed by the C++
+// (Perspective.h laneScale / hubcapDepthAtRow, ParkingLane.h placeCar) for the same setups.
+describe('ground.js matches Perspective.h', () => {
+  const close = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol, `${a} vs ${b}`);
+  const window2 = { distanceFt: 20, heightFt: 15, yawDeg: 0, hfovDeg: 66 };
+  const angled = { distanceFt: 30, heightFt: 12, yawDeg: 20, hfovDeg: 70 };
+  it('laneScale', () => {
+    close(ground.laneScale(window2, 640, 25), 1.291704649);
+    close(ground.laneScale(angled, 900, 35), 1.259319481);
+  });
+  it('hubcapDepthAtRow', () => {
+    close(ground.hubcapDepthAtRow(window2, 640, 400, 370), 18.096327186);
+    close(ground.hubcapDepthAtRow(angled, 900, 420, 380), 31.523859564);
+    assert.ok(Number.isNaN(ground.hubcapDepthAtRow({ ...window2, heightFt: 1.2 }, 640, 400, 380)));
+  });
+  it('placeCar', () => {
+    const s = ground.placeCar(window2, 400, { y: [370, 372], ft: 0 }, 600, 371);
+    assert.equal(s.where, 'parked');
+    assert.equal(s.how, 'picture');
+    close(s.parkedFt, 1.060741848);
+    close(s.parkedScale, 1.038677916);
+    assert.equal(ground.placeCar(window2, 400, { y: [370, 372], ft: 0 }, 600, 399).where, 'lane');
+    assert.equal(ground.placeCar(window2, 400, null, 600, 371).where, null);
   });
 });

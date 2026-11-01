@@ -172,6 +172,7 @@ p { margin: 0 0 12px; color: var(--text-2); text-wrap: pretty; }   /* no one-wor
 .seg button[aria-pressed="true"] { background: var(--seg-on); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.25); }
 
 .field { display: flex; flex-direction: column; gap: 6px; }
+.field[hidden] { display: none; }
 .field > span { font-size: 13px; font-weight: 600; color: var(--text-2); }
 .input, select.input {
   width: 100%; min-height: 44px; padding: 0 12px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--surface-2);

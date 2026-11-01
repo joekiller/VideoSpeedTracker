@@ -797,7 +797,7 @@ void App::zeroInCard(float width) {
 	}
 	else {
 		dimText("Any way you calibrate in step 5 measures the street, and this page updates by itself: a drive past, VST Ride-along "
-			"on a phone (a bike at 12-15 mph works too), a Tesla clip, a car of known length, or two cones or a pole.");
+			"on a phone (a bike at 12-15 mph works too), a Tesla clip, a car of a known model, or two cones or a pole.");
 	}
 	ImGui::PopTextWrapPos();
 	endCard();
@@ -1095,7 +1095,7 @@ void App::pageGuide() {
 			"Drag a box around the moving lane and two lines to time between. Say which way a one-way street runs.", ImVec2(cw, ch));
 		ImGui::SameLine(0, px(16));
 		gearCard("g5", ICON_CAR, c::l2r, "One drive past, or no car at all", "Step 5 · Calibrate",
-			"Drive past at a known speed (a bike works too), or with no car: two cones or a pole, or a parked car of known length.", ImVec2(cw, ch));
+			"Drive past at a known speed (a bike works too), or with no car: two cones or a pole, or a parked car of a known model.", ImVec2(cw, ch));
 		ImGui::Dummy(ImVec2(0, px(8)));
 		cameraTiers(avail);
 		ImGui::Dummy(ImVec2(0, px(8)));

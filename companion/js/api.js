@@ -115,6 +115,8 @@ export class Vst extends EventTarget {
   calibrationApply(body) { return this.request('POST', '/api/calibration/apply', body); }
   calibrationCheck(body) { return this.request('POST', '/api/calibration/check', body); }
   calibrationDistance(body) { return this.request('POST', '/api/calibration/distance', body); }
+  calibrationCar(body) { return this.request('POST', '/api/calibration/car', body); }
+  calibrationCars() { return this.request('GET', '/api/calibration/cars'); }
 
   // ---- media ------------------------------------------------------------------------------------
 

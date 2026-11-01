@@ -256,6 +256,54 @@ static void cameraModelTests() {
 	}
 }
 
+
+// The parking lane (Perspective.h hubcapDepthAtRow, laneScale): a second hubcap-height line's depth from its row, and how
+// much bigger or smaller things are there than in the lane.
+static void parkingLaneTests() {
+	using namespace perspective;
+	CarSize car;
+	for (double yaw : { 0.0, 20.0, -30.0 })
+		for (double height : { 15.0, 25.0, 4.0 }) {
+			CameraSetup c{ 20, height, yaw, 66 };
+			double Y, laneZ;
+			CHECK(hubcapLine(c, car, Y, laneZ));
+			for (double u : { 640.0, 300.0, 1000.0 })
+				for (double beyond : { 8.0, 3.0, -6.0, 20.0 }) {
+					double Z = laneZ + beyond;
+					double Xl = streetXAt(c, 1280, 720, u, Y, laneZ), Xp = streetXAt(c, 1280, 720, u, Y, Z);
+					if (std::isnan(Xl) || std::isnan(Xp)) continue;
+					double vl = projectPoint(c, 1280, 720, Xl, Y, laneZ).v, vp = projectPoint(c, 1280, 720, Xp, Y, Z).v;
+					// Round trip, and the same with both lines drawn 12 px lower than the model has them (a camera tipped a
+					// little more than the model assumes): only the gap between the lines counts.
+					CHECK_NEAR(hubcapDepthAtRow(c, 1280, 720, u, vl, vp), Z, 1e-6);
+					CHECK_NEAR(hubcapDepthAtRow(c, 1280, 720, u, vl + 12, vp + 12), Z, 1e-6);
+					CHECK(beyond > 0 ? vp < vl : vp > vl);   // farther is higher in the picture
+					// laneScale is the inverse ratio of the pixels one foot of street spans at the two depths, by projection.
+					auto pxPerFt = [&](double X, double Zd) {
+						return std::fabs(projectPoint(c, 1280, 720, X + .05, Y, Zd).u - projectPoint(c, 1280, 720, X - .05, Y, Zd).u) / .1;
+					};
+					CHECK_NEAR(laneScale(c, 1280, 720, u, Z), pxPerFt(Xl, laneZ) / pxPerFt(Xp, Z), 1e-3);
+					CHECK(beyond > 0 ? laneScale(c, 1280, 720, u, Z) > 1 : laneScale(c, 1280, 720, u, Z) < 1);
+				}
+		}
+	// From a window above the street the correction is much less than the plain distance ratio, which is why Known car
+	// no longer uses it: camera 15 ft up, lane 20 ft out (near side 17), parked cars 8 ft beyond.
+	{
+		CameraSetup c{ 20, 15, 0, 66 };
+		double s = laneScale(c, 1280, 720, 640, 25);
+		CHECK(s > 1.15 && s < 1.30);
+		CHECK(s < 25.0 / 17 - .1);
+		// At hubcap height (camera 1.5 ft up, so looking nearly level) the two agree.
+		CHECK_NEAR(laneScale({ 20, 1.5, 0, 66 }, 1280, 720, 640, 25), 25.0 / 17, .01);
+	}
+	// A camera at hubcap height sees every hubcap line on one row: no depth from rows.  Rows past the search range, and a
+	// bad setup, also give NaN.
+	CHECK(std::isnan(hubcapDepthAtRow({ 20, 1.2, 0, 66 }, 1280, 720, 640, 400, 380)));
+	CHECK(std::isnan(hubcapDepthAtRow({ 20, 15, 0, 66 }, 1280, 720, 640, 400, -5000)));
+	CHECK(std::isnan(hubcapDepthAtRow({ 0, 15, 0, 66 }, 1280, 720, 640, 400, 380)));
+	CHECK(std::isnan(laneScale({ 20, 15, 0, 66 }, 1280, 720, 640, 0)));
+}
+
 int main() {
 	using namespace perspective;
 
@@ -361,6 +409,7 @@ int main() {
 	g.streetEdge[0] = g.streetEdge[1] = 0;
 	CHECK(g.problems().empty());
 
+	parkingLaneTests();
 	cameraModelTests();
 
 	std::printf("%d checks, %d failures\n", checks, failures);

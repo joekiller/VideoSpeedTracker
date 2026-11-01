@@ -277,6 +277,7 @@ void AppPrefs::load() {
 	d("planDist", planDist); d("planClear", planClear); d("planCalib", planCalib); d("planCarLen", planCarLen);
 	d("siteLat", siteLat); d("siteLon", siteLon); d("planCamLat", planCamLat); d("planCamLon", planCamLon);
 	str("planStreet", planStreet); str("planDraft", planDraft); b("planAutosave", planAutosave); d("calcHeightFt", calcHeightFt); d("calcYawDeg", calcYawDeg);
+	d("parkY0", parkY0); d("parkY1", parkY1); d("parkFt", parkFt);
 	if (remoteToken.empty()) remoteToken = newToken();
 }
 
@@ -302,7 +303,7 @@ std::string AppPrefs::render() const {
 		<< "\nplanShutter = " << planShutter << "\nplanDist = " << planDist << "\nplanClear = " << planClear
 		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nplanSource = " << planSource
 		<< "\nplanNote = " << planNote << "\nplanCalSig = " << planCalSig << "\nplanCarLengths = " << planCarLengths
-		<< "\ncalcHeightFt = " << calcHeightFt << "\ncalcYawDeg = " << calcYawDeg << "\nzonesFor = " << zonesFor
+		<< "\ncalcHeightFt = " << calcHeightFt << "\ncalcYawDeg = " << calcYawDeg << "\nparkY0 = " << parkY0 << "\nparkY1 = " << parkY1 << "\nparkFt = " << parkFt << "\nzonesFor = " << zonesFor
 		<< "\nsiteLat = " << std::setprecision(10) << siteLat << "\nsiteLon = " << siteLon
 		<< "\nplanCamLat = " << planCamLat << "\nplanCamLon = " << planCamLon << std::setprecision(6)
 		<< "\nplanStreet = " << planStreet << "\nplanAutosave = " << planAutosave << "\nplanDraft = " << planDraft

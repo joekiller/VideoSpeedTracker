@@ -220,6 +220,74 @@ inline Ghost ghostCar(const CameraSetup& c, double frameWidth, double frameHeigh
 	return g;
 }
 
+// --- A second line along the street at hubcap height: the parking lane ---------------------------------------------------
+//
+// Calibrating from a car of known size (VST Studio's Known car mode) measures feet per pixel where that car is.  A car
+// parked along the street is not where moving cars are: from a window above a far-side parking lane it is a lane's
+// width farther away, so it looks smaller and, uncorrected, every speed reads high.  How much smaller is not simply
+// (lane + extra) / lane: the camera looks down at the street, and what sets a thing's size in the picture is its depth
+// along the camera's axis, which for a camera 15 ft up and 20 ft out grows by much less than the extra feet across.
+//
+// The parking lane is a line the user lays on the parked cars' wheel centres, the same way the lane line sits on the
+// moving cars' hubcaps.  Two things then follow from the camera model above:
+//
+//   hubcapDepthAtRow  - how far out the parked cars' near side is (camera Z), from how far the parking line sits above
+//                       or below the lane line in the picture.  The model is anchored on the lane line exactly as
+//                       ghostCar() is: where the model puts the lane's hubcap row and where the user drew it may differ
+//                       by a few pixels of tilt, and that same offset is applied to the parking line, so only the gap
+//                       between the two lines counts.  Nearer is lower in the picture for a camera above hubcap height;
+//                       a camera at hubcap height sees both lines on one row and can't tell (NaN).
+//   laneScale         - how many times more street a picture column spans at depth Z than at the lane: multiply a
+//                       parked car's mark span by it to get the span the same car would have in the lane.  1 for a car
+//                       in the lane itself.  Computed at the car's own column, so a camera turned along the street
+//                       (yaw) is handled too.
+
+// Feet of street per picture column along a street-parallel line (camera Y, Z) at column u; NaN where the line can't be
+// placed there.
+inline double feetPerColumn(const CameraSetup& c, double frameWidth, double frameHeight, double u, double Y, double Z) {
+	double a = streetXAt(c, frameWidth, frameHeight, u - .5, Y, Z), b = streetXAt(c, frameWidth, frameHeight, u + .5, Y, Z);
+	return std::fabs(b - a);   // NaN in, NaN out
+}
+
+// The camera Z of a line along the street at hubcap height that crosses picture column u at row v, when the lane's hubcap
+// line (CarSize's near side, hubcapLine()) crosses the same column at row vLane.  Searched between half a foot and 30
+// times the lane's distance; NaN when the row is beyond that range, the camera is within a quarter foot of hubcap height,
+// or the setup is invalid.
+inline double hubcapDepthAtRow(const CameraSetup& c, double frameWidth, double frameHeight, double u, double vLane, double v,
+	const CarSize& car = CarSize()) {
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	double Y, laneZ;
+	if (!hubcapLine(c, car, Y, laneZ) || Y < .25) return nan;
+	auto rowAt = [&](double Z) {
+		double X = streetXAt(c, frameWidth, frameHeight, u, Y, Z);
+		if (std::isnan(X)) return nan;
+		Pixel p = projectPoint(c, frameWidth, frameHeight, X, Y, Z);
+		return p.ok ? p.v : nan;
+	};
+	double modelLane = rowAt(laneZ);
+	if (std::isnan(modelLane)) return nan;
+	double target = v - (vLane - modelLane);   // the user's row, in the model's terms
+	double lo = .5, hi = std::max(laneZ, 1.0) * 30;
+	double vLo = rowAt(lo), vHi = rowAt(hi);   // nearer is lower in the picture: vLo > vHi
+	if (std::isnan(vLo) || std::isnan(vHi) || target > vLo || target < vHi) return nan;
+	for (int i = 0; i < 80; i++) {
+		double mid = (lo + hi) * .5, vm = rowAt(mid);
+		if (std::isnan(vm)) return nan;
+		(vm > target ? lo : hi) = mid;
+	}
+	return (lo + hi) * .5;
+}
+
+// Picture-span scale from depth Z to the lane's hubcap line at column u: feetPerColumn at Z over feetPerColumn at the
+// lane.  > 1 for a line farther than the lane.  NaN where either can't be placed.
+inline double laneScale(const CameraSetup& c, double frameWidth, double frameHeight, double u, double Z, const CarSize& car = CarSize()) {
+	double Y, laneZ;
+	if (!hubcapLine(c, car, Y, laneZ) || !(Z > 0)) return std::numeric_limits<double>::quiet_NaN();
+	double atLane = feetPerColumn(c, frameWidth, frameHeight, u, Y, laneZ);
+	if (!(atLane > 0)) return std::numeric_limits<double>::quiet_NaN();
+	return feetPerColumn(c, frameWidth, frameHeight, u, Y, Z) / atLane;
+}
+
 // A street edge for a vanishing point at box x `xV`: the line through the lane line's point there, starting `offset` px
 // below the lane at the box's left edge (above, if below won't fit; then half as far, and so on), so both ends sit
 // inside the box (rows 1..boxHeight).  It is drawn where it's easy to see and drag, not on the curb itself: only where

@@ -17,6 +17,7 @@
 //   Companion                pairing a phone with the local API (QR code)
 #pragma once
 #include "Calibration.h"
+#include "ParkingLane.h"
 #include "DashCam.h"
 #include "Health.h"
 #include "Media.h"
@@ -240,15 +241,28 @@ public:
 	double coneTimerAt_ = -1;
 	int coneView_ = -1, coneTexOf_ = -1;
 	Texture coneTex_;
-	// The "Known car" mode (calibMode_ 3) marks a car's two bumpers the way the cones mode marks its spots, sharing
-	// conePlacing_ and coneDir_: carX_/carY_ are the bumpers on the picture (-1 = not marked), carModel_ the picker's
-	// entry in calib::kKnownCars (-1 = typed by hand), carFt_ the length in feet, and carParked_/carFartherFt_ how far
-	// beyond the middle of the traffic lane a parked car sits (calib::markPxAtLane).
+	// The "Known car" mode (calibMode_ 3) marks two points on a car the way the cones mode marks its spots, sharing
+	// conePlacing_ and coneDir_: its wheel centres (carWheels_, the default: the wheelbase) or its bumpers (the length).
+	// carX_/carY_ are the marks on the picture (-1 = not marked), carModel_ the picker's entry in calib::kKnownCars (-1 =
+	// typed by hand) and carFt_ the span in feet.  carParked_ says the car is parked rather than in the travel lane: set
+	// from the marks' rows when there is a parking lane (carSpot(); carAutoFor_ is the marks it was last set for, so a
+	// choice made by hand sticks until the car is marked again), else by hand, with carFartherFt_ how far beyond the
+	// moving cars it sits.
 	float carX_[2] = { -1, -1 }, carY_[2] = { -1, -1 };
+	bool carWheels_ = true;
 	int carModel_ = -1;
-	double carFt_ = 15.5;
+	double carFt_ = calib::kTypicalWheelbaseFt;
 	bool carParked_ = false;
 	double carFartherFt_ = 7;
+	float carAutoFor_[4] = { -1, -1, -1, -1 };
+	// The parking lane from prefs (Mark your street), the lane line's row anywhere across the frame (extended past the
+	// analysis box), and where the marked car is against both for one direction's lane.
+	calib::ParkingLane parkingLane() const;
+	double laneRowAt(bool l2r, double frameX) const;
+	calib::CarSpot carSpot(bool l2r) const;
+	// The span multiplier Known car uses for one direction: the parking lane's when there is one and the car is parked,
+	// carFartherFt_ through the camera model when parked with no parking lane, 1 in the travel lane.
+	double carScale(bool l2r) const;
 	std::unique_ptr<Server> server;
 	bool screenshotMode = false;        // documentation captures (main.cpp --shots)
 	bool persist = true;                // save preferences on exit

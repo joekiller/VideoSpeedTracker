@@ -538,3 +538,132 @@ ImVec2 levelTurn(ImVec2 p, double degrees) {
 	double dx = p.x - 640.0, dy = p.y - 360.0;
 	return ImVec2(float(640.0 + dx * cs + dy * sn), float(360.0 - dx * sn + dy * cs));
 }
+
+// ---- The parking lane (ParkingLane.h) ------------------------------------------------------------------------------------
+//
+// A line across the whole frame, kept apart from zoneOverlay's Globals because it is Studio's own setting and usually lies
+// outside the analysis box.  The same gestures as a lane line: grab it anywhere to move it, grab an end grip to tilt it
+// (an end within 2 px of level snaps level).  Its drag state is its own, so a drag started here never moves a zone.
+namespace {
+struct ParkDrag {
+	int end = -1;            // -1 none, 0 left grip, 1 right grip, 2 the whole line
+	ImVec2 grab;
+	double start[2] = { 0, 0 };
+	double* target = nullptr;
+};
+ParkDrag parkDrag;
+constexpr float kParkGripX[2] = { 40.f, 1240.f };   // frame x of the end grips
+}  // namespace
+
+bool parkingLineOverlay(const View& v, double y[2], bool editable, const char** hovered, float opacity) {
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	auto rowAt = [&](float fx) { return float(y[0] + (y[1] - y[0]) * fx / 1280.0); };
+	auto A = [&](ImU32 col, float a = 1) { return alpha(col, a * opacity); };
+	ImVec2 m = ImGui::GetIO().MousePos;
+	bool inFrame = editable && ImGui::IsWindowHovered() && m.x >= v.origin.x && m.y >= v.origin.y
+		&& m.x <= v.origin.x + v.size.x && m.y <= v.origin.y + v.size.y;
+	float tol = px(7);
+	int hot = -1;
+	if (inFrame && parkDrag.end < 0) {
+		for (int e = 0; e < 2 && hot < 0; e++) {
+			ImVec2 d = v.at(kParkGripX[e], rowAt(kParkGripX[e])) - m;
+			if (d.x * d.x + d.y * d.y < tol * tol * 2.f) hot = e;
+		}
+		if (hot < 0 && std::fabs(m.y - v.at(0, rowAt(v.frame(m).x)).y) < tol) hot = 2;
+	}
+	bool changed = false;
+	if (editable && hot >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+		parkDrag.end = hot;
+		parkDrag.grab = v.frame(m);
+		parkDrag.start[0] = y[0];
+		parkDrag.start[1] = y[1];
+		parkDrag.target = y;
+	}
+	if (parkDrag.end >= 0 && parkDrag.target == y) {
+		if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) parkDrag.end = -1;
+		else {
+			double dy = std::round(v.frame(m).y - parkDrag.grab.y);
+			// The grips sit 40 px in from the edges (fractions a and b of the width), so tilting about the other grip moves
+			// the stored ends (at x 0 and 1280) a little more than dy, and the far end a little the other way.
+			double a = kParkGripX[0] / 1280.0, b = kParkGripX[1] / 1280.0;
+			double l = parkDrag.start[0], r = parkDrag.start[1];
+			if (parkDrag.end == 2) { l += dy; r += dy; }
+			else if (parkDrag.end == 0) { l += dy * b / (b - a); r -= dy * (1 - b) / (b - a); }
+			else { r += dy * (1 - a) / (b - a); l -= dy * a / (b - a); }
+			if (parkDrag.end != 2 && std::fabs(l - r) <= 2) (parkDrag.end == 0 ? l : r) = parkDrag.end == 0 ? r : l;
+			y[0] = std::clamp(std::round(l), 1.0, 719.0);
+			y[1] = std::clamp(std::round(r), 1.0, 719.0);
+			changed = true;
+		}
+	}
+	int shown = parkDrag.end >= 0 && parkDrag.target == y ? parkDrag.end : hot;
+	if (hovered && shown >= 0)
+		*hovered = shown == 2 ? "Parking lane: drag it onto the parked cars' wheel centres" : "Parking lane end: drag up or down so the line follows the parked cars";
+	if (shown >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+
+	// Dashed, with a dark casing so it reads on bright asphalt and car paint alike.
+	ImVec2 a = v.at(0, rowAt(0)), b = v.at(1280, rowAt(1280));
+	bool lit = shown >= 0;
+	dl->AddLine(a, b, A(c::rgb(0x0B0E14), .35f), lit ? 6.f : 5.f);
+	ImVec2 d = b - a;
+	float len = std::sqrt(d.x * d.x + d.y * d.y);
+	for (float t = 0; t < len; t += px(16)) {
+		float t1 = std::min(t + px(10), len);
+		dl->AddLine(a + d * (t / len), a + d * (t1 / len), A(c::parking, lit ? 1 : .9f), lit ? 3.f : 2.f);
+	}
+	if (editable)
+		for (int e = 0; e < 2; e++) {
+			ImVec2 p = v.at(kParkGripX[e], rowAt(kParkGripX[e]));
+			bool on = shown == e;
+			dl->AddCircleFilled(p, px(on ? 7 : 5), A(c::rgb(0x0B0E14)));
+			dl->AddCircle(p, px(on ? 7 : 5), A(c::parking), 0, on ? 3.f : 2.f);
+		}
+	tag(dl, v.at(70, rowAt(70)) - ImVec2(0, px(26)), ICON_CAR "  parking lane", A(c::rgb(0x0B0E14)), A(c::parking, .92f));
+	return changed;
+}
+
+bool parkingLineDragging() { return parkDrag.end >= 0; }
+
+void wheelbaseSketch(ImDrawList* dl, ImVec2 at, ImVec2 size, bool wheels) {
+	// A side-on car facing right, in the card's own colours: body, cabin, two wheels.  The marks to click are drawn in
+	// the warning colour the picture uses for them; the span between them is dimensioned underneath.
+	const ImU32 body = c::rgb(0x3A4660), glass = c::rgb(0x55647F), tyre = c::rgb(0x0B0E14), rim = c::rgb(0x8B95A8);
+	float w = size.x, h = size.y;
+	auto P = [&](float fx, float fy) { return ImVec2(at.x + fx * w, at.y + fy * h); };
+	float wheelR = h * .16f, axleY = .62f;
+	float frontX = .78f, rearX = .22f;   // wheel centres as fractions of the width
+	// Body: a rounded slab with a cabin on top.
+	dl->AddRectFilled(P(.04f, .34f), P(.97f, .62f), body, px(10));
+	ImVec2 cabin[] = { P(.26f, .35f), P(.36f, .12f), P(.66f, .12f), P(.78f, .35f) };
+	dl->AddConvexPolyFilled(cabin, 4, body);
+	ImVec2 win[] = { P(.31f, .33f), P(.385f, .17f), P(.635f, .17f), P(.72f, .33f) };
+	dl->AddConvexPolyFilled(win, 4, glass);
+	dl->AddLine(P(.51f, .17f), P(.51f, .33f), body, px(3));
+	for (float fx : { rearX, frontX }) {
+		ImVec2 cpt = P(fx, axleY);
+		dl->AddCircleFilled(cpt, wheelR, tyre);
+		dl->AddCircleFilled(cpt, wheelR * .55f, rim);
+		dl->AddCircleFilled(cpt, wheelR * .18f, tyre);
+	}
+	float dimY = .86f;
+	auto mark = [&](ImVec2 p) {
+		// The crosshair the user clicks: a ring and a cross in the marks' colour.
+		dl->AddCircle(p, px(7), c::warn, 0, 2.5f);
+		dl->AddLine(p - ImVec2(px(11), 0), p + ImVec2(px(11), 0), c::warn, 2.f);
+		dl->AddLine(p - ImVec2(0, px(11)), p + ImVec2(0, px(11)), c::warn, 2.f);
+	};
+	float x0 = wheels ? rearX : .04f, x1 = wheels ? frontX : .97f;
+	ImVec2 m0 = wheels ? P(rearX, axleY) : P(.04f, .5f), m1 = wheels ? P(frontX, axleY) : P(.97f, .5f);
+	mark(m0);
+	mark(m1);
+	// Dimension line with end ticks and the name of the measurement.
+	ImVec2 d0 = P(x0, dimY), d1 = P(x1, dimY);
+	dl->AddLine(d0, d1, c::dim, 1.5f);
+	for (ImVec2 e : { d0, d1 }) dl->AddLine(e - ImVec2(0, px(6)), e + ImVec2(0, px(6)), c::dim, 1.5f);
+	for (ImVec2 e : { m0, m1 }) dl->AddLine(ImVec2(e.x, e.y + px(12)), ImVec2(e.x, d0.y - px(6)), alpha(c::dim, .6f), 1.f);
+	const char* label = wheels ? "wheelbase" : "length";
+	ImVec2 ts = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, label);
+	ImVec2 lp((d0.x + d1.x - ts.x) * .5f, d0.y - ts.y - px(2));
+	dl->AddRectFilled(lp - ImVec2(px(4), 0), lp + ts + ImVec2(px(4), 0), c::bg2);
+	dl->AddText(fonts.caption, fsz(fonts.caption), lp, c::text, label);
+}

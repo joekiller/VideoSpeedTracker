@@ -204,6 +204,7 @@ companion-facing settings:
   "speedLineLeft": 350, "speedLineRight": 909,
   "obstruction": [251, 311],
   "R2LStreetY": 122, "L2RStreetY": 158, "R2LStreetYRight": 0, "L2RStreetYRight": 0, "streetEdge": [0, 0],
+  "parkingLane": [0, 0], "parkingLaneFt": 0, "parkingLaneBeyondFt": null, "parkingLaneHow": null,
   "L2RDirection": "SW", "R2LDirection": "NE",
   "CalibrationFramesL2R": 35, "CalibrationFramesR2L": 40, "CalibrationSpeed": 25, "CalibrationFPS": 30,
   "legalDirection": "R2L",
@@ -238,6 +239,15 @@ angle across the picture (0 = level, the same as the left end). `streetEdge` (`[
 way; `[0, 0]` = off) is an optional line along the curb: where it closes in on a lane line tells
 short-view timing how the street recedes, so it measures each car along the ground. See `VST.cfg`'s keys
 of the same names and `Perspective.h`.
+
+`parkingLane` (`[left, right]`, rows where the line meets the picture's left edge (x 0) and right edge (x 1280),
+whole-frame coordinates, not offsets from the box; `[0, 0]` = none) is an optional line on the middle of parked
+cars' wheels, for the Known car calibration below. `parkingLaneFt` (0 to 40; 0 = work it out from the picture) is a
+measured distance across the street from a passing car's wheels to a parked car's. Read-only, `parkingLaneBeyondFt`
+is how far beyond the moving cars VST makes the parked cars (signed: negative is nearer the camera; `null` with no
+parking lane) and `parkingLaneHow` how it got that: `"picture"` (the gap between the lines through the camera
+model, `Perspective.h` `hubcapDepthAtRow`), `"measured"` (`parkingLaneFt`) or `"typical"` (7 ft, when the camera
+model can't say). The tracker ignores all of these; they are VST Studio's settings, not `VST.cfg` keys.
 
 `GET` also returns, read-only, `obstruction_extent`, `SENSITIVITY_VALUE`, `BLUR_SIZE` and
 `largeVehicleArea` (the `VST.cfg` values) and `frameWidth`/`frameHeight` (always 1280 and 720).
@@ -353,6 +363,25 @@ speed. Three ways to record it:
   adds `"zoneFeet"` and the unrounded `"frames"` (both to 0.1). Refusals: cones missing or off the
   picture, `feet` not positive, an unknown `dir`, spots less than 40 px apart across the picture, or
   speed lines not set. The calibration shows as Not checked until a check pass (below).
+
+* **From a car of a known model (no tape, and a parked car works).**
+  `POST /api/calibration/car {"marks": [[x1, y1], [x2, y2]], "feet": 9.25, "how": "wheels"|"bumpers", "dir": "both"|"L2R"|"R2L", "where": "auto"|"lane"|"parked", "beyondFt": 7, "preview": false}`.
+  `marks` are the car's two wheel centres on the side facing the camera (`how: "wheels"`, the default; `feet` is the
+  wheelbase) or its front and rear bumpers (`"bumpers"`; `feet` is the overall length), in frame coordinates.
+  `GET /api/calibration/cars` lists the models Studio knows:
+  `{"cars": [{"name": "Toyota Camry 2018-2024", "lengthIn": 192, "wheelbaseIn": 111}, …], "typicalWheelbaseIn": 111}`.
+  `where: "auto"` (the default) asks the parking lane: marks nearer the parking line than the lane line are a parked
+  car. A parked car's span is scaled to the travel lane's depth with the camera model (`ParkingLane.h`), at the car's
+  column; with no parking lane, `"parked"` takes `beyondFt` (feet farther than moving cars, -30 to 50, default 7) and
+  `"auto"` means in the lane. On a two-way street `"both"` calibrates each direction from its own lane line.
+  `preview: true` answers without changing anything. The marks and choices also show in Studio's Known car card.
+  Besides `ok`, `problems` and `config`, the answer has `where` (`"parked"`|`"lane"`, what was used), `detected`
+  (what the parking lane says, or `null` without one), `offLines` (the marks are well away from both lines: probably
+  not on the wheels), `beyondFt` and `beyondHow` (`"picture"`|`"measured"`|`"typical"`|`"typed"`, for a parked car),
+  and `scale`, `frames` (unrounded) and `zoneFeet` for the first direction, with each direction's in
+  `byDir: {"L2R": {"scale", "frames", "zoneFeet"}, …}`. Refusals: marks missing or off the picture, `feet` not
+  positive, an unknown `dir`, `where` or `how`, `beyondFt` out of range, marks less than 60 px apart across the
+  picture, or speed lines not set.
 
 Every way of applying returns `{"ok": true, "problems": [], "config": { … }}`, or `200`
 `{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked, `speed` isn't

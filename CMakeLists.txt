@@ -222,7 +222,7 @@ if(TARGET vst_report)
   # Distance calibration (src/Gui/Calibration.h): cones/pole spacing and a known car's length, with the depth
   # correction for a car parked beyond the traffic lane checked against a pinhole camera.  Header only.
   add_executable(calibration_test tests/calibration_test.cpp)
-  target_include_directories(calibration_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Gui)
+  target_include_directories(calibration_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Gui ${VST_DIR})
   add_test(NAME distance_calibration COMMAND calibration_test)
 endif()
 
