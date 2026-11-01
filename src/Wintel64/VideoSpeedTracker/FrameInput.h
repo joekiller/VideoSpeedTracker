@@ -9,21 +9,24 @@
 //             FeedSource             frames pushed in by something that already has them (the running tracker's,
 //                                    handed to VST Studio's setup pages, so they don't open the camera a second time)
 //   factory   frameio::open(name)     picks and opens the adapter for a source name, applying the one opening policy:
-//                                    hardware decoding, USB cameras asked for 1280x720 MJPG at 60 fps, and stream
+//                                    hardware decoding, USB cameras opened in the best mode for timing that their
+//                                    driver lists (webcam::best, Webcam.h) or the one the user chose, and stream
 //                                    timeouts.  The engine and VST Studio's preview both open through it, so a preview
 //                                    shows the camera in the same mode the run will get.
 //
 // What the rest of VST works on is the "working frame": 1280x720 (the canvas every VST.cfg coordinate refers to),
 // turned by levelDegrees.  frameio::toWorking() and frameio::readWorking() make one from whatever a source delivers.
 //
-// Source names are the ones the command line and VST.cfg have always taken: a file path, "0" (a USB camera),
-// "picam[:n][?settings]" (PiCamera.h), or a URL.  classify() is the one place that tells them apart.
+// Source names are the ones the command line and VST.cfg have always taken: a file path, "0[?settings]" (a USB camera,
+// Webcam.h), "picam[:n][?settings]" (PiCamera.h), or a URL.  classify() is the one place that tells them apart, and
+// deviceKey() names the camera without its settings.
 #pragma once
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
 #include <memory>
 #include <string>
 #include <vector>
+#include "Webcam.h"
 
 namespace frameio {
 
@@ -34,7 +37,7 @@ enum class Kind {
 	None,       // "" or nothing open
 	File,       // a recorded video
 	Image,      // a still photo (.jpg, .jpeg, .png, .bmp)
-	Camera,     // a USB camera by index ("0".."999")
+	Camera,     // a USB camera by index ("0".."999"), with any settings ("0?w=1920&h=1080&fps=30", Webcam.h)
 	PiCamera,   // "picam..."
 	Stream,     // anything with "://": rtsp, http, ...
 	Feed,       // frames pushed in by the host (FeedSource); never named, so classify() doesn't return it
@@ -52,6 +55,10 @@ bool isImagePath(const std::string& name);
 std::string safeName(const std::string& name);
 // A short name for the log: "camera 0", "Pi camera 0", or safeName().
 std::string label(const std::string& name);
+// The device a source name means, without the settings it is opened with: "usb:0" for "0" and "0?w=1920&h=1080",
+// "picam:1" for "picam:1?fps=30", and the name itself for files and streams.  Marks and calibration belong to a device,
+// so changing a camera's resolution, frame rate or shutter never counts as a new source.
+std::string deviceKey(const std::string& name);
 
 // How a camera's shutter (exposure time) was left by the opening policy.  Only cameras have one: files and streams are
 // Unknown.  A fixed shutter matters twice for timing: it keeps cars sharp, and it stops a webcam on automatic exposure
@@ -72,6 +79,10 @@ struct Facts {
 	Shutter shutter = Shutter::Unknown;
 	int shutterUs = 0;           // the fixed shutter in microseconds when shutter == Fixed (1000 = 1/1000 s), else 0
 	double measuredFps = 0;      // frames a camera actually delivered per second while opening; 0 when not measured
+	// USB cameras: the device's own name ("" when the system doesn't say), and how the mode was chosen.
+	std::string deviceName;
+	bool modePicked = false;     // VST picked the mode from the driver's list (webcam::best); false for the user's own or a plain ask
+	std::string modeWhy;         // webcam::whyBest(), when modePicked
 };
 
 // USB camera exposure through cv::VideoCapture.  Each OpenCV backend speaks its own units, so these are kept apart from
@@ -133,8 +144,11 @@ struct OpenOptions {
 	// keep Stop from hanging on a dead camera.
 	int streamOpenTimeoutMs = 5000;
 	int streamReadTimeoutMs = 10000;
-	// A USB camera opens in its default mode, often 640x480 at 30 fps.  Ask for this instead (MJPG, the only way most
-	// cameras manage 720p60 over USB 2, and cheaper to read than raw YUYV).  A camera without the mode picks its nearest.
+	// A USB camera opens in its default mode, often 640x480 at 30 fps.  Unless its name says otherwise ("0?w=..."), VST
+	// reads the modes its driver lists and opens the best one for timing (webcam::best, Webcam.h).
+	bool cameraPicksMode = true;
+	// Where the driver's modes can't be read (an unlisted platform, or a camera that won't say), ask for this instead
+	// (MJPG, the only way most cameras manage 720p60 over USB 2).  A camera without the mode picks its nearest.
 	int cameraWidth = kWorkingWidth, cameraHeight = kWorkingHeight;
 	double cameraFps = 60;
 	// Then fix its shutter at this many microseconds (1000 = 1/1000 s, as the Pi cameras run; 0 leaves it automatic).
@@ -151,7 +165,7 @@ struct OpenOptions {
 struct CameraReport {
 	int index = 0;
 	std::string backend;        // VideoCapture::getBackendName(): V4L2, MSMF, DSHOW, AVFOUNDATION, ...
-	std::string name;           // the device's own name where the system says it (Linux), else ""
+	std::string name;           // the device's own name where the system says it, else ""
 	std::string available;      // the camera backends this build of OpenCV has, comma-separated (a missing one is a missing driver)
 	bool opened = false;
 	std::string error;          // why it didn't open, when it didn't
@@ -171,6 +185,7 @@ struct CameraReport {
 	};
 	std::vector<Control> controls;
 	Facts policy;               // facts() after a normal frameio::open(): shutter, measured fps
+	webcam::Device device;      // what the system lists for it (Webcam.h): USB ids and every mode its driver offers
 	std::vector<std::string> notes;
 	// Plain text for an issue body: Markdown tables, under about 4 KB.
 	std::string markdown() const;

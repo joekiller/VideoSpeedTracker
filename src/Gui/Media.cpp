@@ -83,7 +83,14 @@ SourceInfo::Kind classifySource(const std::string& path) {
 
 std::string displayName(const std::string& path) {
 	switch (classifySource(path)) {
-	case SourceInfo::Camera: return picam::isName(path) ? picam::label(path) : "Camera " + path;
+	case SourceInfo::Camera: {
+		if (picam::isName(path)) return picam::label(path);
+		// A USB camera by the name the system gives it once it's been listed (Webcam.h), else by number.
+		webcam::Settings s;
+		webcam::parse(path, s);
+		std::string known = webcam::knownName(s.camera);
+		return known.empty() ? "Camera " + std::to_string(s.camera) : known;
+	}
 	case SourceInfo::Stream: return frameio::safeName(path);   // no user:pass@, and no ?pwd= either (the log's rule)
 	default: return fs::path(path).filename().string();
 	}
@@ -131,7 +138,7 @@ std::string openError(const SourceInfo& in, const frameio::FrameSource& src) {
 	if (!src.error().empty()) return src.error();
 	switch (in.kind) {
 	case SourceInfo::Camera:
-		return "Can't open " + in.label + " yet. Check it's plugged in (for a phone, that its webcam app is running) and that no other app, like a video call, is using it. Or try another number.";
+		return "Can't open " + in.label + " yet. Check it's plugged in (for a phone, that its webcam app is running) and that no other app, like a video call, is using it. Or pick another camera in the menu.";
 	case SourceInfo::Stream:
 		return "Can't connect to " + in.label + ". Check the address, user name and password, and that the camera is on this network.";
 	default:
@@ -150,6 +157,9 @@ void describe(const frameio::FrameSource& src, SourceInfo& in) {
 	in.shutter = f.shutter;
 	in.shutterUs = f.shutterUs;
 	in.measuredFps = f.measuredFps;
+	in.deviceName = f.deviceName;
+	in.modePicked = f.modePicked;
+	in.modeWhy = f.modeWhy;
 }
 
 }  // namespace

@@ -198,6 +198,8 @@ const Tier kTiers[] = {
 	{ "Your phone, as a webcam", "$0", "already in your pocket", 0, "Live, at 30 fps. The easiest start." },
 	{ "Your phone, recording at 60 fps", "$0", "free Blackmagic Camera app", 1, "Record, then open the video here. Fast shutter, great timing." },
 	{ "Logitech C922 webcam", "about $70-100", "Best Buy, Walmart, Staples", 2, "60 fps at 720p; VST sets its shutter for you." },
+	// The registry's real-deal webcams (Webcam.h, suggest = 2).  Any other webcam works too: VST reads what it can do.
+	{ "Elgato Facecam or Logitech StreamCam", "about $100-170", "Best Buy, Staples", 3, "1080p at 60 fps: real-deal timing on short views." },
 	{ "Raspberry Pi 5 + Camera Module 3", "about $150", "online or Micro Center", 8, "Always on, 60 fps, sips power. For later." },
 };
 
@@ -205,12 +207,18 @@ const Tier kTiers[] = {
 // the fastest speed it tracks sets its look-ahead (and the margins scaled from it), and a car length sets how far back
 // it looks on entry.  Speed lines go about 7% in from each side of the analysis box, so the bumper is seen before and
 // after the zone.
+// The look-ahead alone (pixels a car at kMaxTrackMph moves in two frames at `fps`): what a camera's frame rate changes.
+int shortViewStep(const PlanState& s, double fps) {
+	double coverM = plan::coverAt(s.dist, s.hfov);
+	double pxPerM = 1280 / std::max(coverM, .5);
+	return std::clamp(int(std::ceil(pxPerM * kMaxTrackMph * kMph * 2 / std::max(fps, 1.0))), 75, 1280);
+}
+
 void applyShortView(Globals& g, const PlanState& s) {
 	double coverM = plan::coverAt(s.dist, s.hfov);
 	double pxPerM = 1280 / std::max(coverM, .5);
-	int step = int(std::ceil(pxPerM * kMaxTrackMph * kMph * 2 / std::max(s.fps, 1.0)));
 	g.subFrameTiming = 1;
-	g.maxL2RDistOnEntry = g.maxR2LDistOnEntry = std::clamp(step, 75, 1280);
+	g.maxL2RDistOnEntry = g.maxR2LDistOnEntry = shortViewStep(s, s.fps);
 	g.entryLookBack = std::clamp(int(pxPerM * s.carLen), 250, g.AnalysisBoxWidth);
 	g.speedLineLeft = int(g.AnalysisBoxWidth * .07);
 	g.speedLineRight = g.AnalysisBoxWidth - g.speedLineLeft;
@@ -223,6 +231,8 @@ std::string feet(double m) { char b[32]; snprintf(b, sizeof b, "%.0f ft", m * pl
 const char* directionWords(const std::string& legal) { return legal == "L2R" ? "left to right" : legal == "R2L" ? "right to left" : "both ways"; }
 
 }  // namespace
+
+int App::lookAheadFor(double fps) const { return shortViewStep(planSaved(), fps); }
 
 // ---- Pick your spot's draft: preview until saved ------------------------------------------------------------------
 
@@ -705,8 +715,8 @@ void App::cameraTiers(float width) {
 	bool onPlanner = flowStep() == 1;
 	beginCard("tiers", ICON_CART, onPlanner ? "Which camera? Worked out for this street" : "Which camera? Start with what you have", ImVec2(width, 0));
 	ImGui::PushTextWrapPos(0);
-	dimText(onPlanner ? "Suggestions only: VST sells nothing. Start free with your phone; buy only if your street needs it."
-		: "Suggestions only: VST sells nothing. Your phone is a fine first camera; step 2 works out whether your street needs more.");
+	dimText(onPlanner ? "Suggestions only: VST sells nothing. Start free with your phone; buy only if your street needs it. Any webcam works: VST reads what yours can do when you connect it."
+		: "Suggestions only: VST sells nothing. Your phone is a fine first camera; step 2 works out whether your street needs more. Any webcam works: VST reads what yours can do.");
 	ImGui::PopTextWrapPos();
 	PlanState base = onPlanner ? planDraft_.plan : planSaved();
 	bool shortOn = cfg.g.subFrameTiming != 0 || planDraft_.shortView;
@@ -981,15 +991,34 @@ void App::sitePlanner() {
 			}
 		ImGui::EndCombo();
 	}
-	// A connected camera knows its own size and frame rate; planning with them shows what a 15 fps webcam means.
-	if (planPictureAvailable() && player.info().kind != SourceInfo::Image && player.info().fps > 0
-		&& (std::fabs(player.info().fps - d.fps) > .5 || player.info().width != int(d.width))) {
-		char b[120];
-		snprintf(b, sizeof b, ICON_CAMERA "  Plan with your camera: %d × %d, %.0f fps", player.info().width, player.info().height, player.info().fps);
-		if (ghostButton(b, ImVec2(-FLT_MIN, 0))) {
-			d.width = player.info().width;
-			d.fps = std::round(player.info().fps);
-			d.preset = n - 1;
+	// A connected camera knows its own size and frame rate (and the rate it really sends, when that's lower); planning
+	// with them shows what a 15 fps webcam means.  A recognized model (Webcam.h's registry) adds its lens's field of view;
+	// any other camera keeps the plan's, which step 5's calibration measures anyway.  The presets above stay for "what
+	// if I bought...", never as the way the connected camera is described.
+	if (planPictureAvailable() && player.info().kind != SourceInfo::Image && player.info().fps > 0) {
+		const SourceInfo& in = player.info();
+		double fps = in.measuredFps > 0 && in.measuredFps < in.fps * .8 ? in.measuredFps : in.fps;
+		const webcam::Model* model = webcam::recognize(in.deviceName, 0, 0);
+		double hfov = model && model->hfov > 0 ? model->hfov : d.hfov;
+		std::string who = !in.deviceName.empty() ? in.deviceName : friendlySourceName(source);
+		if (std::fabs(fps - d.fps) > .5 || in.width != int(d.width) || std::fabs(hfov - d.hfov) > .5) {
+			char b[200];
+			snprintf(b, sizeof b, ICON_CAMERA "  Plan with your camera: %s, %d × %d, %.0f fps", who.c_str(), in.width, in.height, fps);
+			if (ghostButton(b, ImVec2(-FLT_MIN, 0))) {
+				d.width = in.width;
+				d.fps = std::round(fps);
+				d.hfov = hfov;
+				d.preset = n - 1;
+				planEdited();
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", model && model->hfov > 0 ? "Its size and frame rate as connected, and the field of view of its lens."
+					: "Its size and frame rate as connected. The field of view stays as planned until step 5's calibration measures it.");
+		}
+		else {
+			ImGui::PushTextWrapPos(0);
+			dimText(ICON_CHECK "  Planned with your camera: %s.", who.c_str());
+			ImGui::PopTextWrapPos();
 		}
 	}
 	if (d.fps < 24) {

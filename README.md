@@ -452,16 +452,27 @@ A Pi camera is live like a USB camera: times come from the Pi's clock (keep it o
 stops VST reconnects as described above. `VST_RPICAM_VID` names a different program to run instead of `rpicam-vid`;
 the tests use it to stand in a recording for the camera.
 
-A USB camera (`--input 0`) is asked for 1280x720 at 60 fps in MJPG, the mode most webcams need for 60 fps over USB 2;
-one without it uses its nearest mode. Its shutter is then fixed at 1/1000 s, like a Pi camera's, so cars stay sharp and
+A USB camera (`--input 0`) is opened in the best mode for timing that its driver lists: VST asks the system for every
+size, frame rate and format the camera offers (V4L2 on Linux, Media Foundation on Windows, AVFoundation on macOS) and
+picks frames first (60 fps or more at 720p or better, then 60 fps at 480p, then 30 fps at HD), then 16:9, then the size
+nearest 720p, then MJPG before raw. No list of camera models is involved: a webcam VST has never heard of gets the same
+treatment. Where the modes can't be listed, it asks for 1280x720 at 60 fps in MJPG and takes the camera's nearest. A
+choice of your own goes in the name, the way a Pi camera's settings do: `--input "0?w=1920&h=1080&fps=30&fmt=MJPG&shutter=1000"`
+(`shutter=0` for automatic). In VST Studio the camera menu lists cameras by name, and **Settings** on the camera card
+shows every mode the camera lists, VST's pick and why. Changing them reconnects the camera and keeps your marks, distance
+and calibration: those belong to the camera, not to its mode. A mode of another shape (4:3 instead of 16:9) is the one
+change that moves the picture under your marks, and VST says so rather than changing anything. On Linux VST also tells
+automatic exposure not to lower the frame rate (`exposure_auto_priority`). A small registry in `Webcam.cpp` recognizes
+some common webcams, phone webcam apps and virtual cameras by USB id or name, for hints such as a lens's field of view
+in step 2; it never overrides what the camera itself reports. Its shutter is then fixed at 1/1000 s, like a Pi camera's, so cars stay sharp and
 a webcam can't slow to 30 fps in shade while still reporting 60 (speeds are counted in frames). If the picture is too
 dark at 1/1000 s VST tries 1/500 and 1/250 s, and puts the camera back on automatic if none is bright enough. This works
 on Linux (V4L2) and Windows (Media Foundation, DirectShow); macOS doesn't let VST set it, so lock exposure in the
 camera's own app there. The log says what happened, and whether the camera sent fewer frames than it reported.
 `VST_CAMERA_SHUTTER_US` sets a different shutter in microseconds, or `0` to leave it automatic.
 
-On **Connect the camera**, *Check what this camera can do* tries a USB camera at 720p and 1080p, 30 and 60 fps, times
-what it really sends and lists the settings its driver takes. *Report this camera* then opens a new GitHub issue in the
+On **Connect the camera**, *Check what this camera can do* tries a USB camera at 720p and 1080p, 30 and 60 fps (and at
+VST's pick), times what it really sends, lists the settings its driver takes and every mode its driver lists. *Report this camera* then opens a new GitHub issue in the
 browser with those details filled in (no pictures, no file paths), for adding support for a camera that doesn't work
 well. Nothing is sent unless you submit the issue. Video files and stream URLs are decoded on the graphics chip when it has a video
 decoder (Intel Quick Sync, VA-API, D3D11), which takes most of the work off the CPU; without one VST decodes in software

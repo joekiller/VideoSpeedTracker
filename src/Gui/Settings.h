@@ -88,6 +88,9 @@ struct AppPrefs {
 	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config
 	// a calibration was applied to.  A step counts as done only for the camera/config it was done for.
 	std::string zonesFor, calibratedFor;
+	// The picture's size ("1280x720") when Mark your street was last shown with valid zones: a later mode of another
+	// shape (4:3 against 16:9) moves the marks' vertical positions, so the Connect and Mark pages say so (Webcam.h changeNote).
+	std::string zonesFrame;
 	std::string calibratedLines;   // speedLineLeft,speedLineRight,AnalysisBoxWidth when calibrated (App::speedLinesSig)
 	// Pick your spot's distance came from the user (typed, the map, step 4's "to the lane"), so a calibration keeps it
 	// and works out the lens's field of view from the measured picture width instead (App::syncPlanFromCalibration).

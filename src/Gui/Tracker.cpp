@@ -45,7 +45,9 @@ static std::string jobStem(const std::string& input) {
 		picam::Settings pi;
 		std::string error;
 		if (picam::isName(input)) return (picam::parse(input, pi, error) ? "picam" + std::to_string(pi.camera) : std::string("picam")) + "_" + stamp();
-		return "camera" + input + "_" + stamp();
+		webcam::Settings usb;
+		webcam::parse(input, usb);   // "0?w=1920&h=1080" is camera 0: the settings stay out of the file name
+		return "camera" + std::to_string(usb.camera) + "_" + stamp();
 	}
 	case SourceInfo::Stream: return "stream_" + stamp();
 	default: {

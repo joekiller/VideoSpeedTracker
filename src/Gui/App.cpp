@@ -125,6 +125,7 @@ void App::init(bool fresh, const std::string& configPath) {
 	if (resume::reopenAtLaunch(prefs.lastSource, isPath, isPath && fs::exists(prefs.lastSource, ec)) && openSource(prefs.lastSource))
 		resumedSource_ = prefs.lastSource;
 	if (prefs.remoteEnabled) setRemote(true);
+	listUsbCameras();
 #ifndef _WIN32
 	if (!picam::findTool().empty())
 		piListing_ = std::async(std::launch::async, [] { bool ok = false; std::string error; return picam::list(ok, error); });
@@ -181,7 +182,8 @@ bool App::saveConfig() {
 // Judged on the connected source, or the remembered one while it's unplugged or reconnecting (resume::setupSource), so
 // the check doesn't vanish because a camera is a moment late.
 bool App::zonesDone() {
-	return resume::zonesStepDone(resume::setupSource(source, prefs.lastSource), prefs.zonesFor, cfg.problems().empty());
+	// By device, not by name: "0" and "0?w=1920&h=1080" are the same camera, so a mode change keeps step 4 done.
+	return resume::zonesStepDone(frameio::deviceKey(resume::setupSource(source, prefs.lastSource)), frameio::deviceKey(prefs.zonesFor), cfg.problems().empty());
 }
 
 bool App::calibrationDone() {
@@ -263,6 +265,9 @@ bool App::openSource(const std::string& path) {
 		piSettings_ = pi;
 		for (int i = 0; i < int(piCams_.size()); i++) if (piCams_[i].index == pi.camera) piChoice_ = i;
 	}
+	// A USB camera, likewise: the menu and its settings popup follow the camera being opened.
+	webcam::Settings usb;
+	if (webcam::parse(path, usb)) { usbSettings_ = usb; cameraIndex_ = usb.camera; piChoice_ = -1; }
 	if (player.opening()) pendingRecent_ = path;   // remembered once it answers (frame())
 	else rememberSource(path);
 	return true;
@@ -272,6 +277,11 @@ bool App::openSource(const std::string& path) {
 void App::rememberSource(const std::string& path) {
 	pendingRecent_.clear();
 	prefs.lastSource = path;
+	// One Recent entry per camera: a camera reopened with other settings replaces its old entry rather than adding one.
+	if (frameio::isCamera(frameio::classify(path))) {
+		const std::string key = frameio::deviceKey(path);
+		prefs.recent.erase(std::remove_if(prefs.recent.begin(), prefs.recent.end(), [&](const std::string& r) { return r != path && frameio::deviceKey(r) == key; }), prefs.recent.end());
+	}
 	prefs.addRecent(path);
 }
 
@@ -1294,7 +1304,10 @@ void App::frame(float w, float h) {
 		if (!pendingRecent_.empty() && pendingRecent_ == source && player.isOpen() && !player.opening()) rememberSource(source);
 		else if (!pendingRecent_.empty() && pendingRecent_ != source) pendingRecent_.clear();   // cancelled or replaced
 	}
-	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
+	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) {
+		prefs.zonesFor = source;
+		if (player.isOpen() && player.info().width > 0) prefs.zonesFrame = std::to_string(player.info().width) + "x" + std::to_string(player.info().height);
+	}
 	if (!screenshotMode) prefs.lastPage = pageKey(page, guideStep_);   // written with the other prefs (savePrefsSoon)
 	autosave();
 	// Pick your spot's draft: follow the saved plan where untouched, save it as it's edited when autosave is on (once no
@@ -1801,6 +1814,151 @@ void App::piCameraSettings() {
 	dimText("Press Connect to start the camera with these settings.");
 }
 
+// ---- USB cameras (Webcam.h) ------------------------------------------------------------------------------------
+
+void App::listUsbCameras() {
+	if (usbListing_.valid() || now() - usbListedAt_ < 3) return;
+	usbListedAt_ = now();
+	usbListing_ = std::async(std::launch::async, [] { return webcam::list(); });
+}
+
+void App::pumpUsbListing() {
+	if (!usbListing_.valid() || usbListing_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+	usbCams_ = usbListing_.get();
+	usbListed_ = true;
+	usbListedAt_ = now();
+}
+
+const webcam::Device* App::usbDevice(int index) const {
+	for (const webcam::Device& d : usbCams_) if (d.index == index) return &d;
+	return nullptr;
+}
+
+// The settings a camera was last connected with come back with it (Recent keeps one entry per camera, rememberSource).
+void App::pickUsbCamera(int index) {
+	cameraIndex_ = index;
+	piChoice_ = -1;
+	usbSettings_ = webcam::Settings();
+	usbSettings_.camera = index;
+	const std::string key = "usb:" + std::to_string(index);
+	for (const std::string& r : prefs.recent)
+		if (frameio::classify(r) == frameio::Kind::Camera && frameio::deviceKey(r) == key) { webcam::parse(r, usbSettings_); break; }
+}
+
+webcam::Mode App::usbModeFor(const webcam::Settings& s) const {
+	const webcam::Device* d = usbDevice(s.camera);
+	std::vector<webcam::Mode> modes = d ? d->modes : std::vector<webcam::Mode>();
+	if (s.picksMode()) {
+		webcam::Mode m = webcam::best(modes);
+		if (!m.valid()) { m.width = frameio::kWorkingWidth; m.height = frameio::kWorkingHeight; m.fps = 60; }   // the old ask
+		if (s.fps > 0) m.fps = s.fps;
+		return m;
+	}
+	webcam::Mode m;
+	m.width = s.width; m.height = s.height; m.fps = s.fps; m.format = s.format;
+	return m;
+}
+
+// The USB camera settings popup.  VST picks the mode by default (webcam::best: frames first, then 16:9, then size) and
+// says why; every mode the driver lists can be chosen instead.  Nothing here touches the street: marks, distance and
+// calibration belong to the camera (frameio::deviceKey), not to its mode, so the only thing said about them is what
+// webcam::changeNote() knows a change of shape or size can do to the picture.
+void App::usbCameraSettings(bool inUse) {
+	const webcam::Device* d = usbDevice(cameraIndex_);
+	usbSettings_.camera = cameraIndex_;
+	ImGui::PushFont(fonts.strong);
+	ImGui::TextUnformatted(d ? d->label().c_str() : ("USB camera " + std::to_string(cameraIndex_)).c_str());
+	ImGui::PopFont();
+	ImGui::PushTextWrapPos(px(380));
+	if (const webcam::Model* m = d ? webcam::recognize(*d) : nullptr) dimText(ICON_INFO "  %s", m->note);
+	if (d && d->isVirtual())
+		dimText(ICON_WARN "  A picture made by other software, not a camera. VST times it like any camera; speeds are right when that "
+			"software passes the camera's frames through at a steady rate.");
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::TextUnformatted("Picture size and frame rate");
+	std::vector<webcam::Mode> listed = d ? d->modes : std::vector<webcam::Mode>();
+	webcam::Mode best = webcam::best(listed);
+	char b[200];
+	if (best.valid()) snprintf(b, sizeof b, "Best for timing: %s##best", best.text().c_str());
+	else snprintf(b, sizeof b, "Let VST choose (asks for 1280 × 720 at 60 fps)##best");
+	if (ImGui::RadioButton(b, usbSettings_.picksMode() && usbSettings_.fps <= 0)) { usbSettings_.width = usbSettings_.height = 0; usbSettings_.fps = 0; usbSettings_.format.clear(); }
+	ImGui::Indent(px(26));
+	dimText("%s", webcam::whyBest(best, listed).c_str());
+	ImGui::Unindent(px(26));
+	std::vector<webcam::Mode> offered = webcam::offered(listed);
+	offered.erase(std::remove(offered.begin(), offered.end(), best), offered.end());   // that's the first choice already
+	if (offered.empty() && listed.empty()) {
+		// Nothing listed (this system can't say, or the camera is busy): the sizes most cameras have, as asks.
+		offered = { { 1280, 720, 60, "MJPG" }, { 1280, 720, 30, "MJPG" }, { 1920, 1080, 30, "MJPG" }, { 640, 480, 30, "" } };
+		dimText("%s", d && !d->error.empty() ? (d->error + " Or ask for one of these: the camera takes its nearest.").c_str() : "Or ask for one of these: the camera takes its nearest.");
+	}
+	if (ImGui::BeginChild("##modes", ImVec2(px(380), std::min(ImGui::GetFrameHeightWithSpacing() * float(offered.size()) + px(4), px(260))), ImGuiChildFlags_None)) {
+		for (const webcam::Mode& m : offered) {
+			bool on = !usbSettings_.picksMode() && usbSettings_.width == m.width && usbSettings_.height == m.height
+				&& std::lround(usbSettings_.fps) == std::lround(m.fps) && (usbSettings_.format.empty() || usbSettings_.format == m.format);
+			if (ImGui::RadioButton(m.text().c_str(), on)) { usbSettings_.width = m.width; usbSettings_.height = m.height; usbSettings_.fps = m.fps; usbSettings_.format = m.format; }
+		}
+	}
+	ImGui::EndChild();
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::TextUnformatted("Shutter");
+	static const struct { int us; const char* label; } shutters[] = {
+		{ -1, "1/1000 s, slower if dark (recommended)" }, { 500, "1/2000 s" }, { 1000, "1/1000 s, always" }, { 2000, "1/500 s" }, { 4000, "1/250 s" }, { 0, "Automatic" },
+	};
+	const char* current = "Custom";
+	for (auto& sh : shutters) if (sh.us == usbSettings_.shutterUs) current = sh.label;
+	ImGui::SetNextItemWidth(px(300));
+	if (ImGui::BeginCombo("##usbshutter", current)) {
+		for (auto& sh : shutters) if (ImGui::Selectable(sh.label, sh.us == usbSettings_.shutterUs)) usbSettings_.shutterUs = sh.us;
+		ImGui::EndCombo();
+	}
+	dimText("A short shutter keeps cars sharp and stops the camera lowering its frame rate in shade. Where the system won't "
+		"let VST set it (macOS, some cameras), it stays automatic.");
+
+	// What the change does to the street set up for this camera.
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
+	ImGui::TextWrapped(ICON_CHECK_CIRCLE "  These change how the camera sends pictures, not your street: your marks, distance and calibration stay.");
+	ImGui::PopStyleColor();
+	const std::string wanted = webcam::name(usbSettings_);
+	if (inUse && player.isOpen()) {
+		webcam::Mode was;
+		was.width = player.info().width; was.height = player.info().height; was.fps = player.info().fps;
+		std::string note = webcam::changeNote(was, usbModeFor(usbSettings_));
+		bool marked = !prefs.zonesFor.empty() && frameio::deviceKey(prefs.zonesFor) == frameio::deviceKey(source);
+		if (!note.empty() && (marked || calibrationDone())) {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(note.find("shape") != std::string::npos ? c::warn : c::dim));
+			ImGui::TextWrapped("%s", note.c_str());
+			ImGui::PopStyleColor();
+		}
+		ImGui::BeginDisabled(wanted == source || tracker.running());
+		if (primaryButton(ICON_LINK "  Reconnect with these settings", ImVec2(-FLT_MIN, 0), c::ok)) { openSource(wanted); ImGui::CloseCurrentPopup(); }
+		ImGui::EndDisabled();
+		if (tracker.running() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Live tracking is using the camera. Stop tracking first.");
+	}
+	else dimText("Press Connect to start the camera with these settings.");
+	ImGui::PopTextWrapPos();
+}
+
+// The marks (and calibration) were made on a picture of one shape; a mode of another shape stretches the working frame
+// differently, so lanes sit at other heights.  Nothing is changed: it says so and how to get back.
+void App::shapeNote() {
+	if (!player.isOpen() || prefs.zonesFrame.empty() || frameio::deviceKey(prefs.zonesFor) != frameio::deviceKey(source)) return;
+	webcam::Mode was, now;
+	if (std::sscanf(prefs.zonesFrame.c_str(), "%dx%d", &was.width, &was.height) != 2) return;
+	now.width = player.info().width; now.height = player.info().height;
+	if (!was.valid() || !now.valid() || was.wide() == now.wide()) return;
+	ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+	ImGui::PushTextWrapPos(0);
+	ImGui::TextWrapped(ICON_WARN "  The picture is %d × %d now, another shape than the %d × %d you marked your street on. Your marks and "
+		"calibration are kept: look at step 4 to check the box still sits on the lane, or pick a %s size in the camera settings.",
+		now.width, now.height, was.width, was.height, was.wide() ? "16:9" : "4:3");
+	ImGui::PopTextWrapPos();
+	ImGui::PopStyleColor();
+}
+
 void App::pageSource() {
 	flowStepper();
 	float avail = ImGui::GetContentRegionAvail().x;
@@ -1851,16 +2009,33 @@ void App::pageSource() {
 			piCams_.empty() ? "A webcam, a phone in USB webcam mode, or a Raspberry Pi camera. Tracks live, in real time."
 				: "A Raspberry Pi camera, a webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
 			bool pi = piChoice_ >= 0 && piChoice_ < int(piCams_.size());
+			pumpUsbListing();
 			// The menu takes what the Connect/Disconnect button leaves, so the button's label is never cut off in a narrow
-			// window (three cards share the left two thirds of the page).
-			bool inUse = pi ? picam::isName(source) : source == std::to_string(cameraIndex_);
+			// window (three cards share the left two thirds of the page).  Both kinds of camera have a settings popup.
+			bool inUse = pi ? picam::isName(source) : frameio::deviceKey(source) == "usb:" + std::to_string(cameraIndex_);
 			float connectW = buttonWidth(inUse ? ICON_XMARK " Disconnect" : ICON_LINK " Connect");
-			float settingsW = pi ? ImGui::GetFrameHeight() + px(4) : 0;
-			ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x - connectW - settingsW - px(8), px(76), px(110)));
-			char camLabel[96];
+			// The camera's settings sit in the card's top-right corner, beside its icon, where the row below has no room.
+			{
+				ImVec2 back = ImGui::GetCursorScreenPos();
+				const char* label = ICON_SLIDERS " Settings";
+				ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - px(18) - buttonWidth(label), ImGui::GetWindowPos().y + px(16)));
+				if (ghostButton(label)) ImGui::OpenPopup(pi ? "##pisettings" : "##usbsettings");
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+					ImGui::SetTooltip("%s", pi ? "Pi camera settings: frame rate, shutter, focus"
+						: "Camera settings: picture size, frame rate, shutter. VST picks the best for timing unless you choose.");
+				if (pi && ImGui::BeginPopup("##pisettings")) { piCameraSettings(); ImGui::EndPopup(); }
+				if (!pi && ImGui::BeginPopup("##usbsettings")) { usbCameraSettings(inUse); ImGui::EndPopup(); }
+				ImGui::SetCursorScreenPos(back);
+			}
+			ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x - connectW - px(8), px(76), px(130)));
+			char camLabel[160];
+			const webcam::Device* usb = usbDevice(cameraIndex_);
 			if (pi) snprintf(camLabel, sizeof camLabel, ICON_CAMERA " Pi %d", piCams_[piChoice_].index);
+			else if (usb && !usb->name.empty()) snprintf(camLabel, sizeof camLabel, "%s", usb->name.c_str());   // clipped to the box; the tooltip has it all
 			else snprintf(camLabel, sizeof camLabel, "USB %d", cameraIndex_);   // "USB camera N" in the menu
+			if (ImGui::IsWindowAppearing() || ImGui::IsItemHovered()) listUsbCameras();   // a camera plugged in since: there by the time the menu opens
 			if (ImGui::BeginCombo("##cam", camLabel, ImGuiComboFlags_HeightLarge)) {
+				listUsbCameras();
 				for (int i = 0; i < int(piCams_.size()); i++) {
 					snprintf(camLabel, sizeof camLabel, "Pi camera %d: %s", piCams_[i].index, piCams_[i].model.c_str());
 					if (ImGui::Selectable(camLabel, piChoice_ == i)) piChoice_ = i;
@@ -1872,20 +2047,39 @@ void App::pageSource() {
 					ImGui::EndDisabled();
 				}
 				if (!piCams_.empty() || (piListed_ && picam::onRaspberryPi())) ImGui::Separator();
+				// USB cameras by the name the system gives them, with the best frame rate their driver lists (Webcam.h).
+				// Where nothing is listed (an unlisted platform, or still looking) the numbers are offered as before.
+				for (const webcam::Device& d : usbCams_) {
+					double top = d.topFps();
+					if (top > 0) snprintf(camLabel, sizeof camLabel, "%s  ·  up to %.0f fps##usb%d", d.label().c_str(), top, d.index);
+					else snprintf(camLabel, sizeof camLabel, "%s##usb%d", d.label().c_str(), d.index);
+					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == d.index)) pickUsbCamera(d.index);
+					if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+						const webcam::Model* m = webcam::recognize(d);
+						ImGui::SetTooltip("Camera %d%s%s", d.index, m ? ": " : "", m ? m->note : "");
+					}
+				}
+				if (!usbCams_.empty()) {
+					ImGui::BeginDisabled();
+					ImGui::Selectable("Not listed? Try a number:");
+					ImGui::EndDisabled();
+				}
+				else if (!usbListed_) {
+					ImGui::BeginDisabled();
+					ImGui::Selectable("Looking for cameras…");
+					ImGui::EndDisabled();
+				}
 				for (int i = 0; i < 6; i++) {
-					snprintf(camLabel, sizeof camLabel, "USB camera %d%s", i, i == 0 ? " (usually built-in)" : "");
-					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == i)) { cameraIndex_ = i; piChoice_ = -1; }
+					if (usbDevice(i)) continue;
+					snprintf(camLabel, sizeof camLabel, "USB camera %d%s", i, i == 0 && usbCams_.empty() ? " (usually built-in)" : "");
+					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == i)) pickUsbCamera(i);
 				}
 				ImGui::EndCombo();
 			}
 			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-				ImGui::SetTooltip("Which camera to use. USB camera 0 is usually the built-in or first one plugged in.");
-			if (pi) {
-				ImGui::SameLine(0, px(4));
-				if (iconButton(ICON_SLIDERS, "Pi camera settings: frame rate, shutter, focus")) ImGui::OpenPopup("##pisettings");
-				if (ImGui::BeginPopup("##pisettings")) { piCameraSettings(); ImGui::EndPopup(); }
-			}
-			ImGui::SameLine(0, px(pi ? 6 : 8));
+				ImGui::SetTooltip("%s", pi ? "Which camera to use." : usb && !usb->name.empty() ? (usb->label() + ", camera " + std::to_string(usb->index)).c_str()
+					: "Which camera to use. USB camera 0 is usually the built-in or first one plugged in.");
+			ImGui::SameLine(0, px(8));
 			// The button follows the menu: Disconnect while the camera it names is the source (or connecting), Connect
 			// otherwise.  A Pi camera's source name carries its settings, so any Pi camera source counts as "it".
 			if (inUse) {
@@ -1897,7 +2091,7 @@ void App::pageSource() {
 					piSettings_.camera = piCams_[piChoice_].index;
 					openSource(picam::name(piSettings_));
 				}
-				else openSource(std::to_string(cameraIndex_));
+				else { usbSettings_.camera = cameraIndex_; openSource(webcam::name(usbSettings_)); }
 			}
 		});
 		ImGui::SameLine(0, px(16));
@@ -2006,6 +2200,7 @@ void App::pageSource() {
 			ImGui::SameLine(px(130));
 			ImGui::TextUnformatted(v.c_str());
 		};
+		if (!in.deviceName.empty()) fact("Camera", in.deviceName);
 		fact("Resolution", std::to_string(in.width) + " × " + std::to_string(in.height));
 		if (in.kind != SourceInfo::Image) {
 			char buf[64];
@@ -2021,6 +2216,12 @@ void App::pageSource() {
 				fact("Shutter", buf);
 			}
 			else if (in.shutter != frameio::Shutter::Unknown) fact("Shutter", "automatic");
+			if (in.kind == SourceInfo::Camera && frameio::classify(in.path) == frameio::Kind::Camera) {
+				webcam::Settings us;
+				webcam::parse(in.path, us);
+				fact("Mode", in.modePicked ? "picked by VST for timing" : us.picksMode() ? "as the camera gave it" : "your choice (camera settings)");
+				if (in.modePicked && !in.modeWhy.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", in.modeWhy.c_str());
+			}
 		}
 		ImGui::Dummy(ImVec2(0, px(4)));
 		// Plain-language checks against what the tracker needs (README "Set-up Checklist").
@@ -2052,6 +2253,32 @@ void App::pageSource() {
 			snprintf(b, sizeof b, "Sending about %.0f fps though it reports %.0f. Speeds are counted in frames, so fix the shutter "
 				"or add light before you calibrate.", in.measuredFps, in.fps);
 			check(false, "", b);
+		}
+		// What VST knows about this model beyond what its driver says (the registry, Webcam.h): a hint, never a setting.
+		if (frameio::classify(in.path) == frameio::Kind::Camera)
+			if (const webcam::Model* m = webcam::recognize(in.deviceName, 0, 0)) {
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(std::string(m->kind) == "virtual" ? c::warn : c::dim));
+				ImGui::PushTextWrapPos(0);
+				ImGui::TextWrapped(ICON_INFO "  %s: %s", m->name, m->note);
+				ImGui::PopTextWrapPos();
+				ImGui::PopStyleColor();
+			}
+		shapeNote();
+		// Short-view timing's look-ahead was fitted to step 2's frame rate; a slower camera moves cars farther per frame
+		// than it looks for.  Fitting it again changes only that, not the speed lines, so the calibration stays.
+		if (cfg.g.subFrameTiming && in.fps > 0 && in.kind != SourceInfo::Image) {
+			int need = lookAheadFor(in.fps);
+			if (std::min(cfg.g.maxL2RDistOnEntry, cfg.g.maxR2LDistOnEntry) < need) {
+				char b[240];
+				snprintf(b, sizeof b, "Short-view timing looks ahead for a %.0f fps camera; at %.0f fps fast cars move farther each frame "
+					"than that and can be missed.", planSaved().fps, in.fps);
+				check(false, "", b);
+				snprintf(b, sizeof b, ICON_SLIDERS "  Fit the look-ahead to %.0f fps", in.fps);
+				if (ghostButton(b, ImVec2(-FLT_MIN, 0))) {
+					cfg.g.maxL2RDistOnEntry = cfg.g.maxR2LDistOnEntry = need;
+					toast("Look-ahead fitted to this camera. Speed lines and calibration are unchanged.", c::ok, ICON_CHECK);
+				}
+			}
 		}
 		if (frameio::classify(in.path) == frameio::Kind::Camera) cameraCheck(in.path, "");
 	}

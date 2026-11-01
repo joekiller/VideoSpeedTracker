@@ -500,6 +500,25 @@ private:
 	int piChoice_ = -1;                 // index into piCams_ when the menu is on a Pi camera, -1 for the USB camera
 	picam::Settings piSettings_;        // the Pi camera settings popup; made into the source name on Connect
 	void piCameraSettings();            // that popup's contents
+	// USB cameras as the system lists them (webcam::list, Webcam.h): names for the menu, and every mode the driver
+	// offers for the settings popup.  Listed in the background at launch and again when the menu is opened (at most
+	// every 3 s), so a camera plugged in later shows up by name.
+	std::future<std::vector<webcam::Device>> usbListing_;
+	std::vector<webcam::Device> usbCams_;
+	bool usbListed_ = false;
+	double usbListedAt_ = -1e9;
+	webcam::Settings usbSettings_;      // the USB camera settings popup; made into the source name on Connect
+	void listUsbCameras();
+	void pumpUsbListing();
+	const webcam::Device* usbDevice(int index) const;
+	void pickUsbCamera(int index);      // the menu's choice: that camera, with the settings it was last connected with
+	void usbCameraSettings(bool inUse); // the popup's contents; `inUse`: it's the connected source, so Apply reconnects
+	// The mode the current settings will open camera `index` in, as far as is known before connecting.
+	webcam::Mode usbModeFor(const webcam::Settings& s) const;
+	// Under the preview: a note when the picture's shape is not the one Mark your street was done on (prefs.zonesFrame).
+	void shapeNote();
+	// Short-view timing's look-ahead (max distance on entry) for `fps` on the saved plan (Guide.cpp applyShortView).
+	int lookAheadFor(double fps) const;
 	// "Check what this camera can do" and "Report this camera" on the Connect page (frameio::probeCamera): the preview
 	// lets go of the camera, the probe runs in the background for a few seconds, then the camera is opened again.
 	std::future<frameio::CameraReport> cameraProbe_;
