@@ -289,7 +289,30 @@ json calibrationJson(App& app) {
 			{ "applied", s.applied.empty() ? json(nullptr) : json(s.applied) }, { "checked", checked ? json(s.checked) : json(nullptr) },
 			{ "frames", l2r ? app.cfg.g.CalibrationFramesL2R : app.cfg.g.CalibrationFramesR2L } };
 	};
-	return json{ { "L2R", one(true) }, { "R2L", one(false) } };
+	// What the inputs add up to per direction (CalEvidence.h), with the novice summary and each counted input's share,
+	// and the inputs themselves, so the phone can list them and take one out (POST /api/calibration/inputs).
+	auto combined = [&app](bool l2r) {
+		calib::Combined c = app.calibrationCombined(l2r);
+		std::string detail, head = calib::summary(c, &detail);
+		json shares = json::array();
+		for (const calib::Share& s : c.shares)
+			shares.push_back({ { "id", s.id }, { "contribution", std::round(s.contribution * 1000) / 1000 },
+				{ "offPct", std::round(s.offPct * 10) / 10 }, { "outlier", s.outlier } });
+		return json{ { "summary", head }, { "detail", detail }, { "n", c.n }, { "agree", c.agree() },
+			{ "zoneFt", c.valid ? json(std::round(c.zoneFt * 100) / 100) : json(nullptr) },
+			{ "sigmaPct", c.valid ? json(std::round(c.sigma * 1000) / 10) : json(nullptr) }, { "setAside", c.setAside }, { "shares", shares } };
+	};
+	json inputs = json::array();
+	std::string lines = app.speedLinesSig();
+	for (const calib::Input& in : app.calibrationInputs())
+		inputs.push_back({ { "id", in.id }, { "method", in.method }, { "methodName", calib::methodName(in.method) }, { "label", in.label },
+			{ "time", in.time }, { "dirs", in.dirs == calib::kL2R ? "L2R" : in.dirs == calib::kR2L ? "R2L" : "both" },
+			{ "zoneFt", std::round(in.zoneFt * 100) / 100 }, { "sigmaPct", std::round(in.sigma * 1000) / 10 }, { "removed", in.removed },
+			{ "otherLines", !in.lines.empty() && in.lines != lines } });
+	json one2r = one(true), r2l = one(false);
+	one2r["combined"] = combined(true);
+	r2l["combined"] = combined(false);
+	return json{ { "L2R", one2r }, { "R2L", r2l }, { "inputs", inputs } };
 }
 
 json statusJson(App& app) {
@@ -767,6 +790,26 @@ void Server::routes() {
 		sendPosted(res, out);   // 200 either way, as for PUT /api/config
 	}));
 
+	// Take one calibration input out, or put it back: {"id": "...", "removed": true|false}.  The rest are recombined
+	// into CalibrationFrames at once.  200 {ok, problems, calibration} like apply; an unknown id is a problem.
+	http_->Post("/api/calibration/inputs", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
+		json in;
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
+		sendPosted(res, app.post([&app, in] {
+			std::string err, id = in.value("id", "");
+			bool removed = in.value("removed", true);
+			if (id.empty()) err = "id is required";
+			else if (!app.setCalibrationInputRemoved(id, removed)) err = "no calibration input " + id;
+			else {
+				app.toast(removed ? "A calibration measurement was taken out from the phone." : "A calibration measurement was put back from the phone.",
+					theme::c::accent2, ICON_BROADCAST);
+				if (!app.cfg.save()) err = app.cfg.error;
+			}
+			return json{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) },
+				{ "calibration", calibrationJson(app) }, { "config", configJson(app) } }.dump();
+		}));
+	}));
+
 	// Calibration from two cones a measured distance apart (the Calibrate page's "Cones or pole" mode, from the street):
 	// {"cones": [[x, y], [x, y]] in the 1280x720 grid, "feet": 12, "dir": "both"|"L2R"|"R2L"}.  Refusals are 200
 	// {ok: false, problems}, as for apply.  The cones also show on VST Studio's Calibrate page.
@@ -796,7 +839,9 @@ void Server::routes() {
 			if (shaped)
 				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(xy[i][0]); app.coneY_[i] = float(xy[i][1]); }
 			if (err.empty()) {
-				app.applyDistanceCalibration(dir != "R2L", dir != "L2R", frames);
+				char label[64];
+				snprintf(label, sizeof label, "Cones or pole, %g ft apart", feet);
+				app.applyDistanceCalibration(dir != "R2L", dir != "L2R", frames, "the cones", "cones", calib::sigmaCones(markPx), label);
 				if (!app.cfg.save()) err = app.cfg.error;
 			}
 			json r{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) }, { "config", configJson(app) } };

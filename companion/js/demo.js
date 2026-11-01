@@ -16,6 +16,7 @@
  */
 
 import * as plan from './plan.js';
+import * as calib from './calib.js';
 // The narrowest speed zone VST accepts (Globals::kMinZone; overlay.js MIN_ZONE). Kept here so the demo needs no DOM module.
 const MIN_ZONE = 200;
 
@@ -219,6 +220,38 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
   // VST Studio's calibration-history.csv, in memory: { time, kind: 'apply'|'check', dir, calFrames, error }.
   // Empty at start, like a calibration made before the history existed, so both directions read "unchecked".
   const history = [];
+  // VST Studio's calibration-inputs.json, in memory (src/Gui/CalEvidence.h): every measurement, combined into the
+  // calibration in force.  The demo config counts as calibrated, so it starts as Studio would seed it: one "earlier"
+  // input per direction from the frames in force, at Studio's 6% for a calibration of unknown method.
+  const linesSig = () => `${config.speedLineLeft},${config.speedLineRight},${config.AnalysisBoxWidth}`;
+  const calInputs = DIRS.map((d) => ({
+    id: `seed-${d}`, method: 'earlier', label: 'Your earlier calibration', time: localIso(started), dirs: d,
+    zoneFt: config[`CalibrationFrames${d}`] * config.CalibrationSpeed * calib.FT_PER_S_PER_MPH / config.CalibrationFPS, sigma: 0.06,
+    lines: linesSig(), removed: false,
+  }));
+  let inputSerial = 0;
+  /**
+   * Adds a measurement (unless the same one is already counted) and sets CalibrationFrames from the combination, the
+   * way App::addCalibrationInput does: a direction's history gets an apply row only when its whole-frame value changes.
+   */
+  function addInput(input) {
+    const dup = calInputs.some((i) => !i.removed && i.method === input.method && i.dirs === input.dirs && i.lines === linesSig()
+      && Math.abs(i.zoneFt - input.zoneFt) < 1e-4 * input.zoneFt && Math.abs(i.sigma - input.sigma) < 1e-4);
+    if (!dup) calInputs.push({ ...input, id: `in-${++inputSerial}`, time: localIso(now()), lines: linesSig(), removed: false });
+    return recombine();
+  }
+  function recombine() {
+    const changes = {};
+    for (const d of DIRS) {
+      const c = calib.combine(calInputs, d, linesSig());
+      if (!c.valid) continue;
+      const frames = Math.max(1, Math.round(calib.framesForZone(c.zoneFt, config.CalibrationSpeed, config.CalibrationFPS)));
+      if (frames !== config[`CalibrationFrames${d}`]) changes[`CalibrationFrames${d}`] = frames;
+    }
+    const r = setConfig(changes);
+    if (r.ok) for (const k of Object.keys(changes)) history.push({ time: localIso(now()), kind: 'apply', dir: k.slice(-3), calFrames: changes[k], error: null });
+    return r;
+  }
   const vehicles = [];   // oldest first; ids ascend
   const listeners = new Set();
   let nextId = 1;
@@ -318,6 +351,14 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     return { frames, fps: 30, dir };
   }
 
+  function calibrationJson() {
+    const out = { inputs: calInputs.map((i) => ({ id: i.id, method: i.method, methodName: calib.METHOD_NAMES[i.method] || 'Measurement',
+      label: i.label, time: i.time, dirs: i.dirs, zoneFt: Math.round(i.zoneFt * 100) / 100, sigmaPct: Math.round(i.sigma * 1000) / 10,
+      removed: i.removed, otherLines: i.lines !== linesSig() })) };
+    for (const d of DIRS) out[d] = { ...calState(d), combined: calib.combinedJson(calInputs, d, linesSig()) };
+    return out;
+  }
+
   const status = () => ({
     version: '1.1.0-demo',
     running: state.running, paused: state.paused,
@@ -330,7 +371,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     legalDirection: config.legalDirection, siteName: config.siteName,
     batch: { index: 0, count: 1 },
     calibrationMarks: { L2R: marks('L2R'), R2L: marks('R2L') },
-    calibration: { L2R: calState('L2R'), R2L: calState('R2L') },
+    calibration: calibrationJson(),
     liveViews: listeners.size,
     health: { camera: 'same', cameraWarning: false, lowDisk: false },
   });
@@ -443,12 +484,11 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         const pass = calibrationPass(body);
         if (pass.problem) return ok({ ok: false, problems: [pass.problem] });
         const { frames, fps, dir } = pass;
-        // Like VST Studio's App::applyCalibration: keep CalibrationSpeed/CalibrationFPS (the other direction is
-        // expressed against them) and rescale this direction's frames so the pass reads `speed` mph.
-        const cal = Math.max(1, Math.round(frames * Number(body.speed) / config.CalibrationSpeed * config.CalibrationFPS / fps));
-        const r = setConfig({ [`CalibrationFrames${dir}`]: cal });
-        if (r.ok) history.push({ time: localIso(now()), kind: 'apply', dir, calFrames: cal, error: null });
-        return ok(r);
+        // Like VST Studio's App::applyCalibration: the pass joins the other measurements (both directions on a one-way
+        // street, where it measures the one lane), and CalibrationFrames follows their combination.
+        const mph = Number(body.speed);
+        return ok(addInput({ method: 'pass', label: `Drive past at ${mph} mph`, dirs: config.legalDirection === 'both' ? dir : 'both',
+          zoneFt: calib.zoneFtFromPass(mph, frames, fps), sigma: calib.sigmaPass(mph, frames) }));
       }
       case 'POST /api/calibration/distance': {
         // Like VST Studio: the zone's length from two cones `feet` apart on the picture, then the frames a car at
@@ -465,11 +505,19 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         if (problem) return ok({ ok: false, problems: [problem], config });
         const zoneFeet = zonePx / markPx * Number(feet);
         const frames = zoneFeet / (config.CalibrationSpeed * 5280 / 3600) * config.CalibrationFPS;
-        const cal = Math.max(1, Math.round(frames));
-        const dirs = dir === 'both' ? DIRS : [dir];
-        const r = setConfig(Object.fromEntries(dirs.map((d) => [`CalibrationFrames${d}`, cal])));
-        if (r.ok) for (const d of dirs) history.push({ time: localIso(now()), kind: 'apply', dir: d, calFrames: cal, error: null });
+        const r = addInput({ method: 'cones', label: `Cones or pole, ${Number(feet)} ft apart`, dirs: dir, zoneFt: zoneFeet, sigma: calib.sigmaCones(markPx) });
         return ok({ ...r, zoneFeet: Math.round(zoneFeet * 10) / 10, frames: Math.round(frames * 10) / 10 });
+      }
+      case 'POST /api/calibration/inputs': {
+        // Take one measurement out, or put it back, and recombine (Server.cpp's route).
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return err(400, 'body must be a JSON object');
+        const input = calInputs.find((i) => i.id === body.id);
+        if (!body.id) return ok({ ok: false, problems: ['id is required'], calibration: calibrationJson(), config });
+        if (!input) return ok({ ok: false, problems: [`no calibration input ${body.id}`], calibration: calibrationJson(), config });
+        input.removed = body.removed !== false;
+        const r = recombine();
+        emit('status', status());
+        return ok({ ...r, calibration: calibrationJson() });
       }
       case 'POST /api/calibration/check': {
         const pass = calibrationPass(body);

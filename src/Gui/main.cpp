@@ -264,26 +264,44 @@ struct DemoScript {
 			}
 			if (frames == 40) shot("07c-calibrate-check-failed.png");
 			if (frames == 60) shot("07b-calibrate-check.png");
-			// Two cones, one at each white line, on the sample's right-to-left lane (~200 px for 10 ft there, so the
-			// 559 px zone is about 28 ft).
+			// Two cones, one at each white line, on the sample's right-to-left lane, 45 ft apart (the sample's own
+			// calibration says the zone is 43 to 49 ft, and the ghost car about 47).
 			if (frames == 61) {
 				const Globals& g = app.cfg.g;
 				app.calibChecking_ = false;
 				app.lastCheck_ = CalCheck();   // the check card belongs to the shots above
 				app.calibMode_ = 2;
-				app.coneFt_ = 28;
+				app.coneFt_ = 45;
 				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(g.AnalysisBoxLeft + (i ? g.speedLineRight : g.speedLineLeft)); app.coneY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
 			}
+			// Added to the calibration: it joins the sample's own calibration (seeded as "Earlier calibration") in the
+			// Your calibration card instead of replacing it.
+			if (frames == 62) {
+				const Globals& g = app.cfg.g;
+				double markPx = std::fabs(app.coneX_[1] - app.coneX_[0]);
+				app.applyDistanceCalibration(true, true, calib::framesForDistance(markPx, app.coneFt_, g.speedLineRight - g.speedLineLeft, g.CalibrationSpeed,
+					g.CalibrationFPS), "the cones", "cones", calib::sigmaCones(markPx), "Cones or pole, 45 ft apart");
+			}
+			if (frames == 65) app.toasts_.clear();
 			if (frames == 80) shot("07d-calibrate-cones.png");
-			// Known car: a parked Camry's bumpers ~250 px apart, 7 ft beyond the lane, as on a narrow one-way street.
+			// Known car: a parked Camry's bumpers ~190 px apart, 7 ft beyond the lane, as on a narrow one-way street.
 			if (frames == 81) {
 				const Globals& g = app.cfg.g;
 				app.calibMode_ = 3;
 				app.carModel_ = 3;
 				app.carFt_ = calib::kKnownCars[3].inches / 12;
 				app.carParked_ = true;
-				for (int i = 0; i < 2; i++) { app.carX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 150 + 250 * i); app.carY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
+				for (int i = 0; i < 2; i++) { app.carX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 150 + 190 * i); app.carY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
 			}
+			// And added: three measurements now (the sample's own, the cones, the car), each with its share.
+			if (frames == 82) {
+				const Globals& g = app.cfg.g;
+				double laneFt = app.prefs.planDist * 3.281;   // as the Known car card reads it
+				double markPx = calib::markPxAtLane(190, laneFt, app.carFartherFt_);
+				app.applyDistanceCalibration(true, true, calib::framesForDistance(markPx, app.carFt_, g.speedLineRight - g.speedLineLeft, g.CalibrationSpeed,
+					g.CalibrationFPS), "the known car", "car", calib::sigmaCar(190, true, laneFt, app.carFartherFt_), "Toyota Camry 2018-2024, parked");
+			}
+			if (frames == 85) app.toasts_.clear();
 			if (frames == 100) { shot("07e-calibrate-car.png"); next(); }
 			break;
 		case 9:

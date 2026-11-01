@@ -263,6 +263,54 @@ can turn into one: cones a taped distance apart, or a car whose length you know.
 All four keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
 `CalibrationFPS`. The page shows what crossing times read as which speeds.
 
+#### Your calibration: every way adds up
+
+The ways to calibrate complement each other instead of replacing each other. Each one (a drive past, a Ride-along or
+Tesla pass, **This was me**, cones or a pole, a known car, the Lane card's camera setup) is kept as a *measurement*,
+and the calibration in force is their combination. Adding one never wipes out another, and any one can be taken out
+and put back.
+
+Every method ends up saying the same thing: how many feet of street lie between the two speed lines. A pass at
+`v` mph taking `n` frames at `f` fps says `v × 5280/3600 × n / f` feet; two spots `D` feet apart, `p` pixels apart
+on the picture, say `(speedLineRight - speedLineLeft) / p × D`. Each also carries how sure it is (a relative
+uncertainty, worked out from its own numbers):
+
+| Method | Uncertainty |
+|---|---|
+| Drive past at `v` mph over `n` frames | speedometer about 2% plus 0.5 mph, and ±0.41 frame of counting whole frames: `hypot(hypot(0.02 v, 0.5) / v, 0.41 / n)`, about 4% for 15 mph over 20 frames |
+| Cones or pole `p` px apart | 1% for the tape, 4 px of clicking over the span, 2.5% for where the spots sit: `sqrt(0.01² + (4/p)² + 0.025²)`, about 3% |
+| Known car `p` px long | 0.5% for the model's length, 4 px of clicking, 2% for the corners; parked beyond traffic, plus 1.5 ft of the "farther" guess over the distance to the car |
+| Camera setup (ghost car) | 10%: typed distance, height, angle and lens |
+| A calibration made before this list was kept | 6% (method not on record) |
+
+VST combines them by inverse-variance weighting: each counts with weight `1 / uncertainty²`, so a careful drive past
+has far more say than a rough camera setup, and two equally good ones are simply averaged. The combined uncertainty is
+`1 / sqrt(Σ weights)`, widened when the measurements disagree by more than their own uncertainties allow (by the
+Birge ratio `sqrt(χ² / (n - 1))`), so two careful methods 10% apart never claim ±1%. `CalibrationFrames` is the
+combined length's frames at `CalibrationSpeed` and `CalibrationFPS`, rounded.
+
+Under the picture, **What your calibration is made of** lists each measurement with its share of the weight and how
+far it sits from the result, and the **Your calibration** card says in one line how they stand:
+
+- **1 measurement so far**: add another way and VST cross-checks them.
+- **3 measurements agree within 2%**: the range of them, highest to lowest, as a share of the result.
+- **2 measurements differ by 9%**: VST uses the weighted middle; a third measurement will show which is off.
+- **3 measurements, 1 well off the others**: with three or more, one that sits more than 3 sigma and 4% off the rest,
+  while the rest agree, is marked. It still counts until you take it out with its ✕.
+
+Each line also says how good the result is in mph at your limit ("Good to about ±2.0%, so ±0.3 mph at 15 mph").
+Taken-out measurements stay under **Not counted** with **Put back**. A measurement only counts on the speed lines it
+was made with: moving a line or resizing the box sets them aside (listed as "other speed lines"), the same way it
+made the single calibration stale before. The same pass added twice counts once.
+
+A measurement that agrees to the frame leaves `CalibrationFrames` as it was, and with it any check of that value;
+one that changes it is a new calibration, which needs a new check. Measurements are kept in
+`calibration-inputs.json` in the config folder, one list per `VST.cfg`. The first time a calibrated `VST.cfg` is opened
+without one, its calibration becomes the first measurement: the drive past it came from, when the history shows one,
+or **Your earlier calibration**.
+
+The phone companion's step 5 shows the same summary and list, with **Take out** and **Put back**.
+
 ![Calibrate](images/studio/07-calibrate.jpg)
 
 #### Calibrating without cruise control: Tesla dashcam and phone ride-along
@@ -301,10 +349,11 @@ about. Once a direction is calibrated, **Check it with a second drive** tests it
 Within ±2 mph is **Verified**. Off by more, the page lists the usual causes: a speedometer that reads high (most
 do, more so at speed; a GPS speed app is a better reference), a camera or speed lines that moved since the first
 pass, or the two passes being in different lanes (the far lane crosses more road between the lines). It then
-offers to **Redo calibration** from a new pass, or to **Average** the two: each pass implies a `CalibrationFrames`
-value, and the new calibration is their mean, rounded. An averaged calibration counts as new, so check it once more.
+offers to **Drive again**, leaving that pass out, or to **Add this pass** to the calibration as one more measurement:
+with two honest passes the result lands near their mean, and with more it is one voice among several. The button
+says the frames it would give. A changed calibration counts as new, so check it once more.
 
-The **Current calibration** card shows each direction's standing under its tile: **Not calibrated**,
+The **Your calibration** card shows each direction's standing under its tile: **Not calibrated**,
 **Not checked**, **Verified (±0.3 mph)** or **Check failed (+4.2 mph)**. The Calibrate check mark in the side rail
 still only means a calibration was applied. A check counts only while the calibration it tested is the one in
 `VST.cfg`; changing the value any other way (by hand, or from the companion's settings) makes it "Not checked"
@@ -314,10 +363,11 @@ again.
 
 #### Calibration history
 
-Every calibration and every check is appended to `calibration-history.csv` in the config folder (next to
-`vst-studio.ini`), from the drive-through, **Count frames**, **Cones or pole**, **This was me** on the Results page,
-and the phone companion. A cones-or-pole calibration is recorded as an apply at `CalibrationSpeed` and `CalibrationFPS`
-with the computed frames. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
+Every change to the calibration and every check is appended to `calibration-history.csv` in the config folder (next
+to `vst-studio.ini`), from the drive-through, **Count frames**, **Cones or pole**, **Known car**, **This was me** on the
+Results page, and the phone companion. Since measurements combine, a change is recorded as an apply at
+`CalibrationSpeed` and `CalibrationFPS` with the combined frames, and only when the whole-frame value changes; the
+measurements behind it, with their methods, are in `calibration-inputs.json` beside it. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
 was made, from what pass, and how a second pass agreed with it. The per-direction state on the page is worked out
 from it, so it survives restarts.
 
@@ -330,8 +380,9 @@ Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, M
 - **Config** is the `VST.cfg` the row belongs to; one file serves every config on the computer.
 - **Kind** is `apply` (set the calibration) or `check` (a verification pass). **Direction** is `L2R` or `R2L`.
 - **DrivenMph**, **Frames** and **Fps** describe the pass: the speed you drove and the frames it took between the
-  lines at that frame rate. **CalibrationFrames** is the value in force after the event. An average is recorded as
-  an `apply` of the second pass with the averaged value.
+  lines at that frame rate. **CalibrationFrames** is the value in force after the event. Rows from before
+  measurements were combined record the pass itself, and an average as an `apply` of the second pass with the
+  averaged value.
 - **MeasuredMph** (what the calibration says the check pass was) and **Error** (MeasuredMph − DrivenMph) are set
   for checks only.
 

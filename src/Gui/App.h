@@ -16,6 +16,7 @@
 //   Results                  speeders and wrong-way drivers, charts, snapshots, csv and highlights
 //   Companion                pairing a phone with the local API (QR code)
 #pragma once
+#include "CalEvidence.h"
 #include "Calibration.h"
 #include "DashCam.h"
 #include "Health.h"
@@ -115,9 +116,9 @@ public:
 	bool remoteOn() const;              // the companion server is up for the phone (not just the map's local one)
 	std::string dataDir();
 	std::string findSample();
-	// Sets the calibration for one direction from a pass at a known speed; keeps the other direction's
-	// calibration valid by expressing both against the same CalibrationSpeed/CalibrationFPS.
-	// Every apply is also appended to calibration-history.csv (Calibration.h).
+	// Adds a pass at a known speed to the calibration (CalEvidence.h): one direction, or the lane both ways on a
+	// one-way street.  It joins what the other methods measured instead of replacing them; addCalibrationInput()
+	// then sets CalibrationFrames from all of them.
 	void applyCalibration(bool l2r, double mph, int frames, double fps);
 	// A check pass: what the calibration in force says a pass at a known speed was, without changing anything.
 	// Appends a "check" row to the history and returns the comparison.
@@ -146,12 +147,26 @@ public:
 	void setAsideEarlierRuns();                            // moves them to Stats/Before calibration
 	void putBackRuns();                                    // undoes the latest setAsideEarlierRuns
 	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
-	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
-	// was made against) and the check pass imply; recorded as an apply.
+	// Adds a check pass to the calibration as one more input (the failed-check card's "Add this pass"), so the
+	// calibration becomes the weighted combination of every pass instead of either one.
 	void averageCalibration(const CalCheck& check);
-	// Sets CalibrationFrames for one or both directions from the two-cone or known-car measurement
-	// (calib::framesForDistance); `from` names it in the toast.  Recorded in the history as the equivalent pass: CalibrationFrames frames at CalibrationSpeed.
-	void applyDistanceCalibration(bool l2r, bool r2l, double calFrames, const char* from = "the measured spots");
+	// Adds a distance measurement (cones or pole, a known car, the camera setup) for one or both directions.
+	// `calFrames` is what it says CalibrationFrames is (calib::framesForDistance), `from` names it in the toast,
+	// `method` is its CalEvidence method name and `sigma` its relative uncertainty (0: the method's default).
+	void applyDistanceCalibration(bool l2r, bool r2l, double calFrames, const char* from = "the measured spots",
+		const char* method = "cones", double sigma = 0, const std::string& label = "");
+	// The shared calibration layer (CalEvidence.h).  Every method lands here: the input is added to this config's
+	// inputs (unless the same one is already there), all of them are combined per direction, CalibrationFrames is set
+	// from the combination, and the toast says what the inputs now add up to.  `from` names the new one ("the car's
+	// length").  Inputs are kept in calibration-inputs.json; the history gets an apply row when a value changes.
+	void addCalibrationInput(calib::Input in, const char* from);
+	// Takes one input out of the calibration, or puts it back, and recombines.  false if there's no such input.
+	bool setCalibrationInputRemoved(const std::string& id, bool removed);
+	// This config's inputs.  The first time a config is seen with a calibration but no inputs on record (made before
+	// they were kept), its calibration is seeded as one input from the history, so the next method adds to it.
+	const std::vector<calib::Input>& calibrationInputs();
+	// What the inputs add up to for one direction, on the current speed lines.
+	calib::Combined calibrationCombined(bool l2r);
 	// Not calibrated / not checked / verified / check failed, from the history rows for the current VST.cfg.
 	CalState calibrationState(bool l2r);
 	void loadResultsCsv(const std::string& path);
@@ -397,6 +412,14 @@ private:
 	EarlierRuns earlier_;               // runsBeforeCalibration()'s cache
 	double earlierAt_ = -1;             // ImGui::GetTime() of that scan
 	std::vector<std::pair<std::string, std::string>> setAside_;   // files the latest set-aside moved: {from, to}
+	std::vector<calib::Input> calInputs_;   // calibration-inputs.json entries for calInputsFor_ (plus a seed, unsaved)
+	std::string calInputsFor_;
+	bool calInputsLoaded_ = false;
+	void applyCombinedCalibration();    // CalibrationFrames from the inputs, with history rows for any change
+	void saveCalibrationInputs();
+	// The Calibrate page's summary of the inputs ("3 measurements agree within 2%"), with `list` each one's weight and
+	// a button to take it out (under the picture), without it the summary alone (the side panel).
+	void calibrationInputsCard(bool list);
 	std::vector<CalEvent> calHistory_;  // calibration-history.csv rows for calHistoryFor_
 	std::string calHistoryFor_;
 	bool calHistoryLoaded_ = false;

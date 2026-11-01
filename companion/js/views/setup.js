@@ -540,7 +540,8 @@ function drive({ vst, body, cfg, st, n }) {
     <div class="section-head"><h3>Passes since you opened this</h3><span class="pill small" id="listening"></span></div>
     <div id="passes"></div>
     <div id="result"></div>
-    <h3>Current calibration</h3>
+    <h3>Your calibration</h3>
+    <div id="calsum"></div>
     <div class="list" id="cal"></div>
     <details style="margin-top:8px"><summary class="small muted">No pass showing up? Count it by hand</summary>
       <div class="card" style="margin-top:10px">
@@ -580,7 +581,45 @@ function drive({ vst, body, cfg, st, n }) {
     paintSpeed();
   };
 
+  /**
+   * "Your calibration": every measurement (a drive past, cones, a known car...) counts, weighted by how sure it is,
+   * and VST combines them (src/Gui/CalEvidence.h). The summary says in a few words whether they agree, each counted
+   * one shows its share of the weight and how far it sits from the result, and any one can be taken out and put back
+   * (POST /api/calibration/inputs). One section for a one-way street counting the same inputs both ways, else one per
+   * direction. Then the frames in force and each direction's check standing, as before.
+   */
   const paintCal = (c, cal) => {
+    const inputs = cal?.inputs || [];
+    const byId = Object.fromEntries(inputs.map((i) => [i.id, i]));
+    const same = (a, b) => a && b && a.shares.map((x) => x.id).join() === b.shares.map((x) => x.id).join();
+    const legal = st.legalDirection;
+    const dirs = legal !== 'both' && same(cal?.L2R?.combined, cal?.R2L?.combined) ? [legal === 'L2R' ? 'L2R' : 'R2L'] : ['L2R', 'R2L'];
+    const limit = st.speedLimit || 25;
+    const section = (d) => {
+      const k = cal?.[d]?.combined;
+      if (!k) return '';
+      const good = k.n >= 2 ? k.agree : k.n === 1;
+      const tone = k.n === 0 || !good ? 'warn' : k.n >= 2 ? 'ok' : '';
+      const sure = k.sigmaPct != null ? `Good to about ±${k.sigmaPct.toFixed(1)}%, so ±${(k.sigmaPct / 100 * limit).toFixed(1)} mph at ${limit} mph. ` : '';
+      return html`
+        ${dirs.length > 1 ? html`<p class="small" style="margin:10px 0 4px"><b>${d === 'L2R' ? 'Left to right →' : '← Right to left'}</b></p>` : ''}
+        <div class="callout ${tone}" style="margin-top:6px">${icon(tone === 'ok' ? 'check' : tone === 'warn' ? 'warn' : 'info')}<p><b>${k.summary}</b><br><small>${sure}${k.detail}</small></p></div>
+        ${k.shares.length ? html`<div class="list" style="margin-top:8px">${k.shares.map((sh) => {
+          const i = byId[sh.id];
+          if (!i) return '';
+          const how = i.method === 'earlier' ? 'Method not on record' : i.methodName;
+          return html`<div class="item"><div class="label"><b>${sh.outlier ? '⚠ ' : ''}${i.label || i.methodName}</b><small>${how} · ±${i.sigmaPct.toFixed(0)}%</small>
+              <span class="bar" style="display:block;height:6px;border-radius:3px;margin-top:6px;background:var(--seg-on)"><span style="display:block;height:6px;border-radius:3px;width:${Math.max(4, Math.round(sh.contribution * 100))}%;background:var(${sh.outlier ? '--warn' : '--accent'})"></span></span></div>
+            <div class="value">${Math.round(sh.contribution * 100)}% weight${k.n >= 2 ? html`<br><small class="muted">${sh.offPct > 0 ? '+' : ''}${Math.round(sh.offPct)}% vs result</small>` : ''}<br>
+              <button class="btn ghost small" data-rm="${i.id}" aria-label="Take out ${i.methodName}">Take out</button></div></div>`;
+        })}</div>` : ''}`;
+    };
+    const out = inputs.filter((i) => i.removed || i.otherLines);
+    $('#calsum').innerHTML = html`
+      ${dirs.map(section)}
+      ${out.length ? html`<details style="margin-top:8px"><summary class="small muted">Not counted (${out.length})</summary><div class="list" style="margin-top:6px">${out.map((i) => html`
+        <div class="item"><div class="label"><b>${i.methodName}</b><small>${i.label}${i.otherLines ? ' · made on other speed lines' : ''}</small></div>
+          <div class="value">${i.removed ? html`<button class="btn small" data-back="${i.id}">Put back</button>` : ''}</div></div>`)}</div></details>` : ''}`.__html;
     const row = (dir, label) => html`
       <div class="item"><div class="label"><b>${label}</b><small>Frames to cross the zone at ${c.CalibrationSpeed} mph</small></div>
         <div class="value">${c[`CalibrationFrames${dir}`]} frames<br>${calPill(cal?.[dir])}</div></div>`;
@@ -588,6 +627,16 @@ function drive({ vst, body, cfg, st, n }) {
       ${row('R2L', '← Right to left')}
       ${row('L2R', 'Left to right →')}
       <div class="item"><div class="label"><b>Measured at</b></div><div class="value">${c.CalibrationFPS} fps</div></div>`.__html;
+  };
+  /** Take a measurement out, or put it back; Studio recombines at once and the list repaints from its answer. */
+  $('#calsum').onclick = async (e) => {
+    const rm = e.target.closest('[data-rm]')?.dataset.rm, back = e.target.closest('[data-back]')?.dataset.back;
+    if (!rm && !back) return;
+    const r = await vst.calibrationInputs({ id: rm || back, removed: !!rm });
+    if (!r.ok) { toast(r.problems.join('. ')); return; }
+    current = r.config;
+    toast(rm ? 'Taken out. Under Not counted you can put it back.' : 'Put back into your calibration.');
+    refreshCal(r.config);
   };
   /** Re-reads the calibration standing after anything that changes it (an apply or a check). */
   const refreshCal = async (c) => { const s = await vst.status().catch(() => null); paintCal(c, s?.calibration); };
