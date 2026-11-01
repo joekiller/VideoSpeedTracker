@@ -79,3 +79,7 @@
 #define ICON_MINUS          "\xef\x81\xa8"
 #define ICON_ANGLES_UP      "\xef\x84\x82"
 #define ICON_ARCHIVE        "\xef\x86\x87"
+#define ICON_LOCK           "\xef\x80\xa3"
+#define ICON_LOCK_OPEN      "\xef\x8f\x81"
+#define ICON_PUBLISH        "\xef\x85\x8d"
+#define ICON_CERTIFICATE    "\xef\x82\xa3"

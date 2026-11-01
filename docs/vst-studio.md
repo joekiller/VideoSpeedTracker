@@ -483,13 +483,54 @@ It stays in the table but is left out of the tiles, the charts and the street re
 isn't traffic. The marks are kept in `calibration-passes.csv` in the config folder (the pass's stats csv and frame),
 so they survive a restart.
 
-**Runs from before your latest calibration.** Each run's manifest records the calibration it was measured with. When
-that differs from the current one, its rows get an **old calibration** tag, and a line under the toolbar counts them:
-*2 runs (65 vehicles) measured before your latest calibration*. **Set them aside** moves those csvs and manifests to
-`Stats/Before calibration`. Nothing is deleted, and Open > A stats csv still reads them. They drop out of Results and the street
-report, which reads only `Stats/`. **Put them back** undoes it. Calibrating during a live run
-(camera or stream) restarts tracking, so the cars from then on are measured with the new value in a new csv. A video
-keeps the calibration it started with until you run it again.
+**Calibration sets: past speeds follow your calibration.** VST times each car between the two speed lines, and its
+speed is the zone's length over that time. A calibration only changes the zone's length, so when you calibrate the
+same view again every earlier car can be re-timed exactly: each run's manifest records the calibration it was measured
+with, and the csv's `ZoneSeconds` column the car's exact time (about 8 bytes a car). Runs measured from the same view
+(the same speed lines, street edge, level and analysis box) form a **calibration set**:
+
+- An **open** set collects the runs you record from today's view, and its speeds follow your latest calibration.
+  A re-timed speed carries a small ruler mark; hover it (or read the detail card) for what was measured.
+- A set **locks** when you record from a new view (the camera moved or the speed lines changed), keeping the
+  calibration it last had, or when you press **Lock**. Nothing more joins a locked set. Dragging the speed lines
+  locks nothing by itself, so moving them back carries on.
+- A band down each row's left edge shows its set: each set keeps its own colour (blue, slate, teal, sand, then round
+  again), so neighbouring sets always differ, and runs with no calibration on record get a grey band. The line above the table names the
+  sets on screen; pick one (or a row) for what it is and what you can do: **Lock** or **Unlock**, **Only this set**,
+  **Publish** and **Remove**. When you calibrate a locked set's view again, it says how much the new calibration
+  differs and **See what it would change** shows the before and after, with **Use the newer calibration for this set**.
+- **Remove** moves a set, or the run the selected car came from, to the archive (it can be put back), or deletes it
+  for good after you type *delete*.
+- Runs from before VST kept each run's calibration (1.1 and earlier) have their own set, shown as measured.
+
+Sizes in feet use the same calibration as the speeds beside them. The street report and the phone's report re-time
+every run the same way, and say how many speeds were re-timed. Calibrating during a live run (camera or stream)
+restarts tracking so its csv has one calibration. A video keeps the calibration it started with, and is re-timed
+when it finishes. The sets are kept in `Stats/calibration-sets.json`.
+
+#### Publish a dataset for others to check
+
+**Publish** (in the set bar) freezes a set into `<data folder>/Published/<YYYY-MM-DD>_<name>/` for neighbours, the
+city or a council meeting. It locks the set first, so the numbers can't change under the people reading them, and
+leaves the set in Results. The folder is an archive (below) plus `dataset.json`, `points.csv` (one row per car),
+`SHA256SUMS`, and `status.json`. The format is documented in [dataset-schema.md](dataset-schema.md).
+
+Anyone can open it in Studio (**Open > Published**) or by double-clicking its `review.html`, with three layers:
+
+1. **A badge and one sentence**, for someone who has never seen VST: *Not re-checked*, *Still accurate*, *Under review*
+   or *Tainted: needs correction*, then what that means, for example "Speeds are accurate to within ±1.0 mph at 25 mph
+   (±3.9%), with 95% confidence."
+2. **How we know**: how the zone was calibrated and every re-check, with cars over the limit and the 85th percentile
+   before and after.
+3. **The numbers**: the zone feet and uncertainty, the test, the files and whether every checksum still matches.
+
+When you calibrate the same view again, **Check against your latest calibration** re-times every car (exactly, from
+`ZoneSeconds`) and tests the calibration change δ = new zone ÷ published zone − 1 against the accuracy the dataset
+promised, T = 1.96σ, with two one-sided tests at 95% using the new calibration's own σ. If the change is surely inside
+the promise the dataset stays *Still accurate*. If it is surely outside, it becomes *Tainted*. Otherwise it is *Under
+review* until another check drive narrows the new calibration. **Record this check** adds it to `status.json` and every
+car's before and after to `checks/<when>.csv`. The original files are never changed, so the checksums still hold. A
+tainted dataset offers **Publish a corrected copy**, a new version at the newer calibration that names the one it corrects.
 
 ![Results](images/studio/06-results.jpg)
 
@@ -611,7 +652,7 @@ be open at once. The API is described in [companion-api.md](companion-api.md).
 | Settings (`VST.cfg`) | the file shown on the Connect the camera page; by default the per-user config (see the README) |
 | App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs and where they came from, the last source and page, recent sources, pairing token |
 | Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
-| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, street reports in `Reports/`, and archived datasets in `Archive/` |
+| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, street reports in `Reports/`, archived datasets in `Archive/`, published datasets in `Published/`, and the calibration sets in `Stats/calibration-sets.json` |
 
 ## For developers
 

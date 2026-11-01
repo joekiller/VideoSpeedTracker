@@ -136,6 +136,8 @@ json infoJson(const Info& in) {
 		{ "site", in.site }, { "published", in.published }, { "vst", in.vst }, { "speedLimit", in.speedLimit }, { "wayOver", in.wayOver },
 		{ "directions", { { "L2R", in.l2rCompass }, { "R2L", in.r2lCompass }, { "legal", in.legal } } },
 		{ "first", in.first }, { "last", in.last }, { "calibrationSet", in.calibrationSet },
+		{ "view", { { "speedLines", { in.view.lineLeft, in.view.lineRight } }, { "streetEdge", { in.view.edge[0], in.view.edge[1] } },
+			{ "levelDegrees", in.view.level }, { "analysisBox", { in.view.box[0], in.view.box[1], in.view.box[2], in.view.box[3] } } } },
 		{ "calibration", calJson(in.cal) }, { "summary", summaryJson(in.summary) }, { "points", "points.csv" },
 		{ "pointCount", in.points.size() } };
 }
@@ -269,6 +271,16 @@ bool read(const std::string& dirIn, Info& out, std::string& error) {
 		out.first = j.value("first", std::string());
 		out.last = j.value("last", std::string());
 		out.calibrationSet = j.value("calibrationSet", 0);
+		const json& v = j.value("view", json::object());
+		if (v.is_object()) {
+			const json& l = v.value("speedLines", json::array());
+			if (l.is_array() && l.size() == 2) { out.view.lineLeft = l[0].get<int>(); out.view.lineRight = l[1].get<int>(); }
+			const json& e = v.value("streetEdge", json::array());
+			if (e.is_array() && e.size() == 2) { out.view.edge[0] = e[0].get<int>(); out.view.edge[1] = e[1].get<int>(); }
+			out.view.level = v.value("levelDegrees", 0.0);
+			const json& b = v.value("analysisBox", json::array());
+			if (b.is_array() && b.size() == 4) for (int i = 0; i < 4; i++) out.view.box[i] = b[size_t(i)].get<int>();
+		}
 		out.cal = calFrom(j.value("calibration", json::object()));
 		out.summary = summaryFrom(j.value("summary", json::object()));
 	}
@@ -419,7 +431,8 @@ std::string accuracyWords(const Calibration& c, int limit) {
 std::string sentence(const Info& in) {
 	std::string promise = "\xC2\xB1" + fixed(std::max(in.cal.band(0), in.cal.band(1)) * 100, 1) + "%";
 	if (in.checks.empty())
-		return "Published " + shortDay(in.published) + ". Speeds are accurate to " + accuracyWords(in.cal, in.speedLimit)
+		return "Published " + shortDay(in.published) + (in.correctionOf.empty() ? std::string() : " to correct an earlier copy")
+			+ ". Speeds are accurate to " + accuracyWords(in.cal, in.speedLimit)
 			+ ", with 95% confidence. Not re-checked since.";
 	const Check& c = in.checks.back();
 	// The direction that decided the verdict says how far off, and which way.
@@ -431,11 +444,12 @@ std::string sentence(const Info& in) {
 	case Verdict::Accurate:
 		return "Re-checked " + when + " against a newer calibration: still within the " + promise + " promised (" + off + " different).";
 	case Verdict::Review:
-		return "A newer calibration (" + when + ") reads " + off + " different. That may or may not be within the " + promise
-			+ " promised; one more check drive will settle it.";
+		return "A newer calibration (" + when + ") suggests these speeds read about " + off + " " + way + ". Allowing for that "
+			"calibration's own uncertainty, it can't yet say whether that is within the " + promise + " promised; one more check drive "
+			"will settle it.";
 	case Verdict::Tainted:
 		return "A newer calibration (" + when + ") shows these speeds read about " + off + " " + way + ", more than the " + promise
-			+ " promised. Use the corrected speeds.";
+			+ " promised. Treat them as too high; a corrected copy may be published beside this one.";
 	default:
 		return "Published " + shortDay(in.published) + ".";
 	}

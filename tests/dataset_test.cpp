@@ -6,7 +6,8 @@
 // point gets a before and after, and a statistical test decides whether the change is too much, marking it tainted.
 // These checks pin:
 //   - the equivalence test's three verdicts at their edges, and an unknown sigma
-//   - a dataset written through archive::write (Published/, extra files, SHA256SUMS) reads back field for field, and
+//   - a dataset written through archive::write (Published/, extra files, SHA256SUMS) reads back field for field (the view
+//     included), and
 //     verify() catches a changed file
 //   - check(): exact before/after per point from ZoneSeconds, the summary, checks/<when>.csv, status.json, the badge in
 //     review.html, and the checksums still valid afterwards
@@ -65,6 +66,8 @@ static Info sample() {
 	in.first = "2026-10-22T08:00:00";
 	in.last = "2026-10-29T18:00:00";
 	in.calibrationSet = 2;
+	in.view.lineLeft = 350; in.view.lineRight = 909; in.view.edge[0] = 120; in.view.edge[1] = 160; in.view.level = 1.5;
+	in.view.box[0] = 10; in.view.box[1] = 220; in.view.box[2] = 1269; in.view.box[3] = 190;
 	in.cal.zoneFt[0] = 20.0; in.cal.zoneFt[1] = 22.0;
 	in.cal.sigma[0] = 0.02; in.cal.sigma[1] = 0.02;
 	in.cal.how = "3 measurements agree within 2%";
@@ -128,6 +131,8 @@ static void testPublishAndCheck(const fs::path& work) {
 	CHECK(back.summary.cars == 10 && back.summary.p85 == 28 && back.status() == Verdict::None);
 	CHECK(back.points[3].passed == "a, \"quoted\" one" && back.points[3].trend == "steady" && back.points[10].ownDrive == 1 && back.points[11].flagged);
 	CHECK(std::fabs(back.points[0].zoneSeconds - in.points[0].zoneSeconds) < 1e-4);
+	// The view travels with it, so a re-check can tell whether a newer calibration is of the same view.
+	CHECK(back.view.same(in.view) && back.view.box[2] == 1269 && back.view.edge[1] == 160 && back.view.level == 1.5);
 
 	// Checksums: everything listed verifies; a changed point is caught.
 	std::vector<std::string> changed;

@@ -146,7 +146,7 @@ Store load(const std::string& statsDir) {
 	return st;
 }
 
-bool save(const std::string& statsDir, const Store& st, std::string& error) {
+std::string dump(const Store& st) {
 	json sets = json::array();
 	for (const Set& s : st.sets) {
 		json o = { { "id", s.id }, { "known", s.known }, { "state", s.locked() ? "locked" : "open" }, { "view", viewJson(s.view) },
@@ -156,12 +156,16 @@ bool save(const std::string& statsDir, const Store& st, std::string& error) {
 		sets.push_back(o);
 	}
 	json j = { { "format", 1 }, { "nextId", st.nextId }, { "sets", sets } };
+	return j.dump(1, '\t') + "\n";
+}
+
+bool save(const std::string& statsDir, const Store& st, std::string& error) {
 	std::error_code ec;
 	fs::create_directories(statsDir, ec);
 	fs::path path = storePath(statsDir), tmp = path.string() + ".tmp";
 	{
 		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-		out << j.dump(1, '\t') << "\n";
+		out << dump(st);
 		if (!out) { error = "Couldn't write " + tmp.string(); return false; }
 	}
 	fs::rename(tmp, path, ec);   // replaces the old file in one step

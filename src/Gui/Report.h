@@ -68,6 +68,9 @@ struct Input {
 	// Calibration and check drives (passKey of each, from calib::loadPasses): the person calibrating isn't traffic, so
 	// these rows are left out of every statistic and counted in Run::calibrationDrives.
 	std::set<std::string> calibrationPasses;
+	// Calibration sets (CalSets.h): the zone feet, L2R and R2L, each run (stats csv file name) is shown at.  A run listed
+	// here is re-timed from its manifest's calibration to these, exactly as Results shows it; others are read as measured.
+	std::map<std::string, std::pair<double, double>> zoneFt;
 };
 
 // How a calibration pass (CalPass) and a stats row are matched: the stats csv's file name and the row's Frame.  A csv
@@ -108,6 +111,7 @@ struct Run {
 	bool timesDerived = false;            // times rebuilt from Date/Time (and Frame/fps)
 	int undated = 0;                      // rows with no usable time at all
 	int skipped = 0;                      // malformed rows
+	int adjusted = 0;                     // rows re-timed to a newer calibration of the same view (Input::zoneFt)
 	int calibrationDrives = 0;            // rows left out as the user's own calibration or check drives (Input::calibrationPasses)
 	std::string problem;                  // manifest present but unreadable, etc.
 };

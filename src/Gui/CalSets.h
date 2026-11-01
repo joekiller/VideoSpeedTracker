@@ -94,6 +94,7 @@ struct Store {
 std::string storePath(const std::string& statsDir);
 Store load(const std::string& statsDir);
 bool save(const std::string& statsDir, const Store& store, std::string& error);
+std::string dump(const Store& store);   // the file's contents, e.g. for an archive's Stats/calibration-sets.json
 
 // Files runs into sets as described at the top.  runs need not be sorted.  current = the view and calibration VST.cfg has
 // now; currentSigma its uncertainty (0 = unknown).  now stamps a lock.  Returns true when the store changed.

@@ -337,6 +337,9 @@ Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, 
 The five trend columns are empty when VST couldn't tell (too few or too ragged sightings). How they're measured, the thresholds
 and how much noise a 14-20 ft view leaves: [docs/speed-trend.md](docs/speed-trend.md).
 
+ZoneSeconds is the exact time between the speed lines, which lets VST Studio re-time past cars when you recalibrate the
+same view, and lets anyone recompute a published dataset's speeds: [docs/dataset-schema.md](docs/dataset-schema.md).
+
 Where the time comes from depends on the source, and VST says which in its log when it starts each video:
 
 - **Camera or stream:** this computer's clock when the vehicle was logged. Keep the clock right (network time).

@@ -18,6 +18,8 @@
 //   Companion                pairing a phone with the local API (QR code)
 #pragma once
 #include "CalEvidence.h"
+#include "CalSets.h"
+#include "Dataset.h"
 #include "Archive.h"
 #include "Calibration.h"
 #include "ParkingLane.h"
@@ -82,7 +84,13 @@ struct ResultRow {
 	double lengthFt = 0;        // that length in feet at the lane, from the calibration (0 = no calibration or no width)
 	int calKind = 0;            // 1: the user's own calibration drive, 2: their check drive (CalPass), left out of the tiles and charts
 	double drivenMph = 0;       // for those, the speed they said they drove
-	bool beforeCal = false;     // measured with an earlier calibration than the current one
+	// Calibration sets (CalSets.h): the set the row's run belongs to (0 = none: a csv from outside the data folder, an
+	// archive, or a run still being written), what the tracker measured, and the zone feet it measured with.  speed and
+	// the trend fields are the measurement re-timed to the set's calibration (App::applySets), adjusted when that moved them.
+	int setId = 0;
+	calsets::Measured measured;
+	double thenFt = 0;
+	bool adjusted = false;
 	// Speed trend (SpeedTrend.h): "decelerating", "steady", "accelerating", "rapid", or "" when not known.
 	std::string trend;
 	int entryMph = 0, exitMph = 0, mphIn20ft = 0;
@@ -145,16 +153,15 @@ public:
 	// After an apply: a live run (camera or stream) is restarted so the passes from here on are measured with the new
 	// calibration (a running engine keeps the settings it started with).  A video run just says it applies next time.
 	void restartAfterCalibration();
-	// Stats csvs (top level of <dataDir>/Stats) whose run manifest says they were measured with other calibration
-	// values than the current VST.cfg's, not counting the run being written now.  Re-read at most every few seconds.
-	struct EarlierRuns {
-		std::vector<std::string> csvs;
-		int vehicles = 0;
-	};
-	const EarlierRuns& runsBeforeCalibration(bool fresh = false);
-	bool measuredBefore(const std::string& csvPath);       // one csv of those (cached alongside)
-	void setAsideEarlierRuns();                            // moves them to Stats/Before calibration
-	void putBackRuns();                                    // undoes the latest setAsideEarlierRuns
+	// Calibration sets (Sets.cpp, CalSets.h): every saved run filed by the view it was measured from.  syncSets() rescans
+	// <data>/Stats (at most every few seconds unless forced), files new runs, follows today's calibration and saves
+	// calibration-sets.json; applySets() re-times Results' rows to their set's calibration.
+	calsets::View currentView() const;
+	calsets::Scale currentScale() const;
+	calsets::Scale currentSigma();
+	bool syncSets(bool force = false);
+	void applySets();
+	const calsets::Set* setOfRow(const ResultRow& r) const;
 	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
 	// Adds a check pass to the calibration as one more input (the failed-check card's "Add this pass"), so the
 	// calibration becomes the weighted combination of every pass instead of either one.
@@ -372,7 +379,21 @@ private:
 	void archiveDialog();
 	void openMenu();
 	void reviewBanner(float width);
-	archive::Request archiveRequest(const std::string& name, bool move);
+	archive::Request archiveRequest(const std::string& name, bool move, const std::vector<ResultRow>* from = nullptr);
+	// Calibration sets in Results (Sets.cpp): the colour band down each row's left edge, the set bar above the table
+	// (Lock, Unlock, Publish, Remove, check against today's calibration), and the Publish and Remove dialogs.
+	ImU32 setColor(int setId) const;
+	void setStripe(const ResultRow& r, float rowH);
+	void setsBar(float width);
+	void publishDialog();
+	void removeDialog();
+	void recheckDialog();
+	std::vector<ResultRow> rowsOfRuns(const std::vector<std::string>& csvs);   // every row of those runs, with session snapshots
+	bool publishSet(int setId, const std::string& name, std::string& dir, std::string& error);
+	bool publishCorrected(const dataset::Info& d, const dataset::Calibration& newer, std::string& dir, std::string& error);
+	void removeRuns(const std::vector<std::string>& csvs, bool toArchive, const std::string& name);
+	dataset::Calibration calibrationNow();   // today's zone feet and uncertainty, as a dataset records it
+	void datasetCover(float width);          // the badge and layers over an open published dataset
 	Texture* fileTexture(const std::string& path);   // an archived snapshot, loaded once and cached by path
 	void pumpTracker();
 	// While tracking, the setup pages show the tracker's own frames through player.feed(), never a second capture
@@ -423,6 +444,7 @@ private:
 	std::map<std::string, std::unique_ptr<Texture>> fileTex_;
 	archive::Info archive_;             // the archive Results is reviewing (dir empty = none)
 	std::vector<archive::Info> archives_;   // the Open menu's list, read when the menu opens
+	std::vector<dataset::Info> publishedList_;   // the Open menu's published datasets, read with archives_
 	struct ArchiveForm {
 		char name[96] = "";
 		bool move = true;                // "archive away" (the default) or keep a copy
@@ -454,10 +476,26 @@ private:
 	CalCheck lastCheck_;                // the latest check pass, for the result card
 	std::map<std::string, CalPass> calPasses_;   // calibration-passes.csv by report::passKey, read once
 	bool calPassesLoaded_ = false;
-	EarlierRuns earlier_;               // runsBeforeCalibration()'s cache
-	double earlierAt_ = -1;             // ImGui::GetTime() of that scan
-	std::vector<std::pair<std::string, std::string>> setAside_;   // files the latest set-aside moved: {from, to}
-	bool setAsideScanned_ = false;      // setAside_ refilled once from Stats/Before calibration (an earlier launch's)
+	calsets::Store sets_;               // calibration-sets.json, as syncSets() last left it
+	bool setsLoaded_ = false;
+	double setsAt_ = -1;                // ImGui::GetTime() of the last scan
+	std::string setsFor_;               // the Stats folder sets_ belongs to
+	int selectedSet_ = 0;               // the set the set bar shows (0 = the selected row's, or none)
+	int setFilter_ = 0;                 // Results shows only this set's rows (0 = all)
+	struct SetForm {
+		char name[96] = "";
+		int setId = 0;
+		bool wholeSet = true;            // Remove: the whole set, or only the selected row's run
+		std::string run;                 // that run's csv
+		bool toArchive = true;           // Remove: move to the archive (default) or delete for good
+		char confirm[16] = "";           // "delete" typed to delete for good
+		std::string error;
+	} setForm_;
+	bool openPublish_ = false, openRemove_ = false, openRecheck_ = false;   // open that dialog on the next Results frame
+	dataset::Info dataset_;             // the published dataset Results is reviewing (dir empty = none; archive_ is set too)
+	dataset::Check recheck_;            // the check the re-check dialog previews
+	bool applySetsDue_ = false;         // re-time Results' rows on the next Results frame
+	std::string datasetVerifiedFor_, datasetVerified_;   // the open dataset's checksum result, worked out once per folder
 	std::vector<calib::Input> calInputs_;   // calibration-inputs.json entries for calInputsFor_ (plus a seed, unsaved)
 	std::string calInputsFor_;
 	bool calInputsLoaded_ = false;

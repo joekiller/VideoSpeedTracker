@@ -24,6 +24,7 @@
 // The worst direction decides.  A tainted dataset is never edited or hidden: its badge says so and a corrected copy can be
 // published beside it (correctionOf).  No ImGui: tests/dataset_test.cpp drives it.
 #pragma once
+#include "CalSets.h"
 #include <string>
 #include <vector>
 
@@ -99,6 +100,7 @@ struct Info {
 	std::string l2rCompass = "SE", r2lCompass = "NW", legal = "Both";
 	std::string first, last;       // earliest and latest passed
 	int calibrationSet = 0;        // the set it came from (CalSets.h)
+	calsets::View view;            // the view it was measured from: a later calibration is comparable only on the same view
 	Calibration cal;
 	Summary summary;
 	std::vector<Point> points;

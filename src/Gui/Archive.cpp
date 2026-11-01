@@ -338,6 +338,7 @@ bool restore(const std::string& dir, const std::string& dataDir, std::string& er
 	std::vector<std::string> kept;
 	for (const std::string& rel : a.files) {
 		if (rel.rfind("Stats/", 0) != 0 && rel.rfind("HiLites/", 0) != 0) continue;
+		if (rel == "Stats/calibration-sets.json") continue;   // the data folder keeps its own; App merges the archived sets back
 		fs::path dst = fs::path(dataDir) / fs::path(rel);
 		fs::create_directories(dst.parent_path(), ec);
 		if (fs::exists(dst, ec)) { kept.push_back(dst.filename().string()); continue; }
@@ -389,7 +390,7 @@ tr.sel td{background:color-mix(in srgb,var(--acc) 14%,transparent)}tbody tr{curs
 .det img,.det video{width:100%;border-radius:8px;background:#000}.big{font-size:44px;font-weight:700}
 #cover{display:none;margin:14px 0 4px}.badge{display:inline-flex;gap:8px;align-items:center;border-radius:999px;padding:4px 14px;font-weight:700;color:#fff;font-size:16px}
 .lead{font-size:17px;margin:8px 0 2px;max-width:60em}details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:8px 0}
-summary{cursor:pointer;font-weight:600}details table{margin:8px 0}code{font:13px ui-monospace,Menlo,Consolas,monospace}
+summary{cursor:pointer;font-weight:600}details table{margin:8px 0;display:block;overflow-x:auto}code{font:13px ui-monospace,Menlo,Consolas,monospace}
 </style></head><body><main>
 <h1 id="title"></h1><div class="dim" id="sub"></div>
 <section id="cover"></section>
@@ -409,7 +410,7 @@ const col=v=>v.wrongWay?'var(--wrong)':v.speed>=W?'var(--bad)':v.speed>L?'var(--
 const when=v=>v.passed?v.passed.replace('T',' '):(v.fps>0?Math.floor(v.frame/v.fps/60)+':'+String(Math.floor(v.frame/v.fps)%60).padStart(2,'0')+' in video':'');
 document.getElementById('title').textContent=A.name||'Archived dataset';
 document.title=(A.name||'Archive')+' · VST';
-document.getElementById('sub').textContent=[A.siteName,'archived '+(A.created||'').slice(0,10),'from '+(A.from=='This session'?'this session':A.from),'limit '+L+' mph'].filter(Boolean).join(' · ');
+document.getElementById('sub').textContent=[A.siteName,(document.getElementById('dataset').textContent.trim()!=='null'?'published ':'archived ')+(A.created||'').slice(0,10),A.from?'from '+(A.from=='This session'?'this session':A.from):'','limit '+L+' mph'].filter(Boolean).join(' · ');
 const T=V.filter(v=>!v.ownDrive);  // traffic: the tiles leave out the user's own calibration and check drives
 const sp=T.map(v=>v.speed).sort((a,b)=>a-b),p85=sp.length?sp[Math.ceil(.85*sp.length)-1]:0;
 const tile=(k,v,s)=>`<div class="tile"><span class="dim">${k}</span><b>${v}</b><span class="dim">${s}</span></div>`;
@@ -441,23 +442,24 @@ const D=JSON.parse(document.getElementById('dataset').textContent||'null');
 if(D){
  const look={accurate:['var(--ok)','\u2714'],review:['var(--warn)','?'],tainted:['var(--bad)','!'],'':['var(--dim)','\u2022']}[D.status||''];
  const pct=x=>(x*100).toFixed(1)+'%',sg=x=>(x>0?'+':'')+(x*100).toFixed(1)+'%',dirName=d=>d=='L2R'?'Left to right ('+esc(D.directions.L2R)+')':'Right to left ('+esc(D.directions.R2L)+')';
+ const sig=x=>x>0?pct(x):'not measured (6% assumed)';
  const C=D.checks||[],last=C[C.length-1];
  let h=`<span class="badge" style="background:${look[0]}">${look[1]} ${esc(D.statusLabel)}</span><p class="lead">${esc(D.sentence)}</p>`
   +`<div class="dim">Published ${esc((D.published||'').slice(0,10))} · version ${D.version}${D.correctionOf?' · corrects '+esc(D.correctionOf):''} · speeds accurate ${esc(D.accuracy)}</div>`;
- h+=`<details><summary>How we know</summary><p>The camera times each car between two lines a known distance apart on the street. That distance was measured by calibrating: ${esc(D.calibration.how||'one calibration')}. `
-  +`Speeds are accurate ${esc(D.accuracy)}, with 95% confidence.</p>`;
+ h+=`<details><summary>How we know</summary><p>The camera times each car between two lines a known distance apart on the street. That distance was set by calibration (${esc(D.calibration.how||'one calibration, method not recorded')}). `
+  +`Speeds are accurate ${esc(D.accuracy)}, with 95% confidence.${D.calibration.sigma.L2R>0&&D.calibration.sigma.R2L>0?'':' How closely that calibration was measured isn\u2019t on record, so a cautious \u00b16% (one standard deviation) is assumed; that is why the band is wide.'}</p>`;
  if(!C.length)h+='<p>No newer calibration has been compared with it yet.</p>';
  else{h+='<table><thead><tr><th>Re-checked</th><th>Result</th><th>Cars over the limit</th><th>85th percentile</th><th>Average change</th></tr></thead><tbody>'
   +C.map(c=>`<tr><td>${esc(c.when.slice(0,10))}</td><td>${esc({accurate:'Still accurate',review:'Under review',tainted:'Tainted: needs correction'}[c.verdict]||'')}</td><td>${c.before.over} \u2192 ${c.after.over}</td><td>${c.before.p85} \u2192 ${c.after.p85} mph</td><td>${c.meanDiff>0?'+':''}${c.meanDiff.toFixed(1)} mph</td></tr>`).join('')
   +'</tbody></table><p class="dim">A newer calibration changes every speed by the same percentage, because it only changes the measured distance. Each re-check lists every car before and after.</p>';}
  h+='</details>';
  h+=`<details><summary>The numbers</summary><p>Each speed is the zone length divided by the time the car took (<code>zoneSeconds</code> in points.csv): speed = zone ft \u00f7 seconds \u00f7 1.4667. `
-  +`Zone: ${D.calibration.zoneFt.L2R} ft left to right, ${D.calibration.zoneFt.R2L} ft right to left; relative 1\u03c3 ${pct(D.calibration.sigma.L2R)} and ${pct(D.calibration.sigma.R2L)}; promised 95% band T = 1.96\u03c3.</p>`
+  +`Zone: ${D.calibration.zoneFt.L2R} ft left to right, ${D.calibration.zoneFt.R2L} ft right to left; relative 1\u03c3 ${sig(D.calibration.sigma.L2R)} and ${sig(D.calibration.sigma.R2L)}; promised 95% band T = 1.96\u03c3.</p>`
   +'<p>A re-check compares a newer calibration of the same view: \u03b4 = new zone \u00f7 published zone \u2212 1. Two one-sided tests at 95% (TOST) with the new calibration\u2019s \u03c3\u2099: still accurate when |\u03b4| + 1.645\u03c3\u2099 \u2264 T, tainted when |\u03b4| \u2212 1.645\u03c3\u2099 &gt; T, otherwise under review. The worse direction decides.</p>';
  if(last)h+='<table><thead><tr><th>Direction</th><th>\u03b4</th><th>90% interval</th><th>T</th><th>\u03c3\u2099</th><th>Verdict</th></tr></thead><tbody>'
   +['L2R','R2L'].filter(d=>last.test[d].verdict).map(d=>{const t=last.test[d];return `<tr><td>${dirName(d)}</td><td>${sg(t.delta)}</td><td>${sg(t.lo)} to ${sg(t.hi)}</td><td>\u00b1${pct(t.tolerance)}</td><td>${pct(t.sigmaNew)}</td><td>${esc(t.verdict)}</td></tr>`}).join('')+'</tbody></table>';
  h+=`<p>Files: <a href="points.csv">points.csv</a> (one row per car), <a href="dataset.json">dataset.json</a>, ${C.map(c=>`<a href="${esc(c.file)}">${esc(c.file)}</a>`).join(', ')}${C.length?', ':''}<a href="SHA256SUMS">SHA256SUMS</a>. `
-  +`Format <code>${esc(D.schema)}</code>, documented at <a href="https://github.com/joekiller/VideoSpeedTracker/blob/main/docs/dataset-schema.md">docs/dataset-schema.md</a>. Check that nothing was changed with <code>sha256sum -c SHA256SUMS</code> in this folder.</p></details>`;
+  +`Format <code>${esc(D.schema)}</code>, documented in docs/dataset-schema.md in VST\u2019s source. Check that nothing was changed with <code>sha256sum -c SHA256SUMS</code> in this folder.</p></details>`;
  const cv=document.getElementById('cover');cv.innerHTML=h;cv.style.display='block';
  document.title=(D.name||'Dataset')+' · VST';
 }
