@@ -16,6 +16,8 @@
  */
 
 import * as plan from './plan.js';
+// The narrowest speed zone VST accepts (Globals::kMinZone; overlay.js MIN_ZONE). Kept here so the demo needs no DOM module.
+const MIN_ZONE = 200;
 
 const SNAPSHOTS = 6;
 const DIRS = ['L2R', 'R2L'];
@@ -351,6 +353,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     if (c.AnalysisBoxTop < 0 || c.AnalysisBoxTop + c.AnalysisBoxHeight > 719) p.push('The analysis box must fit inside the frame vertically');
     if (c.AnalysisBoxWidth < 200) p.push('The analysis box is too narrow to track anything');
     if (!(c.speedLineLeft >= 0 && c.speedLineLeft < c.speedLineRight && c.speedLineRight <= c.AnalysisBoxWidth)) p.push('Speed lines must sit inside the box, left before right');
+    else if (c.speedLineRight - c.speedLineLeft < MIN_ZONE) p.push(`The speed zone must be at least ${MIN_ZONE} px wide`);
     if (!(c.R2LStreetY >= 0 && c.R2LStreetY <= c.AnalysisBoxHeight && c.L2RStreetY >= 0 && c.L2RStreetY <= c.AnalysisBoxHeight)) p.push('Lane lines must sit inside the box');
     if (!['L2R', 'R2L', 'both'].includes(c.legalDirection)) p.push('legalDirection must be L2R, R2L or both');
     if (!(c.speedLimit > 0 && c.egregious > c.speedLimit)) p.push('The "way too fast" speed must be above the limit');

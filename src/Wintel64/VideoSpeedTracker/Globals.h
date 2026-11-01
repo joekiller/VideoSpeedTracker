@@ -141,12 +141,28 @@ public:
 		return perspective::zoneFraction(x, speedLineLeft, speedLineRight, vanishingX(leftToRight));
 	}
 
-	// Road the analysis box shows outside the speed zone on one side, in pixels: room to see a car before its front bumper
-	// reaches the line it enters by.  0 is a line on the box's edge.  The tracker times such cars from the moment they
-	// come into view (videoSpeedTracker.cpp entryPosition()), but reads are steadier with room; setup screens hint below
-	// kEdgeRoom unless subFrameTiming is on, which expects a car to be part way in when first seen.
-	static constexpr int kEdgeRoom = 75;  // the 2016 view's maxDistOnEntry: about a frame pair of travel at speed
-	int roomOutsideZone(bool leftSide) const { return leftSide ? speedLineLeft : AnalysisBoxWidth - speedLineRight; }
+	// Rails for the speed zone, shared by every place that edits it (VST Studio's canvas and fields, the companion's
+	// editor via PUT /api/config, and problems() when VST.cfg loads):
+	//   - the speed lines sit inside the analysis box, left before right, at least kMinZone apart, so a car is seen at
+	//     several frame pairs between them (fewer, and the bumper fit has nothing to fit);
+	//   - so the box is at least kMinZone wide.
+	// No room is needed between a line and the box's side: the tracker times a car that comes into view already at or
+	// over a line on the box's edge (videoSpeedTracker.cpp entryPosition(), VehicleDynamics::markEnteredAtEdge()), and
+	// on the 2016 sample a left line 0, 20, 50 or 100 px in from the box's side times the same 25 of 28 entering cars.
+	static constexpr int kMinZone = 200;
+	// Puts the speed lines back on the rails after an edit, moving the one that wasn't edited: keepLeft = true when the
+	// left line (or the box's left side) is what the user just moved.  Needs AnalysisBoxWidth >= kMinZone.
+	void railZone(bool keepLeft) {
+		const int w = AnalysisBoxWidth;
+		if (keepLeft) {
+			speedLineLeft = std::clamp(speedLineLeft, 0, std::max(w - kMinZone, 0));
+			speedLineRight = std::clamp(speedLineRight, std::min(speedLineLeft + kMinZone, w), w);
+		}
+		else {
+			speedLineRight = std::clamp(speedLineRight, std::min(kMinZone, w), w);
+			speedLineLeft = std::clamp(speedLineLeft, 0, std::max(speedLineRight - kMinZone, 0));
+		}
+	}
 
 	// A pixel margin tuned for the 2016 Locust Avenue view, where maxL2RDistOnEntry and maxR2LDistOnEntry are 75.  With
 	// subFrameTiming it grows in proportion to that direction's maxDistOnEntry, so a short view, where a car moves hundreds of

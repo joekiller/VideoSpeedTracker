@@ -217,11 +217,17 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 				};
 				auto setBox = [&](int l, int t, int r, int b) {
 					l = std::clamp(l, 0, 1279); t = std::clamp(t, 0, 719);
-					r = std::clamp(r, l + 40, 1280); b = std::clamp(b, t + 30, 720);
+					// The box is never narrower than the narrowest speed zone (Globals::kMinZone); a side dragged past
+					// the other stops there rather than flipping.
+					if (l != L) l = std::min(l, r - Globals::kMinZone);
+					r = std::clamp(r, l + Globals::kMinZone, 1280); b = std::clamp(b, t + 30, 720);
+					l = std::max(l, 0);
 					g.AnalysisBoxLeft = l; g.AnalysisBoxTop = t; g.AnalysisBoxWidth = r - l; g.AnalysisBoxHeight = b - t;
-					// Keep the lines where they are on the picture while an edge moves past them.
-					g.speedLineLeft = std::clamp(absSL - l, 0, g.AnalysisBoxWidth - 2);
-					g.speedLineRight = std::clamp(absSR - l, g.speedLineLeft + 1, g.AnalysisBoxWidth);
+					// Keep the lines where they are on the picture while an edge moves past them, then back on the rails:
+					// a side pushed in carries the line on it along, and the other line keeps the zone kMinZone wide.
+					g.speedLineLeft = absSL - l;
+					g.speedLineRight = absSR - l;
+					g.railZone(l != L);
 					if (s[6] < s[7]) { g.obstruction[0] = std::clamp(absO0 - l, 0, g.AnalysisBoxWidth); g.obstruction[1] = std::clamp(absO1 - l, 0, g.AnalysisBoxWidth); }
 					setLane(g, false, false, absR - t, absRr - t);
 					setLane(g, true, false, absL2 - t, absL2r - t);
@@ -231,8 +237,25 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 					}
 				};
 				switch (drag.active) {
-				case H_SpeedL: g.speedLineLeft = std::clamp(s[4] + dx, 0, g.speedLineRight - 10); break;
-				case H_SpeedR: g.speedLineRight = std::clamp(s[5] + dx, g.speedLineLeft + 10, g.AnalysisBoxWidth); break;
+				// A speed line dragged out past the box's side takes the side with it, up to the picture's edge, so
+				// the zone can be drawn where the road is without first resizing the box.  It can't come closer than
+				// kMinZone to the other line (Globals::railZone()).
+				case H_SpeedL: {
+					int abs = L + s[4] + dx;
+					if (abs < L) setBox(abs, T, L + W, T + H);  // the right line keeps its place on the picture
+					g.speedLineLeft = abs - g.AnalysisBoxLeft;     // and this one goes where the mouse is (on the box's side when it's out of room)
+					g.speedLineLeft = std::min(g.speedLineLeft, g.speedLineRight - Globals::kMinZone);
+					g.railZone(true);
+					break;
+				}
+				case H_SpeedR: {
+					int abs = L + s[5] + dx;
+					if (abs > L + W) setBox(L, T, abs, T + H);
+					g.speedLineRight = std::min(abs - g.AnalysisBoxLeft, g.AnalysisBoxWidth);
+					g.speedLineRight = std::max(g.speedLineRight, g.speedLineLeft + Globals::kMinZone);
+					g.railZone(false);
+					break;
+				}
 				case H_ObsL: g.obstruction[0] = std::clamp(s[6] + dx, 0, g.obstruction[1] - 4); break;
 				case H_ObsR: g.obstruction[1] = std::clamp(s[7] + dx, g.obstruction[0] + 4, g.AnalysisBoxWidth); break;
 				case H_LaneR2L: case H_LaneL2R: case H_LaneOne: {

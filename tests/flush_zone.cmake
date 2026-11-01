@@ -19,10 +19,12 @@
 #          NW found     32 of 33, |error| <= 2 mph                    >= 28
 #   right  SE found     28 of 28, |error| <= 2 mph                    >= 24
 #          NW found     27 of 33, |error| <= 2 mph                    >= 23
-#   both   |speed error| median <= 1, p90 <= 2, max <= 4 mph; unmatched rows <= 3
+#   left100 SE found    25 of 28, |error| <= 1 mph                    >= 22   (100 px of road left of the line)
+#          NW found     33 of 33, |error| <= 1 mph                    >= 30
+#   all    |speed error| median <= 1, p90 <= 2, max <= 4 mph; unmatched rows <= 3
 # Before the fix both sides timed 0 of 61.
 #
-# Invoked by ctest with -DVST=<exe> -DSRC=<repo root> -DOUT=<work dir> -DSIDE=<left|right>.
+# Invoked by ctest with -DVST=<exe> -DSRC=<repo root> -DOUT=<work dir> -DSIDE=<left|left100|right>.
 cmake_policy(VERSION 3.16)
 
 file(MAKE_DIRECTORY ${OUT})
@@ -35,8 +37,12 @@ if(SIDE STREQUAL "left")
 elseif(SIDE STREQUAL "right")
   set(box "AnalysisBoxLeft = 10\nAnalysisBoxWidth = 909\nspeedLineLeft = 350\nspeedLineRight = 909\nobstruction = [251,311]")
   set(needs SE:24 NW:23)
+elseif(SIDE STREQUAL "left100")
+  # 100 px of road left of the line: entering cars used to be timed from the look-ahead guess and fail (19 of 28).
+  set(box "AnalysisBoxLeft = 260\nAnalysisBoxWidth = 1019\nspeedLineLeft = 100\nspeedLineRight = 659\nobstruction = [0,0]")
+  set(needs SE:22 NW:30)
 else()
-  message(FATAL_ERROR "SIDE must be left or right, not '${SIDE}'")
+  message(FATAL_ERROR "SIDE must be left, left100 or right, not '${SIDE}'")
 endif()
 # The sample's own geometry lines come out (a key set twice draws a warning), and the cut box goes in.
 string(REGEX REPLACE "\n(AnalysisBoxLeft|AnalysisBoxWidth|speedLineLeft|speedLineRight|obstruction) =[^\n]*" "" cfg "${cfg}")

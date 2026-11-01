@@ -168,7 +168,10 @@ int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
 	const bool l2r = dir == L2R;
 	const double zonePx = double(g.speedLineRight - g.speedLineLeft);
 	vector<double> frames, along;  // frame number, and distance along the street in zone widths (zoneFraction)
-	for (int i = max(first - 1, 0); i <= min(last + 1, int(seenFBPixel.size()) - 1); i++)
+	// A car timed this way because it came into view at the box's edge (markEnteredAtEdge()): its first two sightings are a
+	// blob still growing out of the edge, not a bumper moving at the car's speed, so the fit starts after them.
+	const int skip = fitTiming && !g.subFrameTiming ? 2 : 0;
+	for (int i = max(first - 1, skip); i <= min(last + 1, int(seenFBPixel.size()) - 1); i++)
 		if (seenFBPixel[i] > g.pixelLeft && seenFBPixel[i] < g.pixelRight){  // one at the edge of the box is cut off there, not a bumper
 			frames.push_back(seenFBFrame[i]);
 			along.push_back(g.zoneFraction(l2r, seenFBPixel[i]));
@@ -339,6 +342,9 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					entryGap = int(prevNextFrontBumper) - (lastObservedBox.x + lastObservedBox.width);
 					trackStartPixel = int(nextFrontBumper);  // Start tracking speed
 					trackStartFrame = frameNum;
+					// Crossed while the projection was still mostly look-ahead (maxDistOnEntry), the start frame counts from a guess: time
+					// it by the fit instead when it came into view at the box's left edge (markEnteredAtEdge()).
+					if (snaps.front().getRect().x <= g.pixelLeft + g.margin(45, true)) fitTiming = true;
 				}
 			}
 			else { // overlap status is front only or both.  Unfortunately, a good estimate of FB velocity has not been computed yet.
@@ -368,6 +374,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					entryGap = int(prevNextFrontBumper) - lastObservedBox.x;
 					trackStartPixel = int(nextFrontBumper);  // Start tracking speed
 					trackStartFrame = frameNum;
+					if (snaps.front().getRect().x + snaps.front().getRect().width >= g.pixelRight - g.margin(45, false)) fitTiming = true;  // see L2R above
 				}
 			}
 			else{ // overlap status is front only or both.  Since the vehicle is entering, a good estimate of its velocity has not been computed yet.
