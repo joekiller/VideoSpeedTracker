@@ -207,9 +207,10 @@ inline Ghost ghostCar(const CameraSetup& c, double frameWidth, double frameHeigh
 	double dv = anchorV - projectPoint(c, frameWidth, frameHeight, front, hubY, nearZ).v;
 	double back = goingRight ? front - car.lengthFt : front + car.lengthFt;
 	for (int i = 0; i < 8; i++) {
-		bool isFront = i & 4, far = i & 2, top = i & 1;
+		// Not "far"/"near": windows.h defines both as empty macros, which breaks every file that includes it first.
+		bool isFront = i & 4, farSide = i & 2, top = i & 1;
 		double X = isFront ? front : back;
-		double Z = far ? nearZ + car.widthFt : nearZ;
+		double Z = farSide ? nearZ + car.widthFt : nearZ;
 		double Y = c.heightFt - (top ? car.heightFt : 0);
 		g.corner[i] = projectPoint(c, frameWidth, frameHeight, X, Y, Z);
 		if (!g.corner[i].ok) return g;

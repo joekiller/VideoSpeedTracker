@@ -1595,10 +1595,10 @@ void App::zoneInspector() {
 				dimText(ICON_INFO "  That setup can't see both speed lines on the street. Check the distance and angle.");
 			else {
 				double ratio = perspective::depthRatio(g.speedLineLeft, g.speedLineRight, xV);
-				std::string far = std::isnan(ratio) || std::fabs(ratio - 1) < .02 ? std::string("both speed lines about the same distance away")
+				std::string depthNote = std::isnan(ratio) || std::fabs(ratio - 1) < .02 ? std::string("both speed lines about the same distance away")
 					: "the " + std::string(ratio > 1 ? "right" : "left") + " one about "
 						+ std::to_string(int(std::lround((ratio > 1 ? ratio : 1 / ratio) * 100 - 100))) + "% farther";
-				ImGui::TextWrapped(ICON_RULER "  About %.1f ft of street between the speed lines, %s.", zoneFt, far.c_str());
+				ImGui::TextWrapped(ICON_RULER "  About %.1f ft of street between the speed lines, %s.", zoneFt, depthNote.c_str());
 				float half2 = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
 				if (ghostButton(ICON_ARROWS_LR "  Street edge", ImVec2(half2, 0))) {
 					// The edge only has to meet the lane line at the vanishing point; it is drawn 40 px off it to be seen.

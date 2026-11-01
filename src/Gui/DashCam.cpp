@@ -294,11 +294,11 @@ std::vector<double> closestApproaches(const std::vector<Clip>& clips, double lat
 }
 
 PassSpeed speedAtSpot(const std::vector<Clip>& clips, double lat, double lon, double passEnd, double crossing, double slack) {
-	std::vector<double> near = closestApproaches(clips, lat, lon);
-	if (near.empty()) return speedDuring(clips, passEnd, crossing);
+	std::vector<double> nearest = closestApproaches(clips, lat, lon);
+	if (nearest.empty()) return speedDuring(clips, passEnd, crossing);
 	// VST's guess at the moment mid-zone: the log time is the second line, truncated to the second.
 	double guess = passEnd + .5 - crossing / 2;
-	double at = *std::min_element(near.begin(), near.end(), [&](double a, double b) { return std::fabs(a - guess) < std::fabs(b - guess); });
+	double at = *std::min_element(nearest.begin(), nearest.end(), [&](double a, double b) { return std::fabs(a - guess) < std::fabs(b - guess); });
 	PassSpeed r = speedBetween(clips, at - crossing / 2 - slack, at + crossing / 2 + slack);
 	r.byGps = true;
 	r.clockOffset = at - guess;
