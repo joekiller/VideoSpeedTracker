@@ -28,7 +28,8 @@ inline void levelFrame(cv::Mat& frame, double degrees) {
 	//   [-s  c  s cx + (1-c)cy ]
 	const double a = degrees * CV_PI / 180, c = std::cos(a), s = std::sin(a);
 	const double cx = frame.cols * .5, cy = frame.rows * .5;
-	cv::Mat turn = (cv::Mat_<double>(2, 3) << c, s, (1 - c) * cx - s * cy, -s, c, s * cx + (1 - c) * cy);
+	// A Matx, not Mat_<double>(2, 3) << ...: OpenCV 5 deprecates the Mat comma initializer (a warning per file on macOS).
+	const cv::Matx23d turn(c, s, (1 - c) * cx - s * cy, -s, c, s * cx + (1 - c) * cy);
 	cv::Mat out;
 	cv::warpAffine(frame, out, turn, frame.size(), cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar::all(0));
 	frame = out;
