@@ -1232,6 +1232,37 @@ void logR2Lstats(bool isOK, int index){
 }
 
 
+// Where a newly found vehicle is, relative to the speed line it enters by.  One first seen already past that line
+// (midZone) is usually a lost track picked up again, and is not timed (markInvalidSpeed()).  The exception (justEntered)
+// is a car still at the box's entry edge (within margin(45) of it) that is just coming into view: it can't have been seen
+// sooner, so it is timed from there when
+//   - subFrameTiming is on (a short view, where a car can be a frame pair into the zone before it is first seen), or
+//   - its front bumper is at most one entry look-ahead (maxDistOnEntry, about a frame pair at speed) past the line, which
+//     happens when the line is that close to the box's edge.  A speed line on the edge itself, as a box drawn hard against
+//     the side of the picture gives, otherwise leaves every car coming in from that side untimed.  Without subFrameTiming
+//     such a car is timed by the front-bumper fit (markEnteredAtEdge()), since no frame shows it at the entry line.
+enum class Entry { beforeZone, nearLine, justEntered, midZone };
+Entry entryPosition(const Rect& box, bool leftToRight){
+	int front = leftToRight ? box.x + box.width : box.x;
+	int past = leftToRight ? front - g.speedLineLeft : g.speedLineRight - front;  // how far the front bumper is into the zone
+	bool atEdge = leftToRight ? box.x <= g.pixelLeft + g.margin(45, true) : box.x + box.width >= g.pixelRight - g.margin(45, false);
+	int lookAhead = leftToRight ? g.maxL2RDistOnEntry : g.maxR2LDistOnEntry;
+	if (past < 0) return atEdge && past >= -lookAhead ? Entry::nearLine : Entry::beforeZone;
+	if (atEdge && (g.subFrameTiming || past <= lookAhead)) return Entry::justEntered;
+	return Entry::midZone;
+}
+
+// Starts tracking a vehicle first seen at box, judged by entryPosition().
+void startTrack(vector<VehicleDynamics>& tracks, const Rect& box, bool leftToRight){
+	tracks.push_back(VehicleDynamics(leftToRight ? L2R : R2L));
+	tracks.back().addSnapshot(Snapshot(box, frameNumber));
+	switch (entryPosition(box, leftToRight)){
+	case Entry::midZone: tracks.back().markInvalidSpeed(); break;
+	case Entry::justEntered: case Entry::nearLine: if (!g.subFrameTiming) tracks.back().markEnteredAtEdge(); break;
+	case Entry::beforeZone: break;
+	}
+}
+
 OverlapType doesL2ROverlapAnyR2L(int L2RIndex, vector<Projection> vehiclesL2R, vector<Projection> vehiclesR2L, int projectedR2LSize){
 // Function name tells it all.  Does a selected L2R vehicle overlap any R2L vehicles?  Indicate which bumpers overlap.
 	bool frontOverlap = false;
@@ -1525,12 +1556,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 			coalescedRectangle = coalesce(objectBoundingRectangleL2R, numOKSizeObjectsL2R,
 				g.pixelLeft, min(min(safeR2LZone, safeL2RZone), (g.pixelLeft + g.pixelRight) / 2), strict);  // Look for vehicle from left (-20 covers projection slop)
 			if (coalescedRectangle.x != -1){ // at least one object is present in coalesced rectangle(s)
-				vehiclesGoingRight.push_back(VehicleDynamics(L2R));
-				vehiclesGoingRight[vehiclesGoingRight.size() - 1].addSnapshot(Snapshot(coalescedRectangle, frameNumber));
-				// First seen already in the zone: usually a lost track picked up again.  In a short view (subFrameTiming) a car can be a
-				// frame pair into the zone before it is first seen, so one still at the left edge is just entering and is timed from there.
-				if (coalescedRectangle.x + coalescedRectangle.width >= g.speedLineLeft && !(g.subFrameTiming && coalescedRectangle.x <= g.margin(45, true)))
-					     vehiclesGoingRight[vehiclesGoingRight.size() - 1].markInvalidSpeed();
+				startTrack(vehiclesGoingRight, coalescedRectangle, true);  // not timed if first seen already in the zone (entryPosition())
 				if (pleaseTrace) traceFile << endl << endl << "<" << frameNumber
 					<< ">    >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Just added rightbound vehicle[" << vehiclesGoingRight.size() - 1 << "] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>" << endl;
 				displayAnalysisGoingRight(frameNumber, vehiclesGoingRight.size() - 1, coalescedRectangle, none, AnalysisFrame, -1);
@@ -1550,11 +1576,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				     max(  max(g.pixelRight - safeL2RZone, g.pixelRight - safeR2LZone),
 				          (g.pixelLeft + g.pixelRight) / 2), g.pixelRight, strict);  // Look for vehicle from right
 			if (coalescedRectangle.x != -1){
-				vehiclesGoingLeft.push_back(VehicleDynamics(R2L));
-				vehiclesGoingLeft[vehiclesGoingLeft.size() - 1].addSnapshot(Snapshot(coalescedRectangle, frameNumber));
-				if (coalescedRectangle.x <= g.speedLineRight  // see the note on L2R just above
-					&& !(g.subFrameTiming && coalescedRectangle.x + coalescedRectangle.width >= g.pixelRight - g.margin(45, false)))
-					     vehiclesGoingLeft[vehiclesGoingLeft.size() - 1].markInvalidSpeed();
+				startTrack(vehiclesGoingLeft, coalescedRectangle, false);
 				if (pleaseTrace) traceFile << endl << endl << "<" << frameNumber
 					<< ">     <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< Just added leftbound vehicle[" << vehiclesGoingLeft.size() - 1 << "] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << endl;
 				displayAnalysisGoingLeft(frameNumber, vehiclesGoingLeft.size() - 1, coalescedRectangle, none, AnalysisFrame, -1);

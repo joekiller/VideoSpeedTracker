@@ -147,7 +147,7 @@ vector<double> getLinearFit(const std::vector<double>& x, const std::vector<doub
 
 
 
-// Private function for subFrameTiming = 1.  Rather than count whole frames between the frame pairs in which the projected front
+// Private function for subFrameTiming = 1 (and a vehicle that came into view already past the entry line, markEnteredAtEdge()).  Rather than count whole frames between the frame pairs in which the projected front
 // bumper passed each speed line (in a 20 ft view at 30 fps a car crosses the zone in a dozen frames, so one frame pair is 15%),
 // fit a line through the front bumpers actually seen in the zone, and the nearest one beyond each speed line, against frame
 // number.  Its slope (pixels per frame) gives the time between the lines to a fraction of a frame.  -1, so no speed, if fewer
@@ -232,7 +232,7 @@ int VehicleDynamics::computeFinalSpeed(Globals& g, direction dir, int trackStart
 	// Speed = CalibrationSpeed * (calibration crossing time / this vehicle's crossing time).  The calibration crossing was
 	// counted in CalibrationFPS video; fpsScale converts it to frames of the video being analyzed (exactly 1 when they match).
 	double fpsScale = g.videoFPS / g.CalibrationFPS;
-	if (g.subFrameTiming) return subFrameSpeed(g, dir);  // > 0: estimateNextVehicleData() checked it before calling
+	if (g.subFrameTiming || fitTiming) return subFrameSpeed(g, dir);  // > 0: estimateNextVehicleData() checked it before calling
 	switch (dir){
 	case L2R:
 		// fine tune final frame marker used for estimating speed
@@ -478,6 +478,11 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 
 
 
+		// The projection before it is held inside the box.  A speed line on the box's far edge (speedLineLeft = 0 for R2L,
+		// speedLineRight = AnalysisBoxWidth for L2R) is crossed only when the front bumper goes past the edge, which the
+		// held value can never show: every car would then leave the box untimed.  So the exit tests below use this one.
+		// For a line inside the box the two give the same answer.
+		const double projectedFB = nextFrontBumper;
 		if (nextFrontBumper < g.pixelLeft) nextFrontBumper = g.pixelLeft;           // Stay in
 		else if (nextFrontBumper > g.pixelRight) nextFrontBumper = g.pixelRight;    // bounds
 
@@ -489,12 +494,12 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 			if ((trackStartPixel == 0) && (nextFrontBumper >= g.speedLineLeft)){
 				entryGap = int(prevNextFrontBumper) - (lastObservedBox.x + lastObservedBox.width);
 				//				cout << "Entry gap: " << entryGap << endl;
-				trackStartPixel = int(nextFrontBumper); // Start tracking L2R speed
+				trackStartPixel = max(int(nextFrontBumper), 1); // Start tracking L2R speed.  Not 0, which means "not started", when the left line is on the box's edge.
 				trackStartFrame = frameNum;
 			}
-			if ((trackEndPixel == 0) && (nextFrontBumper > g.speedLineRight)){
+			if ((trackEndPixel == 0) && (projectedFB > g.speedLineRight)){
 				int endGap = (int(prevNextFrontBumper) - (lastObservedBox.x + lastObservedBox.width));
-				if (g.subFrameTiming ? subFrameSpeed(g, L2R) > 0 : validGap(entryGap - endGap)){
+				if ((g.subFrameTiming || fitTiming) ? subFrameSpeed(g, L2R) > 0 : validGap(entryGap - endGap)){
 					trackEndPixel = int(nextFrontBumper); // End tracking L2R speed
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, L2R, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
@@ -519,9 +524,9 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 				trackStartPixel = int(nextFrontBumper);  // Start tracking R2L speed
 				trackStartFrame = frameNum;
 			}
-			if ((trackEndPixel == 0) && (nextFrontBumper < g.speedLineLeft)){
+			if ((trackEndPixel == 0) && (projectedFB < g.speedLineLeft)){
 				int endGap = int(prevNextFrontBumper) - lastObservedBox.x;
-				if (g.subFrameTiming ? subFrameSpeed(g, R2L) > 0 : validGap(entryGap - endGap)){
+				if ((g.subFrameTiming || fitTiming) ? subFrameSpeed(g, R2L) > 0 : validGap(entryGap - endGap)){
 					trackEndPixel = max(int(nextFrontBumper), 1); // End tracking R2L speed.  Not 0, which means "not timed", when a fast vehicle's projection was pinned to pixelLeft.
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, R2L, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
@@ -779,4 +784,4 @@ Projection VehicleDynamics::getBestProjection(Globals& g, int frameNum){
 		return Projection(Rect(int(nextFrontBumper), nextY, int(nextRearBumper - nextFrontBumper), nextHeight), vState, estVelocity, frameNum);
 	}
 		
-};
+};

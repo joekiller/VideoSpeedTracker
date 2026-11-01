@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { esc, raw, html, band, passPills } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
-import { geometry, applyHandle, laneYAt, laneHandleX } from '../js/overlay.js';
+import { geometry, applyHandle, laneYAt, laneHandleX, edgeNotes } from '../js/overlay.js';
 import * as plan from '../js/plan.js';
 
 describe('ui.js esc', () => {
@@ -141,6 +141,17 @@ describe('overlay.js geometry', () => {
     assert.deepEqual(applyHandle(cfg, 'sr', 5000, 0), { speedLineRight: 1269 });
     assert.deepEqual(applyHandle(cfg, 'sl', 5000, 0), { speedLineLeft: 909 - 40 });
     assert.deepEqual(applyHandle(cfg, 'sl', -50, 0), { speedLineLeft: 0 });
+  });
+  // A speed line on the box's side is timed by VST (tests/flush_zone.cmake), so the editor says so rather than refusing it.
+  it('notes a speed line on the box edge, and whether the box can grow there', () => {
+    assert.deepEqual(edgeNotes(cfg), []);
+    const atPicture = edgeNotes({ ...cfg, AnalysisBoxLeft: 0, speedLineLeft: 0 });
+    assert.equal(atPicture.length, 1);
+    assert.match(atPicture[0], /left speed line is 0 px from the picture's edge/);
+    const canGrow = edgeNotes({ ...cfg, AnalysisBoxWidth: 920 });
+    assert.equal(canGrow.length, 1);
+    assert.match(canGrow[0], /right speed line is 11 px from the box's right side.*move the box's right side out/);
+    assert.deepEqual(edgeNotes({ ...cfg, speedLineLeft: 0, subFrameTiming: 1 }), []);
   });
   it('keeps lines still on screen when the box corner moves', () => {
     const c = applyHandle(cfg, 'tl', 110, 240);

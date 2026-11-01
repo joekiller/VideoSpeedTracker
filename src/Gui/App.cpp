@@ -1645,6 +1645,20 @@ void App::zoneInspector() {
 		"with short-view timing (step 2) even a short stretch works.");
 	intRow("Left line", &g.speedLineLeft, 0, g.AnalysisBoxWidth);
 	intRow("Right line", &g.speedLineRight, 0, g.AnalysisBoxWidth);
+	// A line on (or nearly on) the box's edge: VST times cars there from the moment they come into view, so it's not a
+	// problem, but a little road past the line gives steadier reads.  Say which side, and whether the box can grow there.
+	if (!g.subFrameTiming)
+		for (bool left : { true, false }) {
+			int room = g.roomOutsideZone(left);
+			if (room >= Globals::kEdgeRoom) continue;
+			bool boxAtPicture = left ? g.AnalysisBoxLeft <= 0 : g.AnalysisBoxLeft + g.AnalysisBoxWidth >= 1279;
+			const char* side = left ? "left" : "right";
+			if (boxAtPicture)
+				dimText(ICON_INFO "  The %s line is %d px from the picture's edge. VST times cars there as they come into view, so this works.", side, room);
+			else
+				dimText(ICON_INFO "  The %s line is %d px from the box's %s side. VST still times those cars; for steadier reads, drag the box's %s side out past the line if the picture shows more road.",
+					side, room, side, side);
+		}
 	// How long a car at the limit spends between the lines, from the calibration (the legal direction's lane on a
 	// one-way street).  Before calibrating, the numbers in VST.cfg belong to some other street, so it says nothing
 	// yet; with short-view timing a short time is expected, not a problem.

@@ -141,6 +141,13 @@ public:
 		return perspective::zoneFraction(x, speedLineLeft, speedLineRight, vanishingX(leftToRight));
 	}
 
+	// Road the analysis box shows outside the speed zone on one side, in pixels: room to see a car before its front bumper
+	// reaches the line it enters by.  0 is a line on the box's edge.  The tracker times such cars from the moment they
+	// come into view (videoSpeedTracker.cpp entryPosition()), but reads are steadier with room; setup screens hint below
+	// kEdgeRoom unless subFrameTiming is on, which expects a car to be part way in when first seen.
+	static constexpr int kEdgeRoom = 75;  // the 2016 view's maxDistOnEntry: about a frame pair of travel at speed
+	int roomOutsideZone(bool leftSide) const { return leftSide ? speedLineLeft : AnalysisBoxWidth - speedLineRight; }
+
 	// A pixel margin tuned for the 2016 Locust Avenue view, where maxL2RDistOnEntry and maxR2LDistOnEntry are 75.  With
 	// subFrameTiming it grows in proportion to that direction's maxDistOnEntry, so a short view, where a car moves hundreds of
 	// pixels a frame pair, keeps the same margins relative to the motion.  Without subFrameTiming it is returned unchanged.

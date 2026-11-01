@@ -33,6 +33,27 @@ export function geometry(c) {
   };
 }
 
+/**
+ * Plain-words notes for a speed line on, or within EDGE_ROOM px of, the analysis box's side (Globals::kEdgeRoom in
+ * VST). VST times cars there from the moment they come into view, so these are tips, not problems: a little road
+ * past each line gives steadier reads. Short-view timing expects a car to be part way in when first seen, so it gets none.
+ */
+export const EDGE_ROOM = 75;
+export function edgeNotes(c) {
+  if (c.subFrameTiming) return [];
+  const notes = [];
+  for (const left of [true, false]) {
+    const room = left ? c.speedLineLeft : c.AnalysisBoxWidth - c.speedLineRight;
+    if (room >= EDGE_ROOM) continue;
+    const side = left ? 'left' : 'right';
+    const atPicture = left ? c.AnalysisBoxLeft <= 0 : c.AnalysisBoxLeft + c.AnalysisBoxWidth >= W - 1;
+    notes.push(atPicture
+      ? `The ${side} speed line is ${room} px from the picture's edge. VST times cars there as they come into view, so this works.`
+      : `The ${side} speed line is ${room} px from the box's ${side} side. VST still times those cars; for steadier reads, move the box's ${side} side out past the line if the picture shows more road.`);
+  }
+  return notes;
+}
+
 /** A lane line's y at frame x, between its left end yl and right end yr across the box. */
 export function laneYAt(g, yl, yr, fx) {
   return yl + (yr - yl) * (fx - g.box.x) / (g.box.w || 1);
