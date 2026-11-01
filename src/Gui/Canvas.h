@@ -45,6 +45,12 @@ double levelCorrection(ImVec2 p, ImVec2 q);
 // stay on the curb they were laid on.
 ImVec2 levelTurn(ImVec2 p, double degrees);
 
+// "Check it with a ghost car" (Mark your street, Lane card): a wireframe car of typical size (perspective::ghostCar),
+// projected with the camera setup, its front bumper on each speed line and its hubcap on the lane line there, driving
+// right (goingRight) or left.  When the setup is right it sits on a real car at the same spot; too big or small means the
+// distance or lens is off, leaning wrong means the angle is.  Draws nothing where the setup can't place it.
+void ghostCars(const View& v, const Globals& g, const perspective::CameraSetup& cam, bool goingRight);
+
 // Draws the tracker's live boxes with speed tags.
 void trackOverlay(const View& v, const Globals& g, const cv::Rect& analysisBox, const std::vector<vst::TrackBox>& boxes,
 	int speedLimit, int egregious);

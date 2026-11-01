@@ -423,6 +423,33 @@ bool zoneOverlay(const View& v, Globals& g, const OverlayStyle& st, const char**
 	return changed;
 }
 
+void ghostCars(const View& v, const Globals& g, const perspective::CameraSetup& cam, bool goingRight) {
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	dl->PushClipRect(v.origin, v.origin + v.size, true);   // a car half out of the picture is still worth seeing in part
+	const ImU32 col = c::rgb(0x7DD3FC);
+	const perspective::Line lane = g.lane(goingRight);
+	for (int lineX : { g.speedLineLeft, g.speedLineRight }) {
+		double u = g.AnalysisBoxLeft + lineX, anchor = g.AnalysisBoxTop + lane.at(lineX);
+		perspective::Ghost gh = perspective::ghostCar(cam, 1280, 720, u, anchor, goingRight);
+		if (!gh.ok) continue;
+		ImVec2 p[8];
+		for (int i = 0; i < 8; i++) p[i] = v.at(float(gh.corner[i].u), float(gh.corner[i].v));
+		// Faces first (near side and roof, faint), then the twelve edges: corner index = front*4 + far*2 + top.
+		ImVec2 side[4] = { p[0], p[1], p[5], p[4] }, roof[4] = { p[1], p[3], p[7], p[5] };
+		dl->AddConvexPolyFilled(side, 4, alpha(col, .16f));
+		dl->AddConvexPolyFilled(roof, 4, alpha(col, .10f));
+		static const int edges[12][2] = { { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },     // along the street
+			{ 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 },                                  // across it
+			{ 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 } };                                // up
+		for (auto& e : edges) {
+			bool hidden = (e[0] & 2) && (e[1] & 2) && !(e[0] & 1 || e[1] & 1);   // the far bottom edges sit behind the car
+			dl->AddLine(p[e[0]], p[e[1]], alpha(col, hidden ? .35f : .95f), hidden ? 1.f : 2.f);
+		}
+		dl->AddCircleFilled(v.at(float(u), float(anchor)), 3.5f, col);   // the hubcap corner, on the lane line
+	}
+	dl->PopClipRect();
+}
+
 void trackOverlay(const View& v, const Globals& g, const cv::Rect& ab, const std::vector<vst::TrackBox>& boxes, int limit, int egregious) {
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 	std::vector<ImRect> tags;   // speed tags placed so far; overlapping vehicles stack their tags upwards

@@ -352,6 +352,17 @@ void App::averageCalibration(const CalCheck& check) {
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 }
 
+// The camera as the Lane card's ghost car describes it: step 2's distance (stored in metres) and lens, with the height
+// and angle typed beside the ghost.
+perspective::CameraSetup App::cameraSetup() const {
+	perspective::CameraSetup c;
+	c.distanceFt = prefs.planDist * plan::kFt;
+	c.heightFt = prefs.calcHeightFt;
+	c.yawDeg = prefs.calcYawDeg;
+	c.hfovDeg = prefs.planHfov;
+	return c;
+}
+
 void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from) {
 	Globals& g = cfg.g;
 	int calFrames = std::max(1, int(std::lround(calFramesD)));
@@ -1229,6 +1240,7 @@ void App::pageZones() {
 	const char* hovered = nullptr;
 	st.editable = !levelTool_;   // the level dots get the mouse while they're out
 	if (player.isOpen()) zoneOverlay(v, cfg.g, st, &hovered);   // with no picture, the lines would only cover the hint
+	if (player.isOpen() && ghostCar_) ghostCars(v, cfg.g, cameraSetup(), ghostGoesRight());
 	if (player.isOpen() && (levelTool_ || levelGrid_)) {
 		levelGuide(v, levelDots_, levelTool_);
 		if (levelTool_) hovered = "Lay the line along the curb or a lane stripe, then press Level it";
@@ -1466,6 +1478,73 @@ void App::zoneInspector() {
 			}
 			if (!g.subFrameTiming)
 				dimText(ICON_INFO "  Short-view timing (Detection tuning) is what uses this. Whole-frame timing already gets it right through calibration.");
+		}
+
+		// "Check it with a ghost car": the setup is the camera, not the math.  Type how the camera sits (distance and lens
+		// from step 2, height and angle here) and Studio draws a typical car at each speed line (Canvas.h ghostCars).
+		// Nudge the numbers until the ghost sits on a real car; then the same camera model gives the zone's length in feet
+		// (Calibrate from this setup) and, for an angled camera, the street edge (Draw the street edge), so neither
+		// needs a curb or a test drive.  A drive past afterwards is still the check.
+		ImGui::Dummy(ImVec2(0, px(2)));
+		ImGui::Checkbox("Check it with a ghost car", &ghostCar_);
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+			ImGui::SetTooltip("Draws a typical car (15.5 ft) at each speed line from how your camera is set up.\n"
+				"Too big or too small: the distance or lens is off. Leaning wrong: the angle is.");
+		if (ghostCar_) {
+			dimText("Pause on a car at a speed line and nudge these until the blue ghost sits on it.");
+			auto numRow = [&](const char* label, double* val, double step, const char* fmt, double lo, double hi, const char* help) {
+				formLabel(label, col);
+				ImGui::PushID(label);
+				ImGui::SetNextItemWidth(-FLT_MIN);
+				if (ImGui::InputDouble("##v", val, step, step * 5, fmt)) *val = std::clamp(*val, lo, hi);
+				ImGui::PopID();
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", help);
+			};
+			double distFt = prefs.planDist * plan::kFt;
+			numRow("To the lane (ft)", &distFt, 1, "%.0f", 4, 300, "From the camera to the middle of the lane, square to the street. The same as step 2.");
+			prefs.planDist = distFt / plan::kFt;
+			numRow("Camera height (ft)", &prefs.calcHeightFt, 1, "%.0f", 0, 100, "Above the road. A second-floor window is about 12-15 ft.");
+			numRow("Field of view (°)", &prefs.planHfov, 1, "%.0f", perspective::kMinHfovDeg, perspective::kMaxHfovDeg,
+				"Horizontal angle the camera sees. Phones and webcams: 60-80°. Wide IP cameras: 90-110°. The same as step 2.");
+			formLabel("Aimed along", col);
+			{
+				float yaw = float(prefs.calcYawDeg), lim = float(perspective::kMaxYawDeg);
+				// SliderFloat prints a format with no conversion as it is, so the label carries the magnitude and which end.
+				char fmt[48];
+				if (std::fabs(yaw) < .5f) std::snprintf(fmt, sizeof fmt, "square (0°)");
+				else std::snprintf(fmt, sizeof fmt, "%d° %s end farther", int(std::lround(std::fabs(yaw))), yaw > 0 ? "right" : "left");
+				ImGui::SetNextItemWidth(-FLT_MIN);
+				if (ImGui::SliderFloat("##yaw", &yaw, -lim, lim, fmt)) prefs.calcYawDeg = std::round(double(yaw));
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+					ImGui::SetTooltip("How far the camera is turned from facing the street squarely.\nCtrl+click to type; negative is toward the left.");
+			}
+			perspective::CameraSetup cam = cameraSetup();
+			double zoneFt = perspective::zoneFeet(cam, 1280, 720, g.AnalysisBoxLeft + g.speedLineLeft, g.AnalysisBoxLeft + g.speedLineRight);
+			double xV = perspective::vanishingFrameX(cam, 1280) - g.AnalysisBoxLeft;
+			if (std::isnan(zoneFt) || zoneFt <= 0)
+				dimText(ICON_INFO "  That setup can't see both speed lines on the street. Check the distance and angle.");
+			else {
+				double ratio = perspective::depthRatio(g.speedLineLeft, g.speedLineRight, xV);
+				std::string far = std::isnan(ratio) || std::fabs(ratio - 1) < .02 ? std::string("both speed lines about the same distance away")
+					: "the " + std::string(ratio > 1 ? "right" : "left") + " one about "
+						+ std::to_string(int(std::lround((ratio > 1 ? ratio : 1 / ratio) * 100 - 100))) + "% farther";
+				ImGui::TextWrapped(ICON_RULER "  About %.1f ft of street between the speed lines, %s.", zoneFt, far.c_str());
+				float half2 = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
+				if (ghostButton(ICON_ARROWS_LR "  Draw the street edge", ImVec2(half2, 0))) {
+					// The edge only has to meet the lane line at the vanishing point; it is drawn 40 px off it to be seen.
+					perspective::EdgeResult e = perspective::edgeThrough(g.lane(ghostGoesRight()), xV, 40, g.AnalysisBoxHeight);
+					if (std::isnan(xV)) { g.streetEdge[0] = g.streetEdge[1] = 0; toast("Square to the street: no street edge needed.", c::ok, ICON_CHECK_CIRCLE); }
+					else if (e.ok) { g.streetEdge[0] = int(std::lround(e.yLeft)); g.streetEdge[1] = int(std::lround(e.yRight)); }
+					else toast("The analysis box is too short to draw the street edge in. Make it a little taller.", c::warn, ICON_WARN);
+				}
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+					ImGui::SetTooltip("Sets the green street edge from this setup, so short-view timing measures along the ground.");
+				ImGui::SameLine();
+				if (primaryButton(ICON_CHECK "  Calibrate from it", ImVec2(-FLT_MIN, 0)))
+					applyDistanceCalibration(true, true, zoneFt / (g.CalibrationSpeed * 5280 / 3600) * g.CalibrationFPS, "the camera setup");
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+					ImGui::SetTooltip("Sets both directions' calibration from the zone's length in feet. One drive past then checks it.");
+			}
 		}
 		endCard();
 	}

@@ -79,6 +79,9 @@ struct DemoScript {
 	std::string pendingShot;
 	std::vector<std::string> failures;   // steps that gave up; any of these makes --shots exit non-zero
 	int laneBefore_[2] = {};             // the sample's lane rows, put back after the angled-lane shot
+	// The ghost-car shot: a sample frame with a car passing, and the sample camera's setup as matched by eye.
+	static constexpr int kGhostFrame = 2186;
+	static constexpr double kGhostDistFt = 45, kGhostHeightFt = 15, kGhostHfov = 60;
 
 	void shot(const char* name) { pendingShot = (fs::path(dir) / name).string(); }
 	void fail(const std::string& why) { std::fprintf(stderr, "--shots: %s\n", why.c_str()); failures.push_back(why); }
@@ -137,10 +140,23 @@ struct DemoScript {
 				setLane(g, true, false, laneBefore_[1], laneBefore_[1]);
 				g.streetEdge[0] = g.streetEdge[1] = 0;
 			}
+			// Check it with a ghost car: the sample's camera typed in (distance, height, lens; square to the street) and a
+			// typical car drawn at each speed line, paused where a real car is passing to compare against.
+			if (frames == 62) {
+				app.player.seek(kGhostFrame);
+				app.prefs.planDist = kGhostDistFt / plan::kFt;
+				app.prefs.calcHeightFt = kGhostHeightFt;
+				app.prefs.calcYawDeg = 0;
+				app.prefs.planHfov = kGhostHfov;
+				app.ghostCar_ = true;
+				app.inspectorScroll_ = 1000;
+			}
+			if (frames == 80) shot("04d-zones-ghost.png");
+			if (frames == 81) { app.ghostCar_ = false; app.inspectorScroll_ = 0; app.player.seek(2186); }
 			// Back on Pick your spot with a picture: the "Zero in on it" card's car-length ruler over the sample.
-			if (frames == 62) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
-			if (frames == 81) shot("02b-zero-in.png");
-			if (frames == 83) next();
+			if (frames == 82) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
+			if (frames == 101) shot("02b-zero-in.png");
+			if (frames == 103) next();
 			break;
 		case 4:
 			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }
