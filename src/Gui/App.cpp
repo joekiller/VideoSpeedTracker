@@ -1530,7 +1530,7 @@ void App::zoneInspector() {
 						+ std::to_string(int(std::lround((ratio > 1 ? ratio : 1 / ratio) * 100 - 100))) + "% farther";
 				ImGui::TextWrapped(ICON_RULER "  About %.1f ft of street between the speed lines, %s.", zoneFt, far.c_str());
 				float half2 = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
-				if (ghostButton(ICON_ARROWS_LR "  Draw the street edge", ImVec2(half2, 0))) {
+				if (ghostButton(ICON_ARROWS_LR "  Street edge", ImVec2(half2, 0))) {
 					// The edge only has to meet the lane line at the vanishing point; it is drawn 40 px off it to be seen.
 					perspective::EdgeResult e = perspective::edgeThrough(g.lane(ghostGoesRight()), xV, 40, g.AnalysisBoxHeight);
 					if (std::isnan(xV)) { g.streetEdge[0] = g.streetEdge[1] = 0; toast("Square to the street: no street edge needed.", c::ok, ICON_CHECK_CIRCLE); }
@@ -1538,7 +1538,7 @@ void App::zoneInspector() {
 					else toast("The analysis box is too short to draw the street edge in. Make it a little taller.", c::warn, ICON_WARN);
 				}
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-					ImGui::SetTooltip("Sets the green street edge from this setup, so short-view timing measures along the ground.");
+					ImGui::SetTooltip("Draws the green street edge from this setup, so short-view timing measures along the ground.");
 				ImGui::SameLine();
 				if (primaryButton(ICON_CHECK "  Calibrate from it", ImVec2(-FLT_MIN, 0)))
 					applyDistanceCalibration(true, true, zoneFt / (g.CalibrationSpeed * 5280 / 3600) * g.CalibrationFPS, "the camera setup");

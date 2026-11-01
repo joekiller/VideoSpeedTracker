@@ -80,8 +80,8 @@ struct DemoScript {
 	std::vector<std::string> failures;   // steps that gave up; any of these makes --shots exit non-zero
 	int laneBefore_[2] = {};             // the sample's lane rows, put back after the angled-lane shot
 	// The ghost-car shot: a sample frame with a car passing, and the sample camera's setup as matched by eye.
-	static constexpr int kGhostFrame = 2186;
-	static constexpr double kGhostDistFt = 45, kGhostHeightFt = 15, kGhostHfov = 60;
+	static constexpr int kGhostFrame = 288;
+	static constexpr double kGhostDistFt = 95, kGhostHeightFt = 20, kGhostHfov = 60;
 
 	void shot(const char* name) { pendingShot = (fs::path(dir) / name).string(); }
 	void fail(const std::string& why) { std::fprintf(stderr, "--shots: %s\n", why.c_str()); failures.push_back(why); }

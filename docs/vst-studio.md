@@ -156,11 +156,25 @@ away as the near one), short-view timing without it timed 37 of 61 cars, up to 6
 average; with it, 57, nine in ten within 1 mph and none more than 2 off. With a gentle recede (1.2 times) it made
 no real difference, which is why it stays off unless you need it.
 
+**Check it with a ghost car.** Instead of measuring, you can describe how the camera sits and let Studio work out
+the rest. Tick **Check it with a ghost car** on the Lane card and fill in the distance to the lane and the lens's
+field of view (the same numbers as step 2), the camera's height above the road, and which way it's aimed along the
+street (square, or so many degrees with the left or right end farther away). Studio draws a typical 15½ ft car in
+blue at each white line, with its front bumper on the line and its hubcap on the lane line. Pause on a frame where a
+real car is at one of the lines and nudge the numbers until the ghost sits on it. If the ghost is too big or too
+small, the distance or lens is off; if it leans the wrong way, the angle is. Once it fits, the card says how many
+feet of street lie between the white lines. **Calibrate from it** sets both directions from that length, and
+**Street edge** draws the green street edge for an angled camera, so neither needs a curb or a test drive. One drive
+past afterwards still checks it. On the 2016 sample, 95 ft away, 20 ft up and a 60° lens put the ghost on a passing
+car and give 47 ft between the lines; the sample's own calibration drive works out to 43 to 49 ft.
+
 ![Mark your street](images/studio/04-zones.jpg)
 
 ![Level the picture](images/studio/04b-zones-level.jpg)
 
 ![A lane line angled to follow the street, with the street edge along the curb](images/studio/04c-zones-angle.jpg)
+
+![A ghost car drawn from the camera setup, sitting on a real car at the right-hand white line](images/studio/04d-zones-ghost.jpg)
 
 ### 5 Calibrate
 
