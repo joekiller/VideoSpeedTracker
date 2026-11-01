@@ -73,7 +73,14 @@ struct ResultRow {
 	bool flagged = false;
 	double fps = 30;
 	std::string time;
+	std::string statsPath;      // the stats csv the row was read from ("" for session rows)
 };
+
+// Where the Results page's rows come from.  Session: vehicles measured since Studio opened (with snapshots).  Saved:
+// every run the tracker has saved in <data>/Stats (resume::savedRuns), newest first; what Results opens on when this
+// session has nothing yet, so reopening Studio never looks as if earlier results were lost.  File: one csv, either a
+// saved run picked from the menu or anything opened with Open CSV (App::rowsFrom names it).
+enum class ResultsScope { Session, Saved, File };
 
 class App {
 public:
@@ -122,6 +129,7 @@ public:
 	CalState calibrationState(bool l2r);
 	void loadResultsCsv(const std::string& path);
 	void showSessionResults();
+	void showSavedRuns();               // every saved run (ResultsScope::Saved), re-read from <data>/Stats
 	// The street report (Report.h): what it reads (data folder, config, calibration history, and blurred snapshots of
 	// this session's fastest vehicles when asked) and the user's choices.  GUI thread only; the API copies them and
 	// builds the report on its own thread.
@@ -210,7 +218,9 @@ public:
 	std::vector<std::string> batch;     // queued inputs for the next run; empty = the current source
 	std::string source;                 // current source path / index / URL
 	std::vector<ResultRow> rows;
-	std::string rowsFrom;               // "" = this session, else the csv path
+	ResultsScope rowsScope = ResultsScope::Session;
+	std::string rowsFrom;               // ResultsScope::File: the csv path ("" otherwise)
+	int rowsRuns = 0;                   // ResultsScope::Saved: how many runs the rows came from
 	int calibMarks[2][2] = { { -1, -1 }, { -1, -1 } };   // [l2r?0:1][start/end] frame numbers marked by hand
 	// The Calibrate page's "Cones or pole" mode: each cone's base on the picture (1280-wide grid, -1 = not marked), which
 	// one the next click on the picture places (-1 = none), the measured distance between them, and the directions
@@ -328,6 +338,11 @@ private:
 	int guideStep_ = 0;                 // which of the Guide's two steps (What you need, Pick your spot) is showing
 	bool showZeroIn_ = false;           // scroll Pick your spot to its "Zero in on it" card on the next frame
 	int resultsFilter_ = 0;
+	// Results opens on the saved runs when this session has nothing yet, once per launch (afterwards, a choice of
+	// "This session" in the menu sticks).
+	bool resultsOpened_ = false;
+	// Appends one stats csv's rows (labelled `label` in the Source column) to `rows`; false with a toast if unreadable.
+	bool appendStatsRows(const std::string& path, const std::string& label, int* skipped);
 	int selectedRow_ = -1;
 	int calibMode_ = 0;
 	int calibDir_ = 0;
@@ -359,6 +374,9 @@ private:
 	// A camera or stream still connecting in the background: it joins Recent (and is reopened next launch) only once it
 	// opens, so an address that never answered doesn't come back as a recent source.  "" = nothing pending.
 	std::string pendingRecent_;
+	// The source init() reopened from last time ("" once it opened, or for one the user picked this launch): when it
+	// fails, the toast says the setup and results are safe and how to reconnect, not just the device error.
+	std::string resumedSource_;
 	char urlBuf_[512] = "rtsp://";
 	int cameraIndex_ = 0;
 	// Raspberry Pi cameras (PiCamera.h).  `rpicam-vid --list-cameras` takes a moment, so init() starts it in the

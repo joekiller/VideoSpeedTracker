@@ -4,6 +4,7 @@
 #include "App.h"
 #include "Canvas.h"
 #include "Icons.h"
+#include "Resume.h"
 #include "Server.h"
 #include "Theme.h"
 #include "UserPaths.h"
@@ -77,6 +78,23 @@ static const char* pageSubtitle(Page p) {
 
 static double now() { return glfwGetTime(); }
 
+// AppPrefs::lastPage: the page (and for the Guide, which of its two steps) as a word, so a reordered Page enum can't
+// reopen Studio on the wrong page.
+static const char* const kPageKeys[] = { "guide", "source", "zones", "calibrate", "live", "results", "companion" };
+static_assert(sizeof kPageKeys / sizeof kPageKeys[0] == size_t(Page::Count), "a key for every page");
+
+static std::string pageKey(Page p, int guideStep) {
+	if (p == Page::Guide) return guideStep > 0 ? "guide2" : "guide";
+	return int(p) >= 0 && p < Page::Count ? kPageKeys[int(p)] : "";
+}
+
+static bool pageFromKey(const std::string& key, Page& p, int& guideStep) {
+	if (key == "guide2") { p = Page::Guide; guideStep = 1; return true; }
+	for (int i = 0; i < int(Page::Count); i++)
+		if (key == kPageKeys[i]) { p = Page(i); guideStep = 0; return true; }
+	return false;
+}
+
 // ======================================================================================================
 // Lifecycle
 // ======================================================================================================
@@ -93,10 +111,17 @@ void App::init(bool fresh, const std::string& configPath) {
 	std::string cfgPath = configPath.empty() ? prefs.configPath : configPath;
 	if (configPath.empty() && (cfgPath.empty() || !fs::exists(cfgPath))) cfgPath = userpaths::resolveConfig("VST.cfg");
 	if (!cfgPath.empty() && !loadConfig(cfgPath)) toast(cfg.error, c::bad, ICON_WARN);
+	// Reopen where the user left off: the page they were on, and the source they last connected.  Every kind of
+	// source comes back (resume::reopenAtLaunch); a camera or stream connects in the background, the header says
+	// "Connecting to Camera 0…", and if it doesn't answer frame() says the setup is safe and how to reconnect.
+	// Before, cameras were skipped here, which unchecked steps 3 and 4 and made a reopened Studio look new.
 	page = prefs.guideDone ? Page::Source : Page::Guide;
-	if (!prefs.lastSource.empty() && classifySource(prefs.lastSource) != SourceInfo::Camera
-		&& (classifySource(prefs.lastSource) == SourceInfo::Stream || fs::exists(prefs.lastSource)))
-		openSource(prefs.lastSource);
+	if (!fresh) pageFromKey(prefs.lastPage, page, guideStep_);
+	SourceInfo::Kind lastKind = classifySource(prefs.lastSource);
+	bool isPath = lastKind == SourceInfo::File || lastKind == SourceInfo::Image;
+	std::error_code ec;
+	if (resume::reopenAtLaunch(prefs.lastSource, isPath, isPath && fs::exists(prefs.lastSource, ec)) && openSource(prefs.lastSource))
+		resumedSource_ = prefs.lastSource;
 	if (prefs.remoteEnabled) setRemote(true);
 #ifndef _WIN32
 	if (!picam::findTool().empty())
@@ -148,8 +173,10 @@ bool App::saveConfig() {
 	return true;
 }
 
+// Judged on the connected source, or the remembered one while it's unplugged or reconnecting (resume::setupSource), so
+// the check doesn't vanish because a camera is a moment late.
 bool App::zonesDone() {
-	return !source.empty() && prefs.zonesFor == source && cfg.problems().empty();
+	return resume::zonesStepDone(resume::setupSource(source, prefs.lastSource), prefs.zonesFor, cfg.problems().empty());
 }
 
 bool App::calibrationDone() {
@@ -221,6 +248,7 @@ std::string App::findSample() {
 // fails, frame() clears it again and says why, rather than leaving the old picture or a stale name behind.
 bool App::openSource(const std::string& path) {
 	if (tracker.running()) { toast("Stop tracking before changing the source", c::warn, ICON_WARN); return false; }
+	resumedSource_.clear();   // a source picked this launch (init() sets it again for the one it reopens)
 	if (!player.open(path)) { toast(player.error, c::bad, ICON_WARN); source.clear(); return false; }
 	source = path;
 	// A Pi camera reopened from Recent brings its settings back into the camera card's settings popup.
@@ -287,7 +315,7 @@ void App::startTracking() {
 	liveTexSerial_ = fedSerial_ = -1;
 	runLevel_ = cfg.g.levelDegrees;   // the run copy carries this angle, so the frames it hands back are already turned by it
 	tracker.start(jobs, o);
-	rowsFrom.clear();
+	showSessionResults();   // Results follows the run (the saved runs are a click away in its menu)
 	page = Page::Track;
 	wasRunning_ = true;
 }
@@ -472,19 +500,19 @@ void App::setRemote(bool on) {
 
 // ---- results --------------------------------------------------------------------------------------------
 
-void App::loadResultsCsv(const std::string& path) {
+// One stats csv into `rows`, appended.  The csv names directions by compass label, mapped back with the current
+// config's labels; a run's own labels (in its manifest) are the street report's business.
+bool App::appendStatsRows(const std::string& path, const std::string& label, int* skipped) {
 	std::vector<StatsRow> stats;
 	std::string err;
-	int skipped = 0;
-	if (!readStatsCsv(path, stats, err, &skipped)) { toast(err, c::bad, ICON_WARN); return; }
-	rows.clear();
+	if (!readStatsCsv(path, stats, err, skipped)) { toast(err, c::bad, ICON_WARN); return false; }
 	const Globals& g = cfg.g;
 	for (const StatsRow& s : stats) {
 		ResultRow r;
-		r.source = fs::path(path).filename().string();
+		r.source = label;
+		r.statsPath = path;
 		r.frame = s.frame;
 		r.compass = s.compass;
-		// The csv names directions by compass label; map them back with the current config's labels.
 		r.l2r = s.compass == g.L2RDirection || (s.compass != g.R2LDirection && s.endPix > s.startPix);
 		r.wrongWay = cfg.g.isWrongWay(r.l2r);
 		r.speed = s.speed;
@@ -498,9 +526,38 @@ void App::loadResultsCsv(const std::string& path) {
 		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
 		rows.push_back(r);
 	}
+	return true;
+}
+
+void App::loadResultsCsv(const std::string& path) {
+	int skipped = 0;
+	std::vector<ResultRow> was;
+	was.swap(rows);
+	if (!appendStatsRows(path, fs::path(path).filename().string(), &skipped)) { rows.swap(was); return; }
+	rowsScope = ResultsScope::File;
 	rowsFrom = path;
+	rowsRuns = 1;
 	selectedRow_ = -1;
 	if (skipped) toast(std::to_string(skipped) + " rows in that file weren't in VST's format and were skipped", c::warn, ICON_WARN);
+}
+
+// All saved runs, newest run first: what the tracker has written to <data>/Stats over every launch.  Each row's Source
+// is its run in words (resume::runLabel), e.g. "Camera 0 · 2026-11-01 13:30".  A run whose csv can't be read is
+// skipped with a toast; malformed rows are counted once for all runs.
+void App::showSavedRuns() {
+	rows.clear();
+	rowsRuns = 0;
+	int skipped = 0;
+	if (!screenshotMode)
+		for (const resume::SavedRun& run : resume::savedRuns(dataDir())) {
+			int bad = 0;
+			if (appendStatsRows(run.csv, resume::runLabel(run.name), &bad)) rowsRuns++;
+			skipped += bad;
+		}
+	rowsScope = ResultsScope::Saved;
+	rowsFrom.clear();
+	selectedRow_ = -1;
+	if (skipped) toast(std::to_string(skipped) + " rows in the saved runs weren't in VST's format and were skipped", c::warn, ICON_WARN);
 }
 
 void App::showSessionResults() {
@@ -521,7 +578,9 @@ void App::showSessionResults() {
 		r.time = v.passed();   // empty for recordings without a start time
 		rows.push_back(r);
 	}
+	rowsScope = ResultsScope::Session;
 	rowsFrom.clear();
+	rowsRuns = 0;
 }
 
 Texture* App::snapshotTexture(int id) {
@@ -584,7 +643,7 @@ void App::pumpTracker() {
 		seenVehicleId_ = v.id;
 		if (v.ev.wrongWay) toast("Wrong-way driver, " + std::to_string(v.ev.speed) + " mph", c::wrong, ICON_WARN);
 		else if (v.egregious) toast(std::to_string(v.ev.speed) + " mph " + (v.ev.leftToRight ? "→" : "←") + "  well over the limit", c::bad, ICON_BOLT);
-		if (rowsFrom.empty()) showSessionResults();
+		if (rowsScope == ResultsScope::Session) showSessionResults();
 	}
 	if (wasRunning_ && !tracker.running()) {
 		wasRunning_ = false;
@@ -654,13 +713,21 @@ void App::frame(float w, float h) {
 		player.tick(now());
 		if (live && !player.opening() && !player.isOpen() && !player.error.empty()) {
 			toast(player.error, c::bad, ICON_WARN);
+			// The camera from last time didn't answer (unplugged, asleep, busy in another app).  prefs.lastSource keeps
+			// it, so steps 3 and 4 stay checked and Recent still lists it; say that nothing was lost.
+			if (!resumedSource_.empty() && resumedSource_ == source)
+				toast("Couldn't reconnect " + friendlySourceName(source) + " from last time. Your setup and results are safe: "
+					"plug it in, then pick it under Recent on Connect the camera.", c::warn, ICON_CAMERA);
+			resumedSource_.clear();
 			source.clear();
 			pendingRecent_.clear();
 		}
+		if (!resumedSource_.empty() && player.isOpen() && !player.opening()) resumedSource_.clear();
 		if (!pendingRecent_.empty() && pendingRecent_ == source && player.isOpen() && !player.opening()) rememberSource(source);
 		else if (!pendingRecent_.empty() && pendingRecent_ != source) pendingRecent_.clear();   // cancelled or replaced
 	}
 	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
+	if (!screenshotMode) prefs.lastPage = pageKey(page, guideStep_);   // written with the other prefs (savePrefsSoon)
 	autosave();
 	// Pick your spot's draft: follow the saved plan where untouched, save it as it's edited when autosave is on (once no
 	// control is being dragged or typed in), and say so when the page is left with changes unsaved.
@@ -729,7 +796,9 @@ bool App::flowDone(int step) {
 	switch (step) {
 	case 0: return prefs.guideDone || (page == Page::Guide && guideStep_ > 0);
 	case 1: return prefs.planConfirmed;   // saved at least once (a rough guess counts)
-	case 2: return (!source.empty() && !player.opening()) || !batch.empty();   // connected, not still connecting
+	// Connected (not still connecting), queued, or connected before and not disconnected since: the step was done,
+	// and the header's chip says when the camera isn't answering right now.
+	case 2: return resume::sourceStepDone(!source.empty() && !player.opening(), !batch.empty(), prefs.lastSource);
 	case 3: return zonesDone();
 	case 4: return calibrationDone() && !(sampleCache_.size() && source == sampleCache_);   // the sample's own calibration isn't yours
 	default: return false;
@@ -939,7 +1008,9 @@ void App::drawHeader(float w) {
 	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
 	float pauseW = run ? ImGui::GetFrameHeight() + px(10) : 0;
-	std::string chip = source.empty() ? std::string("No source") : shortSourceName(source, 36);
+	// Unplugged since last time: name the remembered source rather than "No source", which reads as forgotten.
+	std::string chip = !source.empty() ? shortSourceName(source, 36)
+		: !prefs.lastSource.empty() ? shortSourceName(prefs.lastSource, 28) + " · not connected" : std::string("No source");
 	if (player.opening()) chip = "Connecting to " + chip + "…";
 	if (batch.size() > 1) chip = std::to_string(batch.size()) + " videos queued";
 	const char* chipIcon = source.empty() ? ICON_VIDEO : classifySource(source) == SourceInfo::Camera ? ICON_CAMERA
@@ -2949,21 +3020,48 @@ void App::vehicleCard(const Vehicle& v, float width) {
 
 void App::pageResults() {
 	float avail = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
-	if (rows.empty() && rowsFrom.empty() && tracker.lastVehicleId() > 0) showSessionResults();
+	// Which rows to show on arrival.  This session's vehicles when there are any; otherwise, the first time Results is
+	// opened in a launch, every saved run, so a reopened Studio shows the results it has rather than "0 of 0".
+	if (rowsScope == ResultsScope::Session && rows.empty() && tracker.lastVehicleId() > 0) showSessionResults();
+	if (!resultsOpened_ && !screenshotMode && rowsScope == ResultsScope::Session && rows.empty() && !tracker.running()) showSavedRuns();
+	resultsOpened_ = true;
 
 	// Toolbar: filter, where the rows come from, file actions.
 	static const char* const filters[] = { "All", "Speeding", "Way over", "Wrong way" };
 	// The file buttons keep their full labels; the filter gives up width first, so the row fits a 1366-1480 px laptop
 	// window instead of pushing "Make report" off the edge.
 	float actionsW = px(16) * 2 + px(180);
-	for (const char* l : { ICON_CLOCK " This session", ICON_FILE_CSV " Open CSV", ICON_FILM " Highlights", ICON_FOLDER_OPEN " Folder", ICON_REPORT "  Make report" })
+	float scopeW = px(210);
+	actionsW += scopeW + ImGui::GetStyle().ItemSpacing.x;
+	for (const char* l : { ICON_FILE_CSV " Open CSV", ICON_FILM " Highlights", ICON_FOLDER_OPEN " Folder", ICON_REPORT "  Make report" })
 		actionsW += buttonWidth(l) + ImGui::GetStyle().ItemSpacing.x;
 	segmented("rfilter", &resultsFilter_, filters, 4, std::clamp(avail - actionsW, px(300), px(440)));
 	ImGui::SameLine(0, px(16));
 	ImGui::SetNextItemWidth(px(180));
 	ImGui::InputTextWithHint("##search", ICON_SEARCH "  min speed or source", searchBuf_, sizeof searchBuf_);
 	ImGui::SameLine(0, px(16));
-	if (ghostButton(ICON_CLOCK " This session")) showSessionResults();
+	// Where the rows come from: this session, all saved runs, or one saved run (the newest dozen, by name and time).
+	// The menu is read when it opens, so a run that just ended is in it.
+	std::string scopeText = rowsScope == ResultsScope::Saved ? ICON_CLOCK "  All saved runs"
+		: rowsScope == ResultsScope::File ? std::string(ICON_FILE_CSV "  ") + fs::path(rowsFrom).filename().string() : ICON_BOLT "  This session";
+	ImGui::SetNextItemWidth(scopeW);
+	if (ImGui::BeginCombo("##rscope", scopeText.c_str(), ImGuiComboFlags_HeightLarge)) {
+		int session = tracker.lastVehicleId() > 0 ? int(tracker.vehiclesSince(0).size()) : 0;
+		std::string label = "This session  (" + std::to_string(session) + " vehicles)";
+		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Session)) showSessionResults();
+		std::vector<resume::SavedRun> runs = screenshotMode ? std::vector<resume::SavedRun>() : resume::savedRuns(dataDir());
+		label = "All saved runs  (" + std::to_string(runs.size()) + ")";
+		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Saved)) showSavedRuns();
+		if (!runs.empty()) ImGui::SeparatorText("One run");
+		for (size_t i = 0; i < runs.size() && i < 12; i++) {
+			ImGui::PushID(int(i));
+			if (ImGui::Selectable(resume::runLabel(runs[i].name).c_str(), rowsScope == ResultsScope::File && rowsFrom == runs[i].csv))
+				loadResultsCsv(runs[i].csv);
+			ImGui::PopID();
+		}
+		if (runs.size() > 12) ImGui::TextDisabled("Older runs: Open CSV");
+		ImGui::EndCombo();
+	}
 	ImGui::SameLine();
 	if (ghostButton(ICON_FILE_CSV " Open CSV")) {
 		auto r = pfd::open_file("Open stats csv", (fs::path(dataDir()) / "Stats").string(), { "Stats csv", "*.csv", "All files", "*" }).result();
@@ -2990,15 +3088,30 @@ void App::pageResults() {
 		if (!search.empty() && minSpeed == 0 && r.source.find(search) == std::string::npos) continue;
 		shown.push_back(&r);
 	}
-	dimText("%s  ·  %zu of %zu vehicles", rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string().c_str(), shown.size(), rows.size());
+	std::string from = rowsScope == ResultsScope::Saved ? "All saved runs  ·  " + std::to_string(rowsRuns) + (rowsRuns == 1 ? " run" : " runs")
+		: rowsScope == ResultsScope::File ? fs::path(rowsFrom).filename().string() : std::string("This session");
+	dimText("%s  ·  %zu of %zu vehicles", from.c_str(), shown.size(), rows.size());
 
 	if (rows.empty()) {
 		ImGui::Dummy(ImVec2(0, px(40)));
-		beginCard("noresults", ICON_CHART, "Nothing here yet", ImVec2(avail, 0));
-		dimText("Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
-			"Or use Open CSV to look at the results of an earlier run.");
-		if (source.empty() && batch.empty()) { if (primaryButton(ICON_VIDEO "  Choose a source")) page = Page::Source; }
-		else if (primaryButton(ICON_PLAY "  Start tracking")) startTracking();
+		// This session is empty but earlier runs are saved: say so first, so it never reads as lost data.
+		size_t saved = rowsScope == ResultsScope::Saved || screenshotMode ? 0 : resume::savedRuns(dataDir()).size();
+		beginCard("noresults", ICON_CHART, saved ? "Nothing measured this session yet" : "Nothing here yet", ImVec2(avail, 0));
+		if (saved) {
+			dimText("Your earlier results are safe: %zu saved %s in the data folder. Every run is kept from one launch to the next.",
+				saved, saved == 1 ? "run" : "runs");
+			std::string show = std::string(ICON_CLOCK "  Show all saved runs (") + std::to_string(saved) + ")";
+			if (primaryButton(show.c_str())) showSavedRuns();
+			ImGui::SameLine();
+		}
+		else
+			dimText(rowsScope == ResultsScope::Saved
+				? "No saved runs yet. Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction "
+				  "and a snapshot, and stays here the next time you open VST Studio."
+				: "Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
+				  "Or use Open CSV to look at the results of an earlier run.");
+		if (source.empty() && batch.empty()) { if ((saved ? ghostButton(ICON_VIDEO "  Choose a source") : primaryButton(ICON_VIDEO "  Choose a source"))) page = Page::Source; }
+		else if (saved ? ghostButton(ICON_PLAY "  Start tracking") : primaryButton(ICON_PLAY "  Start tracking")) startTracking();
 		endCard();
 		return;
 	}
@@ -3019,7 +3132,7 @@ void App::pageResults() {
 	int p85 = report::percentile(speeds, 85);   // nearest rank, the same definition as the street report and the phone
 	float tw = (avail - px(48)) / 5, th = px(100);
 	char sub[64];
-	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
+	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsScope == ResultsScope::Session ? "this session" : rowsScope == ResultsScope::Saved ? "in all saved runs" : "in this file", c::accent, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
 	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / rows.size()), prefs.speedLimit);
 	statTile(ICON_GAUGE, "Speeding", std::to_string(over), sub, c::warn, ImVec2(tw, th));
