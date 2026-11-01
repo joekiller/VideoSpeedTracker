@@ -239,6 +239,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       frames, startFrame: frame - frames - 30, endFrame: frame - 30, fps: 30,
       snapshot: `/api/vehicles/${id}/snapshot.jpg`,
       clip: withClip ? `/api/vehicles/${id}/clip.mp4` : null,
+      belowMin: false,   // the demo's passes are all at or over minLoggedSpeed
     };
   }
 

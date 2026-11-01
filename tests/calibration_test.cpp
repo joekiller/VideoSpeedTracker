@@ -10,6 +10,7 @@
 #include "Calibration.h"
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 static int failures = 0, checks = 0;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } } while (0)
@@ -45,6 +46,26 @@ int main() {
 
 	// Every model in the picker has a name and a car-sized length (13-21 ft).
 	for (const calib::KnownCar& k : calib::kKnownCars) CHECK(k.inches >= 156 && k.inches <= 252 && k.name[0]);
+
+	// Drive-by target: the presets plus a limit that isn't one of them, in order; the default follows the limit
+	// until the user picks one; the check suggestion differs from the calibration and stays in range.
+	CHECK((calib::targetPresets(25) == std::vector<int>{ 10, 15, 20, 25 }));
+	CHECK((calib::targetPresets(15) == std::vector<int>{ 10, 15, 20, 25 }));
+	CHECK((calib::targetPresets(30) == std::vector<int>{ 10, 15, 20, 25, 30 }));
+	CHECK((calib::targetPresets(12) == std::vector<int>{ 10, 12, 15, 20, 25 }));
+	CHECK((calib::targetPresets(0) == std::vector<int>{ 10, 15, 20, 25 }));
+	CHECK(calib::defaultTarget(0, 15) == 15);
+	CHECK(calib::defaultTarget(20, 15) == 20);
+	CHECK(calib::defaultTarget(0, 0) == 25);
+	CHECK(calib::defaultTarget(200, 15) == calib::kTargetMax);
+	CHECK(calib::checkTarget(15) == 20);
+	CHECK(calib::checkTarget(10) == 15);
+	CHECK(calib::checkTarget(25) == 20);
+	CHECK(calib::checkTarget(5) == 10);
+	CHECK(calib::belowCruiseControl(15) && !calib::belowCruiseControl(25));
+	// A slower drive-by measures the same zone: the 30 ft zone above takes a 15 mph car 25/15 as many frames, and the
+	// cones' CalibrationFrames is the same whatever CalibrationSpeed the config is expressed in, once scaled back.
+	CHECK(approx(calib::framesForDistance(200, 10, 600, 15, 30), cones * 25 / 15, 1e-9));
 
 	std::printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

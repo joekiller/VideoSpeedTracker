@@ -196,8 +196,15 @@ car and give 47 ft between the lines; the sample's own calibration drive works o
 VST counts frames rather than measuring distance, so it needs one pass at a known speed, or a measured distance it
 can turn into one: cones a taped distance apart, or a car whose length you know.
 
-- **Drive-through:** run tracking, drive past on cruise control, pick your pass from the list and enter the
-  speed you drove. From the Results page, **This was me** on a selected vehicle does the same.
+- **Drive-through:** pick a target speed (chips for 10, 15, 20 and 25 mph and your posted limit, which is the
+  default; type any other speed under **I drove at**), run tracking, drive past at that speed, pick your pass from
+  the list and enter the speed you drove. Any steady speed calibrates equally well, and a slow pass is counted in more
+  frames (each one-frame miss is a smaller share), so there's no need to drive faster than your street is comfortable
+  with. Passes slower than **Slowest logged** (18 mph by default) aren't written to the csv or Results, but they are
+  listed here, marked "slow", so a 10 or 15 mph drive can still be picked. Most cruise control won't hold under
+  25 mph; hold it steady by eye, or let VST Ride-along read the speed (below). **Check it with a second drive**
+  suggests a speed 5 mph away from the first. From the Results page, **This was me** on a selected vehicle does the
+  same.
 - **Count frames:** step through a calibration video (←/→, Shift for 10 frames, Space to play), mark the frame
   where the front bumper touches each line, and enter the speed.
 - **Cones or pole:** no car needed. Chalk two spots a taped distance apart along the lane (10 ft or more), stand
@@ -255,7 +262,8 @@ You can drive past at any steady speed and let a recording supply the speed, ins
 - **A Tesla's dashcam.** Teslas on software 2025.44.25 or later (HW3 and newer) record the car's speed in every
   dashcam frame. Use the `-front.mp4` clip for that minute from the USB drive's `TeslaCam` folder.
 - **Any phone, with VST Ride-along.** Open [joekiller.github.io/VideoSpeedTracker](https://joekiller.github.io/VideoSpeedTracker/)
-  on the phone (add it to the home screen and it works with no signal), tap **Start recording** before you set off,
+  on the phone (add it to the home screen and it works with no signal), pick your target speed (it shows on target,
+  too fast or too slow while you drive), tap **Start recording** before you set off,
   drive past, then **Stop** and save the `.csv` to the computer. It records the phone's GPS position and speed, which
   is good to about half a mph at a steady speed. It sends nothing anywhere.
 

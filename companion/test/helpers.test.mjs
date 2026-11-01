@@ -278,3 +278,27 @@ describe('map.js reads OpenStreetMap tags', async () => {
     assert.equal(map.nearestStreet(ways, 38.01, -78.01), null, 'nothing within 30 m');
   });
 });
+
+describe('plan.js drive-by target matches src/Gui/Calibration.h', () => {
+  it('offers 10-25 plus a limit that is none of them, in order', () => {
+    assert.deepEqual(plan.targetPresets(25), [10, 15, 20, 25]);
+    assert.deepEqual(plan.targetPresets(15), [10, 15, 20, 25]);
+    assert.deepEqual(plan.targetPresets(30), [10, 15, 20, 25, 30]);
+    assert.deepEqual(plan.targetPresets(12), [10, 12, 15, 20, 25]);
+    assert.deepEqual(plan.targetPresets(0), [10, 15, 20, 25]);
+  });
+  it('starts from the saved choice, else the posted limit', () => {
+    assert.equal(plan.defaultTarget(0, 15), 15);
+    assert.equal(plan.defaultTarget(undefined, 15), 15);
+    assert.equal(plan.defaultTarget(20, 15), 20);
+    assert.equal(plan.defaultTarget(0, 0), 25);
+    assert.equal(plan.defaultTarget(200, 15), plan.TARGET_MAX);
+  });
+  it('suggests a different speed for the check drive', () => {
+    assert.equal(plan.checkTarget(15), 20);
+    assert.equal(plan.checkTarget(10), 15);
+    assert.equal(plan.checkTarget(25), 20);
+    assert.equal(plan.checkTarget(5), 10);
+    assert.ok(plan.belowCruiseControl(15) && !plan.belowCruiseControl(25));
+  });
+});

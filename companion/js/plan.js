@@ -149,3 +149,24 @@ export function fromMap(m) {
   const speedLimit = m.maxspeedMph >= 5 && m.maxspeedMph <= 80 ? m.maxspeedMph : 0;
   return { distFt: distM * FT, facing: compass8(facing), facingDeg: facing, l2rDeg, l2r, r2l, legal, speedLimit };
 }
+
+// ---- the drive-by's target speed (src/Gui/Calibration.h targetPresets / defaultTarget / checkTarget) ----------------
+// Any steady speed calibrates equally well (speeds scale by speed × frames), and a slower one gives more frames to
+// count. The default is the posted limit; the chips are 10, 15, 20, 25 plus the limit when it isn't one of them.
+
+export const TARGET_PRESETS = [10, 15, 20, 25];
+export const TARGET_MIN = 5, TARGET_MAX = 80;
+const clampMph = (v) => Math.min(TARGET_MAX, Math.max(TARGET_MIN, v));
+
+/** The chips to offer, in order: the presets plus the posted limit when it's none of them. */
+export function targetPresets(speedLimit) {
+  const out = [...TARGET_PRESETS];
+  if (speedLimit >= TARGET_MIN && speedLimit <= TARGET_MAX && !out.includes(speedLimit)) out.push(speedLimit);
+  return out.sort((a, b) => a - b);
+}
+/** The target to start from: the one picked last time (`saved`, 0/undefined for never), else the posted limit. */
+export const defaultTarget = (saved, speedLimit) => clampMph(saved > 0 ? saved : speedLimit > 0 ? speedLimit : 25);
+/** A different speed for the check drive: 5 mph faster, or 5 slower from 20 up so it stays near a quiet street's limit. */
+export const checkTarget = (calibratedAt) => clampMph(calibratedAt >= 20 ? calibratedAt - 5 : calibratedAt + 5);
+/** Many cars' cruise control won't engage below about 20-25 mph. */
+export const belowCruiseControl = (mph) => mph < 25;

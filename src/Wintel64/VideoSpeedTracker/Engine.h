@@ -53,6 +53,13 @@ struct AttemptEvent {
 	bool timed;                      // true: timed but under minLoggedSpeed; false: no usable speed
 	int speed;                       // the speed when timed, else 0
 	int frame;                       // frame number when the tracker let it go
+	// When timed, the same measurement a VehicleEvent carries, so a host can still calibrate from a slow pass (a
+	// calibration drive at 10 or 15 mph on a quiet street is timed but under the default minLoggedSpeed of 18).
+	// Zero and "" when untimed.
+	int startFrame = 0, endFrame = 0;   // frames at the two speed lines
+	int startPixel = 0, endPixel = 0;   // front bumper x at the two speed lines, analysis-box coordinates
+	std::string timestamp;              // as VehicleEvent::timestamp
+	std::string compass;                // as VehicleEvent::compass
 };
 
 // A live source (camera or stream) stopped delivering frames and is being reopened, or has come back.  Files never

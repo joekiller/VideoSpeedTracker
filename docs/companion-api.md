@@ -112,10 +112,12 @@ How an unattended run is holding up (see "Leaving it running" in [vst-studio.md]
   true after three `moved` checks in a row, about 6 minutes. `dx`/`dy` are in 1280x720 frame pixels.
 * `/api/status` carries a summary of this as `health: {"camera", "cameraWarning", "lowDisk"}`.
 
-### `GET /api/vehicles?since=<id>&from=<iso>&to=<iso>&limit=<n>`
+### `GET /api/vehicles?since=<id>&from=<iso>&to=<iso>&limit=<n>&passes=1`
 
 Logged passes, newest first. All parameters are optional: `since` returns only ids greater than it,
-`from`/`to` bound `time`, `limit` defaults to 100 and may go up to 5000.
+`from`/`to` bound `time`, `limit` defaults to 100 and may go up to 5000. `passes=1` also lists this session's
+passes timed under `minLoggedSpeed` (`belowMin: true`), for picking a calibration pass: a calibration drive on a
+quiet street can be 10 or 15 mph. Logged and slow passes share one id sequence.
 
 ```json
 [
@@ -137,7 +139,8 @@ Logged passes, newest first. All parameters are optional: `since` returns only i
     "endFrame": 6224,
     "fps": 30,
     "snapshot": "/api/vehicles/1042/snapshot.jpg",
-    "clip": "/api/vehicles/1042/clip.mp4"
+    "clip": "/api/vehicles/1042/clip.mp4",
+    "belowMin": false
   }
 ]
 ```
@@ -147,7 +150,10 @@ Logged passes, newest first. All parameters are optional: `since` returns only i
 * `speeding` is `speed > speedLimit`; `egregious` is `speed >= egregious`.
 * `frames` is the number of frames the vehicle took to cross the speed zone, measured at `fps`.
 * `clip` is a short (2-4 s) mp4 of the analysis-box strip from entry to exit, or `null` when none is
-  kept (for example after a restart). `snapshot` is always present.
+  kept (for example after a restart). `snapshot` is present for every logged pass.
+* `belowMin` is true for a pass timed under `minLoggedSpeed` (only with `passes=1`, or the `pass` event). It is in
+  neither the csv nor the counts, has `snapshot` and `clip` `null`, and `speeding`/`egregious`/`wrongWay` false.
+  `POST /api/calibration/apply` and `/check` take its id like any other.
 
 ### `GET /api/vehicles/<id>`
 
@@ -184,6 +190,7 @@ The live view as `multipart/x-mixed-replace` JPEG frames (about 10 fps is plenty
 |---|---|---|
 | `status` | same body as `/api/status` | about once a second |
 | `vehicle` | one `/api/vehicles` item | each time a pass is logged |
+| `pass` | one `/api/vehicles?passes=1` item with `belowMin: true` | each time a pass is timed under `minLoggedSpeed` (a slow calibration drive) |
 | `tracks` | `[{"id", "dir", "x", "y", "w", "h", "speed"}]` | optional, ~5/s, vehicles currently being tracked (frame coords; `speed` 0 until known) |
 | `config` | same body as `GET /api/config` | when the stream opens, then within about a second of any config change, from any client (the desktop included) |
 
@@ -191,7 +198,7 @@ Between events VST also sends an SSE comment (`:`) about every 200 ms, which Eve
 VST notice a closed tab within a fraction of a second and give its stream slot back.
 
 Without `/api/live` the companion falls back to polling `/api/status` every 2 s and
-`/api/vehicles?since=` every 5 s.
+`/api/vehicles?since=&passes=1` every 5 s.
 
 ### `GET /api/config`, `PUT /api/config`
 

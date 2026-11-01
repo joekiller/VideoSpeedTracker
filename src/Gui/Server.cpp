@@ -100,8 +100,9 @@ json vehicleJson(const Vehicle& v) {
 		{ "speed", v.ev.speed }, { "speeding", v.speeding }, { "egregious", v.egregious },
 		{ "area", v.ev.area }, { "large", v.large }, { "frames", v.frames() },
 		{ "startFrame", v.ev.startFrame }, { "endFrame", v.ev.endFrame }, { "fps", v.fps },
-		{ "snapshot", "/api/vehicles/" + std::to_string(v.id) + "/snapshot.jpg" },
+		{ "snapshot", v.belowMin ? json(nullptr) : json("/api/vehicles/" + std::to_string(v.id) + "/snapshot.jpg") },
 		{ "clip", v.clipPath.empty() ? json(nullptr) : json("/api/vehicles/" + std::to_string(v.id) + "/clip.mp4") },
+		{ "belowMin", v.belowMin },
 	};
 }
 
@@ -537,7 +538,9 @@ void Server::routes() {
 		int since = req.has_param("since") ? std::atoi(req.get_param_value("since").c_str()) : 0;
 		size_t limit = req.has_param("limit") ? std::clamp(std::atoi(req.get_param_value("limit").c_str()), 1, 5000) : 100;
 		std::string from = req.has_param("from") ? req.get_param_value("from") : "", to = req.has_param("to") ? req.get_param_value("to") : "";
-		auto vs = app.tracker.vehiclesSince(since);
+		// passes=1 adds the slow passes (timed under minLoggedSpeed, `belowMin`), for picking a calibration pass.
+		bool passes = req.has_param("passes") && req.get_param_value("passes") == "1";
+		auto vs = passes ? app.tracker.passesSince(since) : app.tracker.vehiclesSince(since);
 		json out = json::array();
 		// Newest first; ISO local timestamps compare correctly as strings.
 		for (auto it = vs.rbegin(); it != vs.rend() && out.size() < limit; ++it) {
@@ -624,11 +627,13 @@ void Server::routes() {
 		if (!slot) return;
 		struct LiveState {
 			int lastVehicle = 0;    // newest vehicle id already sent
+			int lastPass = 0;       // newest slow pass id already sent (the `pass` event)
 			int tick = 0;           // provider calls so far; every 5th (~1 s) sends status and checks the config
 			std::string config;     // the config JSON last sent, "" before the first
 		};
 		auto state = std::make_shared<LiveState>();
 		state->lastVehicle = req.has_param("since") ? std::atoi(req.get_param_value("since").c_str()) : app.tracker.lastVehicleId();
+		state->lastPass = req.has_param("since") ? state->lastVehicle : app.tracker.lastPassId();
 		std::string token = presented(req);
 		res.set_chunked_content_provider("text/event-stream", [this, &app, state, token, slot](size_t, httplib::DataSink& sink) {
 			if (!tokenMatches(token)) return false;   // the pairing code was reset: this phone is signed out
@@ -654,6 +659,11 @@ void Server::routes() {
 			for (const Vehicle& v : app.tracker.vehiclesSince(state->lastVehicle)) {
 				state->lastVehicle = v.id;
 				if (!send("vehicle", vehicleJson(v))) return false;
+			}
+			// A pass timed under minLoggedSpeed: not a logged vehicle, but a calibration drive at 10 or 15 mph is one.
+			for (const Vehicle& v : app.tracker.passesSince(state->lastPass)) {
+				state->lastPass = v.id;
+				if (v.belowMin && !send("pass", vehicleJson(v))) return false;
 			}
 			Tracker::Live live;
 			if (app.tracker.running() && app.tracker.latest(live, false)) {

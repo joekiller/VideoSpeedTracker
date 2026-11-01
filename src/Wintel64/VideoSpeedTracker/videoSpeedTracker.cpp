@@ -1040,11 +1040,22 @@ int loggedVehicles = 0, speeders = 0, wrongWayVehicles = 0;
 // vehicle's estSpeed is -1 until it is timed.
 // An embedding host also hears about each belowMinSpeed and untimed vehicle (Hooks::onAttempt), so it can show how many cars
 // were tried against how many got a speed; a logged one reaches it through reportVehicle() instead.
-void reportAttempt(bool leftToRight, bool timed, int estSpeed){
+// A timed one also carries its frames and bumper positions at the speed lines and its timestamp (see AttemptEvent).
+void reportAttempt(bool leftToRight, bool timed, int estSpeed, VehicleDynamics& v){
 #ifdef VST_EMBEDDED
-	if (hooks && hooks->onAttempt) hooks->onAttempt({ leftToRight, timed, timed ? estSpeed : 0, frameNumber });
+	if (hooks && hooks->onAttempt){
+		vst::AttemptEvent a{ leftToRight, timed, timed ? estSpeed : 0, frameNumber };
+		if (timed){
+			a.startFrame = v.getTrackStartFrame(); a.endFrame = v.getTrackEndFrame();
+			a.startPixel = v.getTrackStartPixel(); a.endPixel = v.getTrackEndPixel();
+			double when = vehicleTime();
+			a.timestamp = when >= 0 ? formatTime(when, false) : "";
+			a.compass = leftToRight ? g.L2RDirection : g.R2LDirection;
+		}
+		hooks->onAttempt(a);
+	}
 #else
-	(void)leftToRight; (void)timed; (void)estSpeed;
+	(void)leftToRight; (void)timed; (void)estSpeed; (void)v;
 #endif
 }
 
@@ -1052,11 +1063,11 @@ bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed, bool leftToRight)
 	if (isOK && v.getTrackEndPixel() > 0){
 		if (estSpeed >= g.minLoggedSpeed){ runLogged++; return true; }
 		runBelowMinSpeed++;
-		reportAttempt(leftToRight, true, estSpeed);
+		reportAttempt(leftToRight, true, estSpeed, v);
 	}
 	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()){
 		runUntimed++;
-		reportAttempt(leftToRight, false, -1);
+		reportAttempt(leftToRight, false, -1, v);
 		if (pleaseTrace) traceFile << "<" << frameNumber << ">   UNTIMED " << (leftToRight ? "L2R" : "R2L") << " vehicle: entered the zone at frame "
 			<< v.getTrackStartFrame() << ", pixel " << v.getTrackStartPixel() << ", and was lost before timing finished" << endl;
 	}

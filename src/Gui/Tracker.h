@@ -37,6 +37,9 @@ struct Vehicle {
 	vst::VehicleEvent ev;
 	bool large = false;
 	bool speeding = false, egregious = false;
+	// Timed but slower than minLoggedSpeed, so not in the csv, Results or the counts: kept only as a calibration pass
+	// (Tracker::passesSince), since a calibration drive on a quiet street can be 10 or 15 mph.  No snapshot or clip.
+	bool belowMin = false;
 	int frames() const { return std::max(ev.endFrame - ev.startFrame, 1); }
 	// When it passed, as Results, the csv and the phone show it: the clock for a live source, the recording's own time for
 	// a video ("" when the recording's start time isn't known).  `time` alone is when this computer logged it, which for
@@ -102,8 +105,12 @@ public:
 
 	// Vehicles are kept for the whole session (newest last), across runs, until clear().
 	std::vector<Vehicle> vehiclesSince(int afterId, size_t limit = 0);
-	bool vehicle(int id, Vehicle& out);
-	int lastVehicleId();
+	// Every timed pass, newest last: the logged vehicles and the slow ones (Vehicle::belowMin), for picking a calibration
+	// or check pass.  Logged and slow passes share one id sequence, so `afterId` works across both.
+	std::vector<Vehicle> passesSince(int afterId, size_t limit = 0);
+	bool vehicle(int id, Vehicle& out);      // a logged vehicle or a slow pass
+	int lastVehicleId();                     // newest logged vehicle's id (0 before the first)
+	int lastPassId();                        // newest id of either kind
 	Counts counts();
 	void clearVehicles();
 	std::vector<std::string> logTail(size_t n);
@@ -113,6 +120,8 @@ private:
 	void worker(std::vector<Job> jobs, Options opt);
 	void onFrame(const vst::FrameInfo& f);
 	void onVehicle(const vst::VehicleEvent& e);
+	void onSlowPass(const vst::AttemptEvent& a);
+	Vehicle passFor(const vst::VehicleEvent& e);   // the fields both kinds share: when, where from, the measurement
 	void onSourceStatus(const vst::SourceStatus& s);
 	int pollKey();
 
@@ -121,6 +130,8 @@ private:
 	std::mutex mu_;
 	Live live_;
 	std::deque<Vehicle> vehicles_;
+	std::deque<Vehicle> slowPasses_;   // timed under minLoggedSpeed this session, newest last (Vehicle::belowMin)
+	int lastLoggedId_ = 0, loggedTotal_ = 0;
 	int slow_ = 0, untimed_ = 0;   // tried but not logged this session (Counts)
 	int nextId_ = 1;
 	std::vector<Job> jobs_;

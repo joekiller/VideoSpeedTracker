@@ -111,6 +111,7 @@ public:
 	// Appends a "check" row to the history and returns the comparison.
 	CalCheck checkCalibration(bool l2r, double mph, int frames, double fps);
 	void dashcamSpeed(const Vehicle* picked);   // Calibrate: fill the driven speed from a Tesla dashcam clip
+	void targetSpeedChips();                    // Calibrate: the drive-by target speed (10/15/20/25, the limit)
 	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
 	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
 	// was made against) and the check pass imply; recorded as an apply.
@@ -332,7 +333,8 @@ private:
 	int calibMode_ = 0;
 	int calibDir_ = 0;
 	int calibPickId_ = 0;
-	int calibSpeed_ = 25;
+	int calibSpeed_ = 25;               // the drive-by's target, then "I drove at" (whole mph; dashMph_ has the decimal)
+	bool calibSpeedSet_ = false;        // false: calibSpeed_ follows the saved target or the posted limit (calib::defaultTarget)
 	bool calibChecking_ = false;        // the Calibrate page's pass picker is choosing a check pass, not a calibration
 	int calibAppliedId_ = 0;            // the session vehicle the latest calibration came from (not a fair check)
 	std::vector<dashcam::Clip> dashClips_;   // Tesla dashcam clips loaded on the Calibrate page

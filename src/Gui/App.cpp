@@ -323,8 +323,14 @@ void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
 		recordCalibration(e);
 		if (lastCheck_.l2r == dir) lastCheck_ = CalCheck();
 	}
+	// The value is stored against CalibrationSpeed, which needn't be the speed driven: say both, so a 15 mph drive
+	// that reads "19 frames at 25 mph" doesn't look like a mistake.
+	char mphText[16];
+	snprintf(mphText, sizeof mphText, "%g", std::round(mph * 10) / 10);
+	std::string stored = std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed)) + " mph";
 	toast(std::string("Calibrated ") + (oneWay ? "the lane (both directions)" : l2r ? "left → right" : "right → left") + ": "
-		+ std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
+		+ (std::fabs(mph - g.CalibrationSpeed) < .05 ? stored : "your " + std::string(mphText) + " mph pass of " + std::to_string(frames)
+			+ " frames, stored as " + stored), c::ok, ICON_CHECK_CIRCLE);
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 }
 
@@ -1857,11 +1863,38 @@ void App::zoneInspector() {
 // Calibrate
 // ======================================================================================================
 
-// Speed you drove, as an exact whole number with -/+ steps (a slider can't land on 27 reliably).
-static void speedStepper(const char* id, int* mph) {
+// Speed you drove, as an exact whole number with -/+ steps (a slider can't land on 27 reliably).  True when edited.
+static bool speedStepper(const char* id, int* mph) {
 	ImGui::SetNextItemWidth(-FLT_MIN);
-	ImGui::InputInt(id, mph, 1, 5);
-	*mph = std::clamp(*mph, 5, 80);
+	bool changed = ImGui::InputInt(id, mph, 1, 5);
+	*mph = std::clamp(*mph, calib::kTargetMin, calib::kTargetMax);
+	return changed;
+}
+
+// The drive-by's target speed as chips (calib::targetPresets: 10, 15, 20, 25 and the posted limit), above the steps'
+// pass list so it's chosen before the drive.  Until the user touches it the target follows the saved choice or the
+// posted limit; a chip is remembered (prefs.calibTarget) for next time.  Any other speed goes in the "I drove at"
+// stepper below, which is the same value: the chips are shortcuts for it.
+void App::targetSpeedChips() {
+	if (!calibSpeedSet_) calibSpeed_ = calib::defaultTarget(prefs.calibTarget, prefs.speedLimit);
+	std::vector<int> presets = calib::targetPresets(prefs.speedLimit);
+	std::vector<std::string> text;
+	for (int mph : presets) text.push_back(std::to_string(mph) + (mph == prefs.speedLimit ? " (limit)" : ""));
+	std::vector<const char*> labels;
+	for (const std::string& t : text) labels.push_back(t.c_str());
+	int sel = int(std::find(presets.begin(), presets.end(), calibSpeed_) - presets.begin());
+	if (sel == int(presets.size())) sel = -1;   // a custom or dashcam-read speed: no chip lit
+	formLabel("Target (mph)", px(130));
+	if (segmented("target", &sel, labels.data(), int(labels.size()))) {
+		calibSpeed_ = presets[size_t(sel)];
+		calibSpeedSet_ = true;
+		prefs.calibTarget = calibSpeed_;
+		prefs.save();
+		dashFor_ = 0;   // a dashcam reading no longer stands for "I drove at"
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Any steady speed calibrates equally well, so drive at whatever is comfortable on your street.\n"
+			"The posted limit is a good choice. For another speed, type it under \"I drove at\".");
 }
 
 double App::drivenMph(int vehicleId) const {
@@ -1939,6 +1972,7 @@ void App::dashcamSpeed(const Vehicle* picked) {
 			dashFor_ = picked->id;
 			dashMph_ = std::round(j.mph * 10) / 10;
 			calibSpeed_ = int(std::lround(dashMph_));
+			calibSpeedSet_ = true;
 		}
 		if (j.agree) {
 			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
@@ -2180,6 +2214,9 @@ void App::pageCalibrate() {
 		else if (ghostButton(ICON_BULLSEYE "  Check it with a second drive", ImVec2(-FLT_MIN, 0))) {
 			calibChecking_ = true;
 			calibPickId_ = 0;   // a check needs a new pass, not the one just used
+			calibSpeed_ = calib::checkTarget(calibSpeed_);   // suggest another speed; the user can pick any
+			calibSpeedSet_ = true;
+			dashFor_ = 0;
 		}
 	};
 	// A pass can be checked once its direction has a calibration, and never against the pass that calibration was
@@ -2207,17 +2244,29 @@ void App::pageCalibrate() {
 
 	if (calibMode_ == 0) {
 		beginCard("drive", calibChecking_ ? ICON_BULLSEYE : ICON_CAR, calibChecking_ ? "Check it with a second drive" : "Drive through at a known speed");
+		// The steps name the target speed, so they read as instructions for this street rather than an example.
+		targetSpeedChips();
+		char stepText[320];
 		if (calibChecking_) {
-			stepLine(1, "Drive past again on cruise control, ideally at a different speed from your first pass.");
+			snprintf(stepText, sizeof stepText, "Drive past again at a steady %d mph. A different speed from your first pass tests more.", calibSpeed_);
+			stepLine(1, stepText);
 			stepLine(2, "Pick that pass and enter the speed you drove. Within ±2 mph is verified.");
 		}
 		else {
 			stepLine(1, "Start tracking (live, or record a video). Your street should already be marked (step 4).");
-			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph, or at any steady speed while a Tesla dashcam or VST Ride-along on your phone records. Once each way on a two-way street.");
+			snprintf(stepText, sizeof stepText, "Drive past at a steady %d mph, or at any steady speed while a Tesla dashcam or VST Ride-along on your "
+				"phone records it. %s", calibSpeed_, g.LegalDirection == "Both" ? "Once each way." : "The legal way is enough.");
+			stepLine(2, stepText);
 			stepLine(3, "Pick your pass below, enter the speed you drove (or read it from those recordings), and apply.");
 		}
+		if (calib::belowCruiseControl(calibSpeed_)) {
+			ImGui::PushTextWrapPos(0);
+			dimText(ICON_INFO "  Most cruise control won't hold under 25 mph. Hold it steady by eye on the speedometer, "
+				"or let VST Ride-along on your phone read the speed for you afterwards.");
+			ImGui::PopTextWrapPos();
+		}
 		ImGui::Dummy(ImVec2(0, px(2)));
-		auto vs = tracker.vehiclesSince(0);
+		auto vs = tracker.passesSince(0);
 		if (vs.empty()) dimText("No vehicles measured yet this session. Run tracking first, then come back here.");
 		else {
 			// Five rows while checking (the newest passes are the likely ones), so the Current calibration card with
@@ -2225,17 +2274,20 @@ void App::pageCalibrate() {
 			ImGui::BeginChild("picklist", ImVec2(0, calibChecking_ ? ImGui::GetTextLineHeightWithSpacing() * 5 + ImGui::GetStyle().FramePadding.y * 2 : px(240)), ImGuiChildFlags_FrameStyle);
 			for (auto it = vs.rbegin(); it != vs.rend(); ++it) {
 				ImGui::PushID(it->id);
-				char label[180];
-				snprintf(label, sizeof label, "%s   %d frames   measured %d mph   %s%s",
-					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
-					it->id == calibAppliedId_ ? "   calibrated from" : "");
+				char label[200];
+				snprintf(label, sizeof label, "%s  %d frames  measured %d mph%s  %s%s",
+					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->belowMin ? " · slow" : "",
+					it->time.substr(11).c_str(), it->id == calibAppliedId_ ? "  · used" : "");
 				if (ImGui::Selectable(label, calibPickId_ == it->id)) calibPickId_ = it->id;
+				if (it->belowMin && ImGui::IsItemHovered())
+					ImGui::SetTooltip("Slower than Slowest logged (%d mph), so it isn't in the csv or Results,\n"
+						"but it calibrates as well as any other pass.", g.minLoggedSpeed);
 				ImGui::PopID();
 			}
 			ImGui::EndChild();
 		}
 		formLabel("I drove at (mph)", px(130));
-		speedStepper("##spd", &calibSpeed_);
+		if (speedStepper("##spd", &calibSpeed_)) { calibSpeedSet_ = true; dashFor_ = 0; }
 		Vehicle picked;
 		bool have = calibPickId_ > 0 && tracker.vehicle(calibPickId_, picked);
 		dashcamSpeed(have ? &picked : nullptr);
@@ -2501,8 +2553,9 @@ void App::pageCalibrate() {
 			ImGui::Text("%d frames", frames);
 			ImGui::PopFont();
 		}
+		if (!calibSpeedSet_) calibSpeed_ = calib::defaultTarget(prefs.calibTarget, prefs.speedLimit);
 		formLabel("I drove at (mph)", px(130));
-		speedStepper("##spd2", &calibSpeed_);
+		if (speedStepper("##spd2", &calibSpeed_)) calibSpeedSet_ = true;
 		if (calibChecking_) {
 			const char* why = whyNoCheck(calibDir_ == 0, 0);
 			ImGui::BeginDisabled(!frames || why);
