@@ -31,7 +31,7 @@ struct Vehicle {
 	std::string time;           // ISO 8601, local wall clock when logged
 	std::string video;          // display name of the source
 	std::string videoPath;
-	std::string statsPath;      // the run's stats csv (Job::statsPath): with ev.frame, which csv row it is
+	std::string statsPath;      // the run's stats csv (Job::statsPath): with ev.frame, which csv row it is; Archive takes these files
 	double fps = 30;
 	bool live = false;          // from a camera or stream (time is when it passed) rather than a recording
 	std::string recorded;       // ISO time it passed in a recording, when the engine knows when the recording started
@@ -48,7 +48,6 @@ struct Vehicle {
 	const std::string& passed() const { return live ? time : recorded; }
 	cv::Mat snapshot;           // BGR crop around the vehicle at the end speed line
 	std::string clipPath;       // short mp4 of the analysis box, empty if none
-	std::string statsPath;      // the stats csv of the run that logged it (Job::statsPath), so Results can archive that run
 };
 
 // Session totals.  vehicles are the ones logged (timed, a clean track, at least minLoggedSpeed: a csv row each); the rest
