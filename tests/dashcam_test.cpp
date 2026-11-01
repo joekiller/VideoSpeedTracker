@@ -190,8 +190,8 @@ int main(int argc, char** argv) {
 	// The spot: where the car was 20 s in (steady at 25 mph).
 	double spotLat = lat0, spotLon = lon0 + east[20 * fps] / mPerDegLon, lat, lon;
 	CHECK(dashcam::positionAt(gclips, g0 + 20, lat, lon) && dashcam::distanceM(lat, lon, spotLat, spotLon) < 2);
-	std::vector<double> near = dashcam::closestApproaches(gclips, spotLat, spotLon);
-	CHECK(near.size() == 1 && std::fabs(near[0] - (g0 + 20)) < .15);
+	std::vector<double> passes = dashcam::closestApproaches(gclips, spotLat, spotLon);
+	CHECK(passes.size() == 1 && std::fabs(passes[0] - (g0 + 20)) < .15);
 	// The pass crossed a 0.6 s zone centred on 20 s, so VST logged it at 20.3 s, truncated to 20; but the computer's
 	// clock is 8 s behind the car's, so it logged 12.  By clock that's the acceleration; by GPS it's 25 mph steady.
 	double logged = std::floor(20.3) - 8;
@@ -212,8 +212,8 @@ int main(int argc, char** argv) {
 	dashcam::Clip back;
 	CHECK(dashcam::readClip(backPath.string(), back, err));
 	gclips.push_back(back);
-	near = dashcam::closestApproaches(gclips, spotLat, spotLon);
-	CHECK(near.size() == 2);
+	passes = dashcam::closestApproaches(gclips, spotLat, spotLon);
+	CHECK(passes.size() == 2);
 	gp = dashcam::speedAtSpot(gclips, spotLat, spotLon, g0 + 90 - 3, .6);
 	CHECK(gp.byGps && gp.steady() && std::fabs(gp.mph - 30) < .1);
 	gp = dashcam::speedAtSpot(gclips, spotLat, spotLon, g0 + 20 - 3, .6);

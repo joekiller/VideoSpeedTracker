@@ -13,30 +13,30 @@
 
 static int failures = 0, checks = 0;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } } while (0)
-static bool near(double a, double b, double tol = 1e-6) { return std::fabs(a - b) <= tol; }
+static bool approx(double a, double b, double tol = 1e-6) { return std::fabs(a - b) <= tol; }
 
 int main() {
 	// Cones: 30 ft zone at 25 mph, 30 fps.
 	double cones = calib::framesForDistance(200, 10, 600, 25, 30);
-	CHECK(near(cones, 30.0 / (25 * 5280.0 / 3600.0) * 30));
-	CHECK(near(cones, 24.545454, 1e-5));
+	CHECK(approx(cones, 30.0 / (25 * 5280.0 / 3600.0) * 30));
+	CHECK(approx(cones, 24.545454, 1e-5));
 	CHECK(calib::framesForDistance(0, 10, 600, 25, 30) == 0);
 	CHECK(calib::framesForDistance(200, 0, 600, 25, 30) == 0);
 
 	// Pinhole camera: focal length 1000 px, lane 30 ft away, car 16 ft long, parked 7 ft beyond the lane.
 	const double f = 1000, laneFt = 30, farther = 7, carFt = 16;
 	double inLanePx = f * carFt / laneFt, parkedPx = f * carFt / (laneFt + farther);
-	CHECK(near(calib::markPxAtLane(parkedPx, laneFt, farther), inLanePx, 1e-9));
+	CHECK(approx(calib::markPxAtLane(parkedPx, laneFt, farther), inLanePx, 1e-9));
 	// The zone between the speed lines, 600 px at the lane's depth, is f-scaled: 600 × 30 / 1000 = 18 ft.
 	double zonePx = 600, zoneFt = zonePx * laneFt / f;
 	double truth = zoneFt / (25 * 5280.0 / 3600.0) * 30;
 	double corrected = calib::framesForDistance(calib::markPxAtLane(parkedPx, laneFt, farther), carFt, zonePx, 25, 30);
 	double moving = calib::framesForDistance(inLanePx, carFt, zonePx, 25, 30);
-	CHECK(near(corrected, truth, 1e-9));
-	CHECK(near(moving, truth, 1e-9));
+	CHECK(approx(corrected, truth, 1e-9));
+	CHECK(approx(moving, truth, 1e-9));
 	// Uncorrected, the parked car makes the zone look longer, so the calibration (and every speed) reads high by 37/30.
 	double raw = calib::framesForDistance(parkedPx, carFt, zonePx, 25, 30);
-	CHECK(near(raw / truth, (laneFt + farther) / laneFt, 1e-9));
+	CHECK(approx(raw / truth, (laneFt + farther) / laneFt, 1e-9));
 
 	// No correction when nothing is known or the car is in the lane.
 	CHECK(calib::markPxAtLane(250, 30, 0) == 250);

@@ -89,6 +89,7 @@ public:
 	bool openSource(const std::string& path);
 	// Closes the preview and forgets the source (and any batch), so nothing is connected: the Disconnect buttons.
 	void disconnectSource();
+	void rememberSource(const std::string& path);
 	void addToBatch(const std::vector<std::string>& paths);
 	void startTracking();
 	void stopTracking();
@@ -303,6 +304,9 @@ private:
 	double autosaveAt_ = 0;             // when the pending autosave fires (0 = nothing pending)
 	double savedAt_ = 0;                // last successful autosave, for the rail's "saved" note
 	std::string sampleCache_;
+	// A camera or stream still connecting in the background: it joins Recent (and is reopened next launch) only once it
+	// opens, so an address that never answered doesn't come back as a recent source.  "" = nothing pending.
+	std::string pendingRecent_;
 	char urlBuf_[512] = "rtsp://";
 	int cameraIndex_ = 0;
 	// Raspberry Pi cameras (PiCamera.h).  `rpicam-vid --list-cameras` takes a moment, so init() starts it in the

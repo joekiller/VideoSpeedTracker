@@ -226,6 +226,9 @@ static bool colouredButton(const char* label, ImVec2 size, ImU32 base, ImU32 tex
 }
 
 bool primaryButton(const char* label, ImVec2 size, ImU32 color) { return colouredButton(label, size, color, c::rgb(0xFFFFFF), false); }
+float buttonWidth(const char* label) {
+	return fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, label, ImGui::FindRenderedTextEnd(label)).x + px(14) * 2;
+}
 bool ghostButton(const char* label, ImVec2 size) { return colouredButton(label, size, c::bg2, c::text, true); }
 
 bool iconButton(const char* icon, const char* tooltip, bool active, float size) {

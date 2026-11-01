@@ -137,7 +137,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 			job.state = Job::Running;
 			jobs_[i] = job;
 			progress_.job = int(i);
-			progress_.label = displayName(job.input);
+			progress_.label = friendlySourceName(job.input);   // "Sample video (Locust Ave, 2016)" like the header chip
 			progress_.frame = opt.startFrame;
 			progress_.totalFrames = total;
 			progress_.videoFps = fps_;

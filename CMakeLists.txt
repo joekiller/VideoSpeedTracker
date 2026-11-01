@@ -12,6 +12,16 @@ endif()
 if(MSVC)
   add_compile_options(/MP /utf-8)
 endif()
+# windows.h's min/max macros break std::min/std::max in any file that includes it; VST Studio already set this, now
+# every target does (tests/portability_check.py assumes it).
+if(WIN32)
+  add_compile_definitions(NOMINMAX)
+endif()
+# compile_commands.json for tests/portability_check.py (Makefile and Ninja generators; others ignore it).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Warnings as errors in our own code (not fetched dependencies) on GCC and Clang. The PR check turns it on, so a new
+# warning fails the pull request instead of piling up in release logs on main.
+option(VST_WERROR "Treat compiler warnings in VST's own sources as errors (GCC/Clang)" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -294,6 +304,24 @@ if(NOT WIN32)
     COMMAND bash ${CMAKE_SOURCE_DIR}/tests/api_smoke.sh "${VST_STUDIO_EXE}" ${CMAKE_SOURCE_DIR}
       ${CMAKE_BINARY_DIR}/api-smoke ${CMAKE_COMMAND})
   set_tests_properties(companion_api_smoke PROPERTIES SKIP_REGULAR_EXPRESSION "API_SMOKE_SKIPPED" TIMEOUT 300)
+endif()
+
+# Linux and macOS PRs never compile the Windows or OpenCV 5 builds; this compiles every source again, syntax only, with
+# windows.h's macros defined (tests/portability_check.py, about 10 s).  The PR check also runs it against OpenCV 5.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND NOT MSVC)
+  add_test(NAME portability_windows_macros
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/portability_check.py ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
+  set_tests_properties(portability_windows_macros PROPERTIES SKIP_REGULAR_EXPRESSION "PORTABILITY_CHECK_SKIPPED")
+endif()
+
+if(VST_WERROR AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_engine vst_report VSTStudio level_test frame_input_test
+      perspective_test report_test health_test plan_test dashcam_test calibration_test engine_reconnect_test)
+    if(TARGET ${t})
+      target_compile_options(${t} PRIVATE -Werror)
+    endif()
+  endforeach()
 endif()
 
 set(CPACK_PACKAGE_NAME videospeedtracker)

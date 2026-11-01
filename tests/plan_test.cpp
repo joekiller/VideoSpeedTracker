@@ -17,7 +17,7 @@ using namespace plan;
 
 static int failures = 0, checks = 0;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } } while (0)
-static bool near(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
+static bool approx(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
 
 static void testPresets() {
 	CHECK(kStreetPresetCount >= 3);
@@ -55,10 +55,10 @@ static void testFromCalibration() {
 	// Zone = 25 mph = 36.67 ft/s x 35 / 30 s = 42.78 ft over 559 px: 13.07 px/ft, so 1280 px is 97.9 ft.
 	Measured m = fromCalibration(35, 25, 30, 909 - 350, 1269, 60);
 	CHECK(m.valid);
-	CHECK(near(m.zoneFt, 42.78, .01));
-	CHECK(near(m.pxPerFt, 13.07, .01));
-	CHECK(near(m.coverFt, 97.94, .05));
-	CHECK(near(m.clearFt, (1269 - 60) / m.pxPerFt, 1e-9));
+	CHECK(approx(m.zoneFt, 42.78, .01));
+	CHECK(approx(m.pxPerFt, 13.07, .01));
+	CHECK(approx(m.coverFt, 97.94, .05));
+	CHECK(approx(m.clearFt, (1269 - 60) / m.pxPerFt, 1e-9));
 	// The clear stretch never exceeds the picture, and nonsense gives nothing.
 	CHECK(fromCalibration(35, 25, 30, 559, 5000, 0).clearFt <= fromCalibration(35, 25, 30, 559, 5000, 0).coverFt);
 	CHECK(!fromCalibration(0, 25, 30, 559, 1269, 0).valid);
@@ -70,8 +70,8 @@ static void testFromCalibration() {
 		Inputs in;
 		in.hfovDeg = hfov;
 		applyMeasured(in, m);
-		CHECK(near(coverAt(in.distM, in.hfovDeg) * kFt, m.coverFt, .01));
-		CHECK(near(in.clearM * kFt, m.clearFt, .01));
+		CHECK(approx(coverAt(in.distM, in.hfovDeg) * kFt, m.coverFt, .01));
+		CHECK(approx(in.clearM * kFt, m.clearFt, .01));
 	}
 }
 
@@ -79,11 +79,11 @@ static void testCarLengths() {
 	// Six 15.5 ft car lengths across the picture: 93 ft, the whole box clear when there is no box yet.
 	Measured m = fromCarLengths(6, 0, 0);
 	CHECK(m.valid);
-	CHECK(near(m.coverFt, 93, 1e-9));
-	CHECK(near(m.clearFt, 93, 1e-9));
+	CHECK(approx(m.coverFt, 93, 1e-9));
+	CHECK(approx(m.clearFt, 93, 1e-9));
 	// A box over half the picture with a 64 px trunk in it.
 	Measured h = fromCarLengths(6, 640, 64);
-	CHECK(near(h.clearFt, (640 - 64) / (1280 / 93.0), 1e-9));
+	CHECK(approx(h.clearFt, (640 - 64) / (1280 / 93.0), 1e-9));
 	CHECK(!fromCarLengths(0, 640, 0).valid);
 }
 
@@ -100,7 +100,7 @@ static void testVerdicts() {
 	Inputs slow = in;
 	slow.fps = 15;
 	Verdict s = verdict(slow, true);
-	CHECK(near(s.fastestMph, v.fastestMph / 2, 1e-9));
+	CHECK(approx(s.fastestMph, v.fastestMph / 2, 1e-9));
 	CHECK(s.tooFew || s.grade >= v.grade);
 	// A view of a couple of feet: no zone, a "needs a tweak" verdict with a sentence that says what to do.
 	Inputs tiny = in;

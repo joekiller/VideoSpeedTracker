@@ -1444,9 +1444,9 @@ std::string blurForReport(const cv::Mat& bgr) {
 	cv::Mat band = img.rowRange(y0, img.rows);
 	int kernel = std::max(15, (img.cols / 12) | 1);
 	cv::GaussianBlur(band, band, cv::Size(kernel, kernel), 0);
-	cv::Mat small;
-	cv::resize(band, small, cv::Size(std::max(1, band.cols / 16), std::max(1, band.rows / 8)), 0, 0, cv::INTER_AREA);
-	cv::resize(small, band, band.size(), 0, 0, cv::INTER_NEAREST);
+	cv::Mat coarse;
+	cv::resize(band, coarse, cv::Size(std::max(1, band.cols / 16), std::max(1, band.rows / 8)), 0, 0, cv::INTER_AREA);
+	cv::resize(coarse, band, band.size(), 0, 0, cv::INTER_NEAREST);
 	std::vector<uchar> buf;
 	if (!cv::imencode(".jpg", img, buf, { cv::IMWRITE_JPEG_QUALITY, 82 })) return "";
 	return std::string(buf.begin(), buf.end());

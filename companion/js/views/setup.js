@@ -117,7 +117,7 @@ async function planCard(vst, el, frame) {
     el.innerHTML = html`
       <div class="row" style="gap:8px;flex-wrap:wrap"><span class="pill ${GRADE[v.grade]}">${v.label}</span><span class="pill ${PILL[st.source]}">${st.sourceName}</span></div>
       <p style="margin:8px 0 4px">${v.text}</p>
-      ${v.fastest ? html`<p class="small muted" style="margin:0">At ${p.camera.fps} fps this view times cars ${v.fastest}${p.camera.fps < 59 ? html`; at 60 fps, ${v.fastest60}` : ''}.</p>` : ''}
+      ${v.fastest ? html`<p class="small muted" style="margin:0">At ${p.camera.fps} fps this view times cars ${v.fastest}${p.camera.fps < 59 && v.fastest60 !== v.fastest ? html`; at 60 fps, ${v.fastest60}` : ''}.</p>` : ''}
       ${v.frameRate ? html`<p class="small" style="margin:6px 0 0;color:var(--warn)">${v.frameRate}</p>` : ''}
       <p class="small muted" style="margin:6px 0 0">${st.source === 'guess' ? 'A rough guess is fine to start; zero in below.' : st.note || 'As you typed them.'}
         ${st.distFt.toFixed(0)} ft to the lane, ${st.clearFt.toFixed(0)} ft clear, about ${st.coverFt.toFixed(0)} ft across the picture.</p>

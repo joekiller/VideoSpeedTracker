@@ -23,7 +23,8 @@ A phone app for VideoSpeedTracker. Point your phone at the QR code in VST Studio
 ## Using it
 
 1. In VST Studio on the computer with the camera, open **Companion app** (left sidebar, under Share) and turn it on.
-2. Scan the QR code with your phone's camera. The companion opens already paired.
+2. Scan the QR code with your phone's camera. The companion opens already paired. No camera app that reads QR codes?
+   Type the address shown under the code into the phone's browser, then the pairing code shown with it.
 3. Add it to your home screen (Safari: Share → Add to Home Screen; Chrome: menu → Install app).
 
 The phone has to be on the same Wi-Fi as the computer. Nothing is sent to the internet: VST Studio serves the

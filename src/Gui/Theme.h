@@ -70,6 +70,8 @@ ImVec2 pillSize(const char* text, ImFont* font = nullptr);
 ImVec2 linePill(const char* text, ImU32 fg, ImU32 bg, ImFont* font = nullptr);
 // Primary (filled accent) and ghost (outlined) buttons with a leading icon.
 bool primaryButton(const char* label, ImVec2 size = ImVec2(0, 0), ImU32 color = c::accent);
+// Width of a primaryButton/ghostButton sized to its label (its own font and padding), for laying out a row before drawing it.
+float buttonWidth(const char* label);
 bool ghostButton(const char* label, ImVec2 size = ImVec2(0, 0));
 bool iconButton(const char* icon, const char* tooltip, bool active = false, float size = 0);
 // Segmented control; returns true when the selection changed.
