@@ -116,7 +116,8 @@ add_library(vst_engine STATIC
   ${VST_DIR}/VehicleDynamics.cpp
   ${VST_DIR}/Projection.cpp
   ${VST_DIR}/Snapshot.cpp
-  ${VST_DIR}/PiCamera.cpp)
+  ${VST_DIR}/PiCamera.cpp
+  ${VST_DIR}/FrameInput.cpp)
 target_include_directories(vst_engine PUBLIC ${VST_DIR})
 target_compile_definitions(vst_engine PUBLIC VST_EMBEDDED PRIVATE VST_VERSION="${VST_VERSION}")
 target_link_libraries(vst_engine PUBLIC vst_common ${OpenCV_LIBS})

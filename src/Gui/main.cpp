@@ -207,7 +207,17 @@ struct DemoScript {
 				h.freeBytes = 195421011968ull;
 			}
 			if (frames == 15) { shot("05-live-tracking.png"); }
-			if (frames == 20) { app.prefs.showMotion = false; app.tracker.setPaused(false); next(); }
+			// Still tracking, on Mark your street and Connect the camera: the same running feed, passed on from the
+			// tracker (App::pumpTracker -> Player::feed) rather than a second capture.
+			if (frames == 16) app.page = Page::Zones;
+			if (frames == 30) {
+				if (!app.player.fed()) fail("Mark your street isn't showing Live tracking's feed");
+				shot("05b-live-feed-on-zones.png");
+			}
+			if (frames == 31) app.page = Page::Source;
+			if (frames == 45) shot("05c-live-feed-on-source.png");
+			if (frames == 46) app.page = Page::Track;
+			if (frames == 50) { app.prefs.showMotion = false; app.tracker.setPaused(false); next(); }
 			break;
 		case 6:
 			if (!app.tracker.running() && frames > 10) {

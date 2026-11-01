@@ -137,20 +137,3 @@ private:
 };
 
 }  // namespace picam
-
-// What VST reads frames from: cv::VideoCapture for files, USB cameras and streams, or a picam::Reader for a Raspberry
-// Pi camera.  The handful of VideoCapture calls the engine and VST Studio make (read, get, set, release) go to whichever
-// one is open, so the code above them doesn't care which kind of source it has.
-class FrameSource {
-public:
-	cv::VideoCapture cap;       // open it directly for anything that isn't a Pi camera
-	picam::Reader pi;
-
-	bool openPiCamera(const std::string& name) { cap.release(); return pi.open(name); }
-	bool isOpened() const { return pi.isOpened() || cap.isOpened(); }
-	bool read(cv::Mat& frame) { return pi.isOpened() ? pi.read(frame) : cap.read(frame); }
-	void release() { pi.release(); cap.release(); }
-	bool set(int prop, double value) { return pi.isOpened() ? false : cap.set(prop, value); }
-	// For a Pi camera: its size and frame rate, a frame count of 0 (live) and the I420 fourcc; else VideoCapture::get().
-	double get(int prop) const;
-};

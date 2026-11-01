@@ -44,7 +44,8 @@ add_executable(VideoSpeedTracker
   ${VST_DIR}/VehicleDynamics.cpp
   ${VST_DIR}/Projection.cpp
   ${VST_DIR}/Snapshot.cpp
-  ${VST_DIR}/PiCamera.cpp)
+  ${VST_DIR}/PiCamera.cpp
+  ${VST_DIR}/FrameInput.cpp)
 target_include_directories(VideoSpeedTracker PRIVATE ${VST_DIR})
 target_link_libraries(VideoSpeedTracker PRIVATE vst_common ${OpenCV_LIBS})
 # Keep a*b+c as two roundings everywhere. GCC on arm64 and Clang fuse them into FMA by default,
@@ -58,13 +59,21 @@ endif()
 add_executable(level_test tests/level_test.cpp)
 target_include_directories(level_test PRIVATE ${VST_DIR})
 target_link_libraries(level_test PRIVATE ${OpenCV_LIBS})
+# The frame input port (FrameInput.h): source names, passwords kept out of labels, and every adapter (the sample through
+# VideoCapture, a photo, a pushed feed) read through the port alone.
+add_executable(frame_input_test tests/frame_input_test.cpp ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
+target_include_directories(frame_input_test PRIVATE ${VST_DIR})
+target_link_libraries(frame_input_test PRIVATE ${OpenCV_LIBS})
 # Angled lane lines and a receding street (Perspective.h, Globals::lane / vanishingX / zoneFraction): equal steps along a
 # simulated street come out as equal steps of zoneFraction, and VST.cfg's checks refuse an unusable street edge.
 add_executable(perspective_test tests/perspective_test.cpp ${VST_DIR}/Globals.cpp)
 target_include_directories(perspective_test PRIVATE ${VST_DIR})
 
 # Interactive editor that trims a VST highlights video down to the vehicles worth posting.
-add_executable(ProcessHiLites ${CMAKE_SOURCE_DIR}/src/Wintel64/ProcessHiLites/ProcessHilites.cpp)
+# It reads the highlights video through the same frame input port as the tracker (FrameInput.h).
+add_executable(ProcessHiLites ${CMAKE_SOURCE_DIR}/src/Wintel64/ProcessHiLites/ProcessHilites.cpp
+  ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
+target_include_directories(ProcessHiLites PRIVATE ${VST_DIR})
 target_link_libraries(ProcessHiLites PRIVATE vst_common ${OpenCV_LIBS})
 
 enable_testing()
@@ -89,6 +98,7 @@ foreach(min 0 30)
   set_tests_properties(min_logged_speed_${min} PROPERTIES FIXTURES_REQUIRED sample_run)
 endforeach()
 add_test(NAME software_level COMMAND level_test)
+add_test(NAME frame_input COMMAND frame_input_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-frame-input)
 add_test(NAME perspective COMMAND perspective_test)
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}

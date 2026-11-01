@@ -36,6 +36,7 @@
 #include <vector>
 
 class Server;
+struct View;
 
 enum class Page { Guide, Source, Zones, Calibrate, Track, Results, Companion, Count };
 
@@ -240,6 +241,12 @@ private:
 	void reportDialog();
 	Texture* snapshotTexture(int vehicleId);
 	void pumpTracker();
+	// While tracking, the setup pages show the tracker's own frames through player.feed(), never a second capture
+	// (App.cpp, pumpTracker).  sharedFeedBadge() marks such a picture as Live tracking's and says edits apply on the
+	// next start; feedHint() is a canvas's empty-state text, or "waiting for tracking's first frame" during a run.
+	bool showsSharedFeed() const;
+	void sharedFeedBadge(const View& v);
+	const char* feedHint(const char* idle) const;
 	void sitePlanner();
 	void shortViewNote(double coverM, bool on);   // Guide.cpp: the planner's short-view advice and its settings button
 	void zeroInCard(float width);       // Guide.cpp: refining the street, from the picture or from a calibration
@@ -258,6 +265,10 @@ private:
 	std::deque<std::pair<std::function<std::string()>, std::shared_ptr<std::promise<std::string>>>> posted_;
 	Tracker::Live live_;
 	Texture liveTex_, motionTex_;
+	// Each new tracker frame is uploaded once, to whichever texture the current page draws: liveTex_ on Live tracking,
+	// the player's on a setup page.  The serials say which frame each one last got (-1 = none since the run started).
+	long liveTexSerial_ = -1, fedSerial_ = -1;
+	double runLevel_ = 0;               // cfg.g.levelDegrees when the run started: the angle its frames already carry
 	std::map<int, std::unique_ptr<Texture>> snapTex_;
 	int seenVehicleId_ = 0;
 	bool wasRunning_ = false;

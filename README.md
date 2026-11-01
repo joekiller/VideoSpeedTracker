@@ -420,6 +420,13 @@ one without it uses its nearest mode. Video files and stream URLs are decoded on
 decoder (Intel Quick Sync, VA-API, D3D11), which takes most of the work off the CPU; without one VST decodes in software
 as before. Set `VST_HW_DECODE=0` to turn hardware decoding off.
 
+VST Studio's preview opens sources the same way, so the camera's resolution and frame rate on **Connect the camera**
+are what a run will get. For developers: every frame comes in through one port, `frameio::FrameSource` in
+[`FrameInput.h`](src/Wintel64/VideoSpeedTracker/FrameInput.h). Its adapters are VideoCapture for files, USB cameras
+and streams, the Pi camera, a photo, and the feed that passes a running tracker's frames to Studio's setup pages.
+`frameio::open()` holds the opening policy above, and `frameio::readWorking()` makes the 1280x720 levelled frame that
+the tracker, the zones and the preview all use.
+
 ## Troubleshooting
 
 These come from the [issues filed against the original project](docs/upstream-issues.md).

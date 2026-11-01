@@ -254,6 +254,8 @@ void App::startTracking() {
 	std::vector<Job> jobs;
 	for (auto& in : inputs) { Job j; j.input = in; jobs.push_back(j); }
 	live_ = Tracker::Live();
+	liveTexSerial_ = fedSerial_ = -1;
+	runLevel_ = cfg.g.levelDegrees;   // the run copy carries this angle, so the frames it hands back are already turned by it
 	tracker.start(jobs, o);
 	rowsFrom.clear();
 	page = Page::Track;
@@ -502,8 +504,19 @@ Texture* App::snapshotTexture(int id) {
 
 // Pulls new frames and vehicles from the tracker each GUI frame: updates textures, raises toasts for the
 // vehicles worth calling out, and refreshes the session results when a run ends.
+//
+// One feed for every page.  The engine's capture is the only reader of the camera during a run (Player lets go in
+// startTracking), and the tracker already hands the GUI a copy of its newest frame (Tracker::onFrame, at most ~40 a
+// second).  That copy goes to whichever page is on screen: Live tracking's own texture, or, on Pick your spot,
+// Connect the camera, Mark your street and Calibrate, the Player via feed(), so those pages keep the running picture
+// with no second capture, no reopen and nothing that waits.  Each new frame is uploaded once, only for the page that
+// draws it, so moving between pages costs no more than staying on Live.  When the run ends the source is opened
+// again in the background (Player::open never waits), so a camera keeps showing after Stop as well.
 void App::pumpTracker() {
-	if (tracker.latest(live_, prefs.showMotion)) {
+	bool run = tracker.running();
+	tracker.latest(live_, prefs.showMotion);
+	if (page == Page::Track && live_.serial > 0 && liveTexSerial_ != live_.serial) {
+		liveTexSerial_ = live_.serial;
 		liveTex_.update(live_.frame);
 		if (prefs.showMotion && !live_.motion.empty()) {
 			// Cyan where the frame difference shows motion, transparent elsewhere.
@@ -514,6 +527,23 @@ void App::pumpTracker() {
 			cv::merge(ch, tint);
 			motionTex_.update(tint);
 		}
+	}
+	else if (run && showsSharedFeed() && live_.serial > 0 && fedSerial_ != live_.serial) {
+		fedSerial_ = live_.serial;
+		// What is being tracked: the preview's own facts when it is the same source, else (a later video of a batch)
+		// what the tracker says about it.
+		Tracker::Progress prog = tracker.progress();
+		std::vector<Job> jobs = tracker.jobs();
+		SourceInfo about = player.info();
+		if (prog.job >= 0 && prog.job < int(jobs.size()) && jobs[prog.job].input != about.path) {
+			about = SourceInfo();
+			about.path = jobs[prog.job].input;
+			about.kind = classifySource(about.path);
+			about.label = friendlySourceName(about.path);
+			about.fps = prog.videoFps;
+			about.frames = prog.totalFrames;
+		}
+		player.feed(live_.frame, runLevel_, about, live_.frameNumber);
 	}
 	for (const Vehicle& v : tracker.vehiclesSince(seenVehicleId_)) {
 		seenVehicleId_ = v.id;
@@ -528,8 +558,42 @@ void App::pumpTracker() {
 		if (failed) toast(std::to_string(failed) + " video(s) failed: " + jobs.back().message, c::bad, ICON_WARN);
 		else toast("Tracking finished: " + std::to_string(tracker.counts().vehicles) + " vehicles this session", c::ok, ICON_FLAG);
 		showSessionResults();
-		if (!source.empty() && classifySource(source) == SourceInfo::File) player.open(source);
+		// Back to the preview's own reader: the file at its start, the photo, or the camera or stream reconnecting in the
+		// background.
+		player.close();
+		if (!source.empty()) player.open(source);
 	}
+}
+
+// The pages whose picture is the Player's: the planner's "cars across the picture" (Pick your spot), Connect the
+// camera, Mark your street and Calibrate.  Results and Companion show none, so they get no frames.
+bool App::showsSharedFeed() const {
+	return page == Page::Guide || page == Page::Source || page == Page::Zones || page == Page::Calibrate;
+}
+
+const char* App::feedHint(const char* idle) const {
+	return tracker.running() ? "Waiting for Live tracking's first frame…" : idle;
+}
+
+// A chip on the picture while it is Live tracking's feed: whose picture it is, and that the run keeps the settings it
+// started with (startTracking runs a copy), so nobody expects a dragged line to change the speeds being logged now.
+void App::sharedFeedBadge(const View& v) {
+	if (!player.fed() || !tracker.running()) return;
+	ImDrawList* dl = ImGui::GetWindowDrawList();
+	// The same words and colours as the Live tracking page's own badge.
+	Tracker::Progress prog = tracker.progress();
+	const char* badge = prog.reconnecting ? "RECONNECTING…" : prog.live ? "● LIVE" : tracker.paused() ? "PAUSED" : "● PLAYING";
+	ImU32 bc = prog.reconnecting ? c::warn : prog.live ? c::bad : tracker.paused() ? c::warn : c::ok;
+	const char* note = "Live tracking's feed  ·  changes here apply the next time you start tracking";
+	ImVec2 p = v.origin + ImVec2(px(14), v.size.y - px(14) - fsz(fonts.strong) - px(10));
+	ImVec2 bs = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, badge);
+	dl->AddRectFilled(p, p + bs + ImVec2(px(18), px(10)), alpha(c::bg0, .78f), px(7));
+	dl->AddText(fonts.strong, fsz(fonts.strong), p + ImVec2(px(9), px(5)), bc, badge);
+	ImVec2 ip = p + ImVec2(bs.x + px(26), 0);
+	ImVec2 is = fonts.body->CalcTextSizeA(fsz(fonts.body), FLT_MAX, 0, note);
+	if (ip.x + is.x + px(18) > v.origin.x + v.size.x - px(14)) return;   // too narrow for the note: the badge says enough
+	dl->AddRectFilled(ip, ip + is + ImVec2(px(18), px(10)), alpha(c::bg0, .78f), px(7));
+	dl->AddText(fonts.body, fsz(fonts.body), ip + ImVec2(px(9), px(5)), c::text, note);
 }
 
 // ======================================================================================================
@@ -543,13 +607,15 @@ void App::frame(float w, float h) {
 		{ std::lock_guard<std::mutex> l(postMu_); work.swap(posted_); }
 		for (auto& [fn, p] : work) p->set_value(fn());
 	}
+	// The preview shows the picture turned as the tracker will see it; during a run this re-turns Live tracking's frame
+	// by however far the slider has moved from the angle the run started with (Player::feed).
+	player.setLevel(cfg.g.levelDegrees);
 	pumpTracker();
 	healthTick();
 	if (!tracker.running()) {
 		// Never waits: a live source's frames come from its reader thread.  A connection that fails, or a picture that
 		// is lost, ends here: say why and drop the source, so nothing stale stays on screen.
 		bool live = player.opening() || (player.isOpen() && player.info().kind != SourceInfo::File && player.info().kind != SourceInfo::Image);
-		player.setLevel(cfg.g.levelDegrees);   // the preview shows the picture turned as the tracker will see it
 		player.tick(now());
 		if (live && !player.opening() && !player.isOpen() && !player.error.empty()) {
 			toast(player.error, c::bad, ICON_WARN);
@@ -1116,8 +1182,8 @@ void App::pageSource() {
 	beginCard("preview", ICON_EYE, "Preview", ImVec2(rightW, 0));
 	float pw = ImGui::GetContentRegionAvail().x;
 	std::string shortName = shortSourceName(player.info().path, 34);
-	std::string waiting = player.opening() ? "Connecting to " + shortName + "…" : std::string("Pick a source");
-	drawFrame(player.isOpen() ? player.texture().imguiId() : nullptr, ImVec2(pw, pw * 9 / 16), waiting.c_str());
+	std::string waiting = player.opening() ? "Connecting to " + shortName + "…" : std::string(feedHint("Pick a source"));
+	sharedFeedBadge(drawFrame(player.isOpen() ? player.texture().imguiId() : nullptr, ImVec2(pw, pw * 9 / 16), waiting.c_str()));
 	// What is on screen, by name, and the way out of it: Cancel while connecting, Disconnect (or Close) after.
 	if (player.opening() || player.isOpen()) {
 		bool liveSrc = player.info().kind == SourceInfo::Camera || player.info().kind == SourceInfo::Stream;
@@ -1130,7 +1196,10 @@ void App::pageSource() {
 		if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", player.info().label.c_str());
 		ImGui::PopFont();
 		ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - ow);
+		ImGui::BeginDisabled(tracker.running());   // Live tracking is using it: Stop there first
 		if (ghostButton(out, ImVec2(ow, 0))) disconnectSource();
+		ImGui::EndDisabled();
+		if (tracker.running() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Live tracking is using this source. Stop tracking to disconnect.");
 	}
 	if (player.isOpen()) {
 		const SourceInfo& in = player.info();
@@ -1235,7 +1304,7 @@ void App::pageZones() {
 	float canvasH = std::min(availH - barH - px(10), canvasW * 9 / 16);
 	ImGui::BeginChild("zcanvas", ImVec2(canvasW, canvasH), 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 	View v = drawFrame(player.isOpen() ? player.texture().imguiId() : nullptr, ImGui::GetContentRegionAvail(),
-		"Open a video, camera or photo of your street to draw on");
+		feedHint("Open a video, camera or photo of your street to draw on"));
 	OverlayStyle st;
 	const char* hovered = nullptr;
 	st.editable = !levelTool_;   // the level dots get the mouse while they're out
@@ -1245,6 +1314,7 @@ void App::pageZones() {
 		levelGuide(v, levelDots_, levelTool_);
 		if (levelTool_) hovered = "Lay the line along the curb or a lane stripe, then press Level it";
 	}
+	sharedFeedBadge(v);   // over the zones, so their dimming doesn't fade it
 	ImGui::EndChild();
 
 	// Scrub bar under the canvas: play/step for files, a status line for live sources.
@@ -1778,7 +1848,7 @@ void App::pageCalibrate() {
 	// In the cones-or-pole mode the canvas can show one of the timed pictures instead of the camera.
 	if (coneView_ >= 0 && coneTexOf_ != coneView_) { coneTex_.update(coneShot_[coneView_]); coneTexOf_ = coneView_; }
 	void* tex = coneView_ >= 0 ? coneTex_.imguiId() : player.isOpen() ? player.texture().imguiId() : nullptr;
-	View v = drawFrame(tex, ImGui::GetContentRegionAvail(), "Open a video or connect the camera (step 3)");
+	View v = drawFrame(tex, ImGui::GetContentRegionAvail(), feedHint("Open a video or connect the camera (step 3)"));
 	OverlayStyle st;
 	st.opacity = .75f;
 	st.dimOutside = false;
@@ -1849,6 +1919,7 @@ void App::pageCalibrate() {
 			}
 		}
 	}
+	if (coneView_ < 0) sharedFeedBadge(v);   // a timed picture on screen is not the feed
 	ImGui::EndChild();
 
 	// Frame stepper.
