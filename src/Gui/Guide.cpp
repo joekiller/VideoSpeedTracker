@@ -565,11 +565,18 @@ void App::setMeasuredDistance(double distM, const char* why) {
 // the 1280-wide frame).  That only means something at one distance, so once a calibration says how many pixels a foot is
 // at the lane, the threshold is set to a real size: a side-on box of about 190 sq ft (a box truck is about 25 x 10 ft,
 // a bus 40 x 10; a big pickup with its shadow is about 20 x 8).  Results shows each vehicle's length in feet the same way (sizeRows).
+// Pixels per foot at the lane, for vehicle sizes.  Unlike planFromCalibration() (which feeds step 2 and so ignores the
+// sample video, whose numbers aren't the user's street), any calibration in force counts here, the sample's included:
+// sizes describe the video being measured, and calibrationDone() already says whether its calibration can be trusted.
 double App::pxPerFtAtLane() {
-	plan::Measured m;
-	std::string how;
-	if (!planFromCalibration(m, how) || m.pxPerFt <= 0) return 0;
-	return m.pxPerFt;
+	if (!calibrationDone()) return 0;
+	const Globals& g = cfg.g;
+	double frames = g.LegalDirection == "L2R" ? g.CalibrationFramesL2R : g.LegalDirection == "R2L" ? g.CalibrationFramesR2L
+		: (g.CalibrationFramesL2R + g.CalibrationFramesR2L) / 2.0;
+	double obstruction = std::max(0, g.obstruction[1] - g.obstruction[0]);
+	plan::Measured m = plan::fromCalibration(frames, g.CalibrationSpeed, g.CalibrationFPS, g.speedLineRight - g.speedLineLeft,
+		g.AnalysisBoxWidth, obstruction);
+	return m.valid && m.pxPerFt > 0 ? m.pxPerFt : 0;
 }
 
 void App::retuneLargeVehicles() {

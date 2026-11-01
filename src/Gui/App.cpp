@@ -520,7 +520,10 @@ void App::applyCombinedCalibration() {
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 	// A live run is restarted only when CalibrationFrames actually moved: an input that agrees to the frame leaves the
 	// running csv on the current calibration, so it isn't split into a new run for nothing.
-	if (changed || !any) restartAfterCalibration();
+	if (changed || !any) {
+		restartAfterCalibration();
+		if (!reviewing()) sizeRows();   // Results' feet follow the new scale at once, not on its next refresh
+	}
 }
 
 // The camera as the Lane card's ghost car describes it: step 2's distance (stored in metres) and lens, with the height
@@ -655,10 +658,21 @@ const App::EarlierRuns& App::runsBeforeCalibration(bool fresh) {
 		earlier_.vehicles += std::max(0, lines - 1);
 	}
 	std::sort(earlier_.csvs.begin(), earlier_.csvs.end());
+	// What an earlier launch set aside is still on disk: pick it up once, so Results says where those runs are and
+	// "Put them back" works after a restart instead of the runs looking lost (setAside_ alone lives in memory).
+	if (!setAsideScanned_) {
+		setAsideScanned_ = true;
+		if (setAside_.empty()) {
+			fs::path stats = fs::path(dataDir()) / "Stats", dir = stats / "Before calibration";
+			for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+				if (it->is_regular_file(ec)) setAside_.push_back({ (stats / it->path().filename()).string(), it->path().string() });
+			ec.clear();
+		}
+	}
 	return earlier_;
 }
 
-// "Set them aside": each earlier run's csv and manifest move to Stats/Before calibration, where Results' Open CSV can
+// "Set them aside": each earlier run's csv and manifest move to Stats/Before calibration, where Results' Open > A stats csv can
 // still read them but the street report (which reads Stats/ only) and the phone's totals don't.  Nothing is deleted,
 // and putBackRuns() moves them back.  This session's vehicles from those runs leave Results too.
 void App::setAsideEarlierRuns() {
@@ -704,8 +718,9 @@ void App::putBackRuns() {
 	setAside_.clear();
 	runsBeforeCalibration(true);
 	// This session's vehicles from them were let go when they were set aside: show the csv instead, when it's one run.
-	if (!oneCsv.empty()) loadResultsCsv(oneCsv);
-	toast("Put back " + std::to_string(back) + (back == 1 ? " run" : " runs") + (oneCsv.empty() ? ". Open CSV shows their vehicles." : "."), c::ok, ICON_CHECK);
+	if (rowsScope == ResultsScope::Saved) showSavedRuns();   // All saved runs simply includes them again
+	else if (!oneCsv.empty()) loadResultsCsv(oneCsv);
+	toast("Put back " + std::to_string(back) + (back == 1 ? " run" : " runs") + (oneCsv.empty() ? ". Open > A stats csv shows their vehicles." : "."), c::ok, ICON_CHECK);
 }
 
 const std::vector<CalEvent>& App::calibrationHistory() {
@@ -4016,8 +4031,6 @@ void App::pageResults() {
 	// The file buttons keep their full labels; the filter gives up width first, so the row fits a 1366-1480 px laptop
 	// window instead of pushing "Make report" off the edge.
 	float actionsW = px(16) * 2 + px(180);
-	float scopeW = px(210);
-	actionsW += scopeW + ImGui::GetStyle().ItemSpacing.x;
 	for (const char* l : { ICON_FOLDER_OPEN " Open", ICON_ARCHIVE " Archive", ICON_FILM " Highlights", ICON_FOLDER " Folder", ICON_REPORT "  Make report" })
 		actionsW += buttonWidth(l) + ImGui::GetStyle().ItemSpacing.x;
 	segmented("rfilter", &resultsFilter_, filters, 4, std::clamp(avail - actionsW, px(300), px(440)));
@@ -4025,29 +4038,6 @@ void App::pageResults() {
 	ImGui::SetNextItemWidth(px(180));
 	ImGui::InputTextWithHint("##search", ICON_SEARCH "  min speed or source", searchBuf_, sizeof searchBuf_);
 	ImGui::SameLine(0, px(16));
-	// Where the rows come from: this session, all saved runs, or one saved run (the newest dozen, by name and time).
-	// The menu is read when it opens, so a run that just ended is in it.
-	std::string scopeText = reviewing() ? std::string(ICON_ARCHIVE "  ") + archive_.name : rowsScope == ResultsScope::Saved ? ICON_CLOCK "  All saved runs"
-		: rowsScope == ResultsScope::File ? std::string(ICON_FILE_CSV "  ") + fs::path(rowsFrom).filename().string() : ICON_BOLT "  This session";
-	ImGui::SetNextItemWidth(scopeW);
-	if (ImGui::BeginCombo("##rscope", scopeText.c_str(), ImGuiComboFlags_HeightLarge)) {
-		int session = tracker.lastVehicleId() > 0 ? int(tracker.vehiclesSince(0).size()) : 0;
-		std::string label = "This session  (" + std::to_string(session) + " vehicles)";
-		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Session)) showSessionResults();
-		std::vector<resume::SavedRun> runs = screenshotMode ? std::vector<resume::SavedRun>() : resume::savedRuns(dataDir());
-		label = "All saved runs  (" + std::to_string(runs.size()) + ")";
-		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Saved)) showSavedRuns();
-		if (!runs.empty()) ImGui::SeparatorText("One run");
-		for (size_t i = 0; i < runs.size() && i < 12; i++) {
-			ImGui::PushID(int(i));
-			if (ImGui::Selectable(resume::runLabel(runs[i].name).c_str(), rowsScope == ResultsScope::File && rowsFrom == runs[i].csv))
-				loadResultsCsv(runs[i].csv);
-			ImGui::PopID();
-		}
-		if (runs.size() > 12) ImGui::TextDisabled("Older runs: Open CSV");
-		ImGui::EndCombo();
-	}
-	ImGui::SameLine();
 	if (ghostButton(ICON_FOLDER_OPEN " Open")) { archives_ = archive::list(dataDir()); ImGui::OpenPopup("openmenu"); }
 	openMenu();
 	ImGui::SameLine();
@@ -4103,8 +4093,34 @@ void App::pageResults() {
 		shown.push_back(&r);
 	}
 	int ownDrives = int(std::count_if(rows.begin(), rows.end(), [](const ResultRow& r) { return r.calKind != 0; }));
-	std::string from = reviewing() ? std::string("Archived vehicles") : rowsScope == ResultsScope::Saved ? "All saved runs  ·  " + std::to_string(rowsRuns) + (rowsRuns == 1 ? " run" : " runs")
-		: rowsScope == ResultsScope::File ? fs::path(rowsFrom).filename().string() : std::string("This session");
+	// The menu beside it names the source, so the line just counts.
+	std::string from = reviewing() ? std::string("Archived") : rowsScope == ResultsScope::Saved ? std::to_string(rowsRuns) + (rowsRuns == 1 ? " run" : " runs")
+		: rowsScope == ResultsScope::File ? std::string("1 run") : std::string("Measured since Studio opened");
+	// Where the rows come from, on the line under the toolbar (the toolbar has no room for it at 1366-1480 px with
+	// Open and Archive): this session, all saved runs, or one saved run (the newest dozen, by name and time).  The menu
+	// is read when it opens, so a run that just ended is in it.
+	std::string scopeText = reviewing() ? std::string(ICON_ARCHIVE "  ") + archive_.name : rowsScope == ResultsScope::Saved ? ICON_CLOCK "  All saved runs"
+		: rowsScope == ResultsScope::File ? std::string(ICON_FILE_CSV "  ") + fs::path(rowsFrom).filename().string() : ICON_BOLT "  This session";
+	ImGui::SetNextItemWidth(px(240));
+	if (ImGui::BeginCombo("##rscope", scopeText.c_str(), ImGuiComboFlags_HeightLarge)) {
+		int session = tracker.lastVehicleId() > 0 ? int(tracker.vehiclesSince(0).size()) : 0;
+		std::string label = "This session  (" + std::to_string(session) + " vehicles)";
+		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Session)) showSessionResults();
+		std::vector<resume::SavedRun> runs = screenshotMode ? std::vector<resume::SavedRun>() : resume::savedRuns(dataDir());
+		label = "All saved runs  (" + std::to_string(runs.size()) + ")";
+		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Saved)) showSavedRuns();
+		if (!runs.empty()) ImGui::SeparatorText("One run");
+		for (size_t i = 0; i < runs.size() && i < 12; i++) {
+			ImGui::PushID(int(i));
+			if (ImGui::Selectable(resume::runLabel(runs[i].name).c_str(), rowsScope == ResultsScope::File && rowsFrom == runs[i].csv))
+				loadResultsCsv(runs[i].csv);
+			ImGui::PopID();
+		}
+		if (runs.size() > 12) ImGui::TextDisabled("Older runs: Open > A stats csv");
+		ImGui::EndCombo();
+	}
+	ImGui::SameLine(0, px(12));
+	ImGui::AlignTextToFramePadding();
 	dimText("%s  ·  %zu of %zu vehicles%s", from.c_str(), shown.size(), rows.size(),
 		!ownDrives ? "" : ownDrives == 1 ? "  ·  1 is your own calibration drive, left out of the totals" : ("  ·  " + std::to_string(ownDrives)
 			+ " are your own calibration drives, left out of the totals").c_str());
@@ -4148,9 +4164,11 @@ void App::pageResults() {
 		ImGui::Dummy(ImVec2(0, px(40)));
 		// This session is empty but earlier runs are saved: say so first, so it never reads as lost data.
 		size_t saved = rowsScope == ResultsScope::Saved || screenshotMode ? 0 : resume::savedRuns(dataDir()).size();
-		if (!setAside_.empty() && !saved) {
+		const bool freshStart = !setAside_.empty() && !saved && !reviewing();
+		if (freshStart) {
 			beginCard("noresults", ICON_CHECK_CIRCLE, "A fresh start with your new calibration", ImVec2(avail, 0));
-			dimText("The runs measured before it are set aside, so from here on every speed is on the new scale. Start tracking to fill this page again.");
+			dimText("The runs measured before it are set aside in Stats/Before calibration (Put them back, above, undoes it), so from here "
+				"on every speed is on the new scale. Start tracking to fill this page again.");
 		}
 		else beginCard("noresults", ICON_CHART, saved ? "Nothing measured this session yet" : "Nothing here yet", ImVec2(avail, 0));
 		if (saved) {
@@ -4160,7 +4178,7 @@ void App::pageResults() {
 			if (primaryButton(show.c_str())) showSavedRuns();
 			ImGui::SameLine();
 		}
-		else
+		else if (!freshStart)
 			dimText(rowsScope == ResultsScope::Saved
 				? "No saved runs yet. Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction "
 				  "and a snapshot, and stays here the next time you open VST Studio."
@@ -4407,7 +4425,7 @@ void App::pageResults() {
 		kv("Frame", std::to_string(r.frame));
 		if (!r.time.empty()) { std::string t = r.time; if (t.size() > 10 && t[10] == 'T') t[10] = ' '; kv("Passed at", t); }
 		kv("Source", r.source);
-		if (r.lengthFt <= 0 && r.area > 0 && pxPerFtAtLane() <= 0) { ImGui::PushTextWrapPos(0); dimText("Calibrate in step 5 and sizes show in feet."); ImGui::PopTextWrapPos(); }
+		if (!reviewing() && r.lengthFt <= 0 && r.area > 0 && pxPerFtAtLane() <= 0) { ImGui::PushTextWrapPos(0); dimText("Calibrate in step 5 and sizes show in feet."); ImGui::PopTextWrapPos(); }
 		if (r.calKind) {
 			ImGui::PushTextWrapPos(0);
 			dimText("Your own %s drive: left out of the totals, the charts and the street report.", r.calKind == 1 ? "calibration" : "check");

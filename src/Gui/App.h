@@ -457,6 +457,7 @@ private:
 	EarlierRuns earlier_;               // runsBeforeCalibration()'s cache
 	double earlierAt_ = -1;             // ImGui::GetTime() of that scan
 	std::vector<std::pair<std::string, std::string>> setAside_;   // files the latest set-aside moved: {from, to}
+	bool setAsideScanned_ = false;      // setAside_ refilled once from Stats/Before calibration (an earlier launch's)
 	std::vector<calib::Input> calInputs_;   // calibration-inputs.json entries for calInputsFor_ (plus a seed, unsaved)
 	std::string calInputsFor_;
 	bool calInputsLoaded_ = false;

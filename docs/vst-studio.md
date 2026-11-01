@@ -486,7 +486,7 @@ so they survive a restart.
 **Runs from before your latest calibration.** Each run's manifest records the calibration it was measured with. When
 that differs from the current one, its rows get an **old calibration** tag, and a line under the toolbar counts them:
 *2 runs (65 vehicles) measured before your latest calibration*. **Set them aside** moves those csvs and manifests to
-`Stats/Before calibration`. Nothing is deleted, and Open CSV still reads them. They drop out of Results and the street
+`Stats/Before calibration`. Nothing is deleted, and Open > A stats csv still reads them. They drop out of Results and the street
 report, which reads only `Stats/`. **Put them back** undoes it. Calibrating during a live run
 (camera or stream) restarts tracking, so the cars from then on are measured with the new value in a new csv. A video
 keeps the calibration it started with until you run it again.
