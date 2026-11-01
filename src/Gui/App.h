@@ -76,6 +76,9 @@ struct ResultRow {
 	std::string statsPath;      // the stats csv the row was read from ("" for session rows)
 	int widthPx = 0;            // session rows: the vehicle's length side-on in pixels (VehicleEvent::width), 0 when unknown
 	double lengthFt = 0;        // that length in feet at the lane, from the calibration (0 = no calibration or no width)
+	int calKind = 0;            // 1: the user's own calibration drive, 2: their check drive (CalPass), left out of the tiles and charts
+	double drivenMph = 0;       // for those, the speed they said they drove
+	bool beforeCal = false;     // measured with an earlier calibration than the current one
 };
 
 // Where the Results page's rows come from.  Session: vehicles measured since Studio opened (with snapshots).  Saved:
@@ -120,6 +123,28 @@ public:
 	// Appends a "check" row to the history and returns the comparison.
 	CalCheck checkCalibration(bool l2r, double mph, int frames, double fps);
 	void dashcamSpeed(const Vehicle* picked);   // Calibrate: fill the driven speed from a Tesla dashcam clip
+	void targetSpeedChips();                    // Calibrate: the drive-by target speed (10/15/20/25, the limit)
+	// After prefs.speedLimit changed from `before`: moves cfg.g.minLoggedSpeed to calib::minLoggedForLimit() when it was
+	// still the automatic value for `before` (a hand-set value stays).  Returns whether it moved.
+	bool followSpeedLimit(int before);
+	// Records that session pass `v` was the user's own calibration (or check) drive at `mph` (calibration-passes.csv),
+	// so Results marks it and the street report leaves it out.  Called beside applyCalibration/checkCalibration
+	// wherever those are given a picked pass, in Studio and the companion API.
+	void markCalibrationPass(const Vehicle& v, bool check, double mph);
+	const CalPass* calibrationPass(const std::string& statsPath, int frame);   // the mark for a csv row, or nullptr
+	// After an apply: a live run (camera or stream) is restarted so the passes from here on are measured with the new
+	// calibration (a running engine keeps the settings it started with).  A video run just says it applies next time.
+	void restartAfterCalibration();
+	// Stats csvs (top level of <dataDir>/Stats) whose run manifest says they were measured with other calibration
+	// values than the current VST.cfg's, not counting the run being written now.  Re-read at most every few seconds.
+	struct EarlierRuns {
+		std::vector<std::string> csvs;
+		int vehicles = 0;
+	};
+	const EarlierRuns& runsBeforeCalibration(bool fresh = false);
+	bool measuredBefore(const std::string& csvPath);       // one csv of those (cached alongside)
+	void setAsideEarlierRuns();                            // moves them to Stats/Before calibration
+	void putBackRuns();                                    // undoes the latest setAsideEarlierRuns
 	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
 	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
 	// was made against) and the check pass imply; recorded as an apply.
@@ -346,6 +371,7 @@ private:
 	std::map<int, std::unique_ptr<Texture>> snapTex_;
 	int seenVehicleId_ = 0;
 	bool wasRunning_ = false;
+	bool restartPending_ = false;       // restartAfterCalibration(): restart the live run on the next frame
 	int guideStep_ = 0;                 // which of the Guide's two steps (What you need, Pick your spot) is showing
 	bool showZeroIn_ = false;           // scroll Pick your spot to its "Zero in on it" card on the next frame
 	int resultsFilter_ = 0;
@@ -358,13 +384,19 @@ private:
 	int calibMode_ = 0;
 	int calibDir_ = 0;
 	int calibPickId_ = 0;
-	int calibSpeed_ = 25;
+	int calibSpeed_ = 25;               // the drive-by's target, then "I drove at" (whole mph; dashMph_ has the decimal)
+	bool calibSpeedSet_ = false;        // false: calibSpeed_ follows the saved target or the posted limit (calib::defaultTarget)
 	bool calibChecking_ = false;        // the Calibrate page's pass picker is choosing a check pass, not a calibration
 	int calibAppliedId_ = 0;            // the session vehicle the latest calibration came from (not a fair check)
 	std::vector<dashcam::Clip> dashClips_;   // Tesla dashcam clips loaded on the Calibrate page
 	int dashFor_ = 0;                   // the vehicle dashMph_ was read for, while calibSpeed_ still shows it rounded
 	double dashMph_ = 0;                // the car's own speed through the zone, to 0.1 mph
 	CalCheck lastCheck_;                // the latest check pass, for the result card
+	std::map<std::string, CalPass> calPasses_;   // calibration-passes.csv by report::passKey, read once
+	bool calPassesLoaded_ = false;
+	EarlierRuns earlier_;               // runsBeforeCalibration()'s cache
+	double earlierAt_ = -1;             // ImGui::GetTime() of that scan
+	std::vector<std::pair<std::string, std::string>> setAside_;   // files the latest set-aside moved: {from, to}
 	std::vector<CalEvent> calHistory_;  // calibration-history.csv rows for calHistoryFor_
 	std::string calHistoryFor_;
 	bool calHistoryLoaded_ = false;

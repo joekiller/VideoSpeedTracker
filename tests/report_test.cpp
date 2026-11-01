@@ -203,6 +203,33 @@ static void testFixtureAllData(const fs::path& fx, const fs::path& out) {
 	CHECK(contains(html, "@media print"));
 }
 
+// The user's own calibration and check drives (Input::calibrationPasses, keyed by csv file name and Frame) are left out
+// of every statistic and named in a caveat; runConfigOf() reads a run's manifest config, and says when there is none.
+static void testCalibrationDrives(const fs::path& fx) {
+	Input in = fixtureInput(fx);
+	in.calibrationPasses = { passKey("stats_cam_20261103.csv", 1000), passKey("stats_cam_20261103.csv", 1900),
+		passKey("stats_other.csv", 1000) };   // another run's frame 1000 must not match
+	Study st = analyze(in, fixtureSettings());
+	CHECK_EQ(st.all.n, 32);
+	int drives = 0;
+	for (const Run& r : st.runs) drives += r.calibrationDrives;
+	CHECK_EQ(drives, 2);
+	std::string cav;
+	for (auto& c : st.caveats) cav += c + "\n";
+	CHECK(contains(cav, "2 calibration or check drives by the person setting up VST left out of every statistic"));
+
+	RunConfig rc;
+	rc.framesL2R = 1;
+	CHECK(runConfigOf((fx / "Stats" / "stats_cam_20261103.csv").string(), rc));
+	CHECK_EQ(rc.framesL2R, 35);
+	CHECK_EQ(rc.framesR2L, 40);
+	CHECK_NEAR(rc.calSpeed, 25, 1e-9);
+	RunConfig none;
+	none.framesL2R = 7;
+	CHECK(!runConfigOf((fx / "Stats" / "stats_manual_20261104120000.csv").string(), none));
+	CHECK_EQ(none.framesL2R, 7);
+}
+
 static void testRangeAndCompare(const fs::path& fx) {
 	Settings s = fixtureSettings();
 	s.from = "2026-11-03";
@@ -377,6 +404,7 @@ int main(int argc, char** argv) {
 	testParsing();
 	testFixtureAllData(fx, out);
 	testRangeAndCompare(fx);
+	testCalibrationDrives(fx);
 	testHistory(fx, out);
 	testWriteAndSnapshots(fx, out);
 	testSampleCsv(tests, out);

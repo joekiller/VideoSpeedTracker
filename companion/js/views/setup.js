@@ -21,6 +21,8 @@
 import { html, $, $$, icon, sign, band, arrow, clock, ago, toast, sheet, confirmSheet } from '../ui.js';
 import { zonesSvg, applyHandle, handlePoint, HANDLE_AXES, geometry, oneLane, MIN_ZONE, W, H, LANE } from '../overlay.js';
 import { frameStage, nudgePad, carRuler } from '../touch.js';
+import { targetPresets, defaultTarget, checkTarget, belowCruiseControl, TARGET_MIN, TARGET_MAX } from '../plan.js';
+import { prefs } from '../prefs.js';
 
 export const STEPS = ['What you need', 'Pick your spot', 'Connect the camera', 'Mark your street', 'Calibrate'];
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -486,11 +488,18 @@ function calPill(c) {
  *   check     - straight after, drive once more (ideally at another speed) and tap that pass. POST /api/calibration/check
  *               says what the new calibration makes of it, and the result card shows Verified or Off by X mph.
  * The pass list, the speed stepper and the hand-marking fallback serve both; `phase` decides what a tap does.
+ *
+ * The speed is the drive's target before the drive and "what I drove" after: chips for 10, 15, 20, 25 and the posted
+ * limit (plan.targetPresets, the same as VST Studio's), and the stepper for anything else. It starts at the chip picked
+ * last time on this phone (prefs `calTarget`), else the posted limit, and the check phase suggests another speed
+ * (plan.checkTarget). The pass list also gets the passes VST timed under its logging minimum (the `pass` event,
+ * `belowMin`), since a 10 or 15 mph drive on a quiet street is one of those.
  */
 function drive({ vst, body, cfg, st, n }) {
   const opened = Date.now();
   const recent = [];
-  let speed = cfg.CalibrationSpeed || st.speedLimit;
+  let speed = defaultTarget(prefs.get('calTarget'), st.speedLimit);
+  const presets = targetPresets(st.speedLimit);
   let phase = 'calibrate';
   let current = cfg;   // the config as the latest apply left it
   let appliedId = 0;   // the pass the calibration came from: checking it against itself proves nothing
@@ -501,8 +510,8 @@ function drive({ vst, body, cfg, st, n }) {
     <h1>Calibrate</h1>
     <p class="lede">VST learns how fast a vehicle is going by comparing it with one whose speed you know: yours.</p>
     <div class="card">
-      <div class="check"><b class="num" style="color:var(--accent)">1</b><p><b>Pick a calm moment</b> and set cruise control (or hold steady) at the speed below.</p></div>
-      <div class="check"><b class="num" style="color:var(--accent)">2</b><p><b>Drive past the camera</b> at that speed the legal way${st.legalDirection === 'both' ? ', then once the other way' : ''}. Keep this screen open; your pass appears below within seconds.</p></div>
+      <div class="check"><b class="num" style="color:var(--accent)">1</b><p><b>Pick a calm moment</b> and a target speed below. The limit is a good one; any steady speed works.</p></div>
+      <div class="check"><b class="num" style="color:var(--accent)">2</b><p><b>Drive past the camera</b> at a steady <b class="tgt"></b> the legal way${st.legalDirection === 'both' ? ', then once the other way' : ''}. Keep this screen open; your pass appears below within seconds.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">3</b><p><b>Tap your pass</b> and confirm.</p></div>
       <div class="check"><b class="num" style="color:var(--accent)">4</b><p><b>Drive once more to check.</b> Ideally at a different speed; VST says how close it gets.</p></div>
     </div>
@@ -523,8 +532,10 @@ function drive({ vst, body, cfg, st, n }) {
       </div>
     </details>
     <div id="phase"></div>
-    <h3>Speed you will drive</h3>
-    <div class="stepper" style="max-width:240px"><button data-d="-1" aria-label="Slower">−</button><output id="spd" aria-live="polite"></output><button data-d="1" aria-label="Faster">+</button></div>
+    <h3 id="spd-head">Target speed</h3>
+    <div class="seg" id="tchips" role="group" aria-label="Target speed">${presets.map((m) => html`<button data-v="${m}">${m}${m === st.speedLimit ? ' (limit)' : ''}</button>`)}</div>
+    <div class="stepper" style="max-width:240px;margin-top:8px"><button data-d="-1" aria-label="Slower">−</button><output id="spd" aria-live="polite"></output><button data-d="1" aria-label="Faster">+</button></div>
+    <p class="small muted" id="cruise" style="margin-top:8px"></p>
     <div id="run"></div>
     <div class="section-head"><h3>Passes since you opened this</h3><span class="pill small" id="listening"></span></div>
     <div id="passes"></div>
@@ -540,17 +551,33 @@ function drive({ vst, body, cfg, st, n }) {
     </details>
     ${nav(n)}`.__html;
 
-  const paintSpeed = () => { $('#spd').textContent = `${speed} mph`; };
-  $('.stepper').onclick = (e) => { const d = Number(e.target.closest('[data-d]')?.dataset.d || 0); if (d) { speed = Math.max(5, Math.min(60, speed + d)); paintSpeed(); } };
+  /** The speed shows in the stepper, the lit chip, the steps' wording and (under 25 mph) the cruise-control note. */
+  const paintSpeed = () => {
+    $('#spd').textContent = `${speed} mph`;
+    $$('.tgt').forEach((el) => { el.textContent = `${speed} mph`; });
+    $$('#tchips button').forEach((b) => b.setAttribute('aria-pressed', Number(b.dataset.v) === speed));
+    $('#spd-head').textContent = phase === 'check' ? 'Speed for the check drive' : 'Target speed';
+    $('#cruise').innerHTML = belowCruiseControl(speed)
+      ? html`Most cruise control won't hold under 25 mph. Hold it steady by eye, or record the drive with
+          <a href="https://joekiller.github.io/VideoSpeedTracker/?target=${speed}" target="_blank" rel="noopener">VST Ride-along</a>
+          and VST Studio reads your exact speed from it.`.__html
+      : '';
+  };
+  $('#tchips').onclick = (e) => {
+    const v = Number(e.target.closest('[data-v]')?.dataset.v || 0);
+    if (v) { speed = v; prefs.set('calTarget', v); paintSpeed(); }
+  };
+  $('.stepper').onclick = (e) => { const d = Number(e.target.closest('[data-d]')?.dataset.d || 0); if (d) { speed = Math.max(TARGET_MIN, Math.min(TARGET_MAX, speed + d)); paintSpeed(); } };
 
   /** The banner above the speed stepper says which phase this is, and the hand-marking button follows it. */
   const paintPhase = () => {
     $('#phase').innerHTML = phase === 'check'
-      ? html`<div class="callout" style="margin-top:12px">${icon('ruler')}<p><b>Now drive once more to check it.</b> Pick a different speed from the first pass if you can, set it below, and tap the new pass. Nothing changes; VST just tells you how close it gets.
+      ? html`<div class="callout" style="margin-top:12px">${icon('ruler')}<p><b>Now drive once more to check it</b>, at a steady <b class="tgt"></b> if you can (a different speed from the first pass tests more), and tap the new pass. Drove another speed? Set it below first. Nothing changes; VST just tells you how close it gets.
           <br><button class="btn ghost small" id="recal" style="margin-top:8px">Calibrate again instead</button></p></div>`.__html
       : '';
     $('#recal')?.addEventListener('click', () => { phase = 'calibrate'; $('#result').innerHTML = ''; paintPhase(); paintPasses(); });
     $('#mapply').textContent = phase === 'check' ? 'Check' : 'Apply';
+    paintSpeed();
   };
 
   const paintCal = (c, cal) => {
@@ -570,7 +597,7 @@ function drive({ vst, body, cfg, st, n }) {
     $('#passes').innerHTML = recent.length
       ? recent.map((v) => html`<button class="pass" style="width:100%;text-align:left;cursor:pointer" data-id="${v.id}" ${phase === 'check' && v.id === appliedId ? 'disabled' : ''}>
           ${sign(v.speed, band(v))}
-          <div class="meta"><b>${v.dir === 'L2R' ? 'Left to right' : 'Right to left'} ${arrow(v.dir)}</b><small>${clock(v.time)} · ${ago(v.time)} · ${v.frames} frames</small></div>
+          <div class="meta"><b>${v.dir === 'L2R' ? 'Left to right' : 'Right to left'} ${arrow(v.dir)}</b><small>${clock(v.time)} · ${ago(v.time)} · ${v.frames} frames${v.belowMin ? ' · slow, not logged' : ''}</small></div>
           <span class="btn ghost small">${action(v)}</span></button>`.__html).join('')
       : html`<div class="empty-state" style="padding:28px 16px">${icon('car')}<p>Waiting for a vehicle to cross the speed zone…</p></div>`.__html;
   };
@@ -580,6 +607,7 @@ function drive({ vst, body, cfg, st, n }) {
     appliedId = id || 0;
     current = r.config;
     phase = 'check';
+    speed = checkTarget(speed);   // paintPhase repaints it
     $('#result').innerHTML = '';
     refreshCal(r.config);
     paintPhase();
@@ -611,17 +639,32 @@ function drive({ vst, body, cfg, st, n }) {
     $('#result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
-  /** Confirms and applies a pass as the calibration for its direction. */
+  /**
+   * "That was me": confirms the pass and asks the speed actually driven, filled in with the target (the drive may not
+   * have hit it, or there was no target, as when the pass was picked from its detail page). The answer becomes the
+   * page's speed too, so a check afterwards starts from it.
+   */
   const choose = async (v) => {
+    let drove = speed;
     const okd = await sheet(html`
-      <h2>Calibrate from this pass?</h2>
-      <p>You drove <b>${DIR_WORDS[v.dir]}</b> at <b>${speed} mph</b> and took <b>${v.frames} frames</b> to cross the zone. VST will use this for every ${v.dir === 'L2R' ? 'left-to-right' : 'right-to-left'} vehicle.</p>
+      <h2>That was me</h2>
+      <p>You drove <b>${DIR_WORDS[v.dir]}</b> and took <b>${v.frames} frames</b> to cross the zone. What speed were you going?</p>
+      <div class="stepper" style="margin:12px 0"><button data-d="-1" aria-label="Slower">−</button><output id="drove" aria-live="polite">${drove} mph</output><button data-d="1" aria-label="Faster">+</button></div>
+      <p class="small muted">Your speedometer or GPS app, as close as you can. VST will use this for every ${v.dir === 'L2R' ? 'left-to-right' : 'right-to-left'} vehicle.</p>
       <div class="btn-row"><button class="btn" data-v="0">Cancel</button><button class="btn primary" data-v="1">Calibrate</button></div>`,
-    (el, close) => $$('[data-v]', el).forEach((b) => b.onclick = () => close(b.dataset.v === '1')));
+    (el, close) => {
+      $$('[data-v]', el).forEach((b) => b.onclick = () => close(b.dataset.v === '1'));
+      $$('[data-d]', el).forEach((b) => b.onclick = () => {
+        drove = Math.max(TARGET_MIN, Math.min(TARGET_MAX, drove + Number(b.dataset.d)));
+        $('#drove', el).textContent = `${drove} mph`;
+      });
+    });
     if (!okd) return;
+    speed = drove;
+    paintSpeed();
     const r = await vst.calibrationApply({ dir: v.dir, speed, vehicleId: v.id });
     if (!r.ok) { toast(r.problems.join('. ')); return; }
-    toast(html`${icon('check')}<span>Calibrated ${DIR_WORDS[v.dir]}: ${v.frames} frames at ${speed} mph</span>`);
+    toast(html`${icon('check')}<span>Calibrated ${DIR_WORDS[v.dir]} from your ${speed} mph pass (${v.frames} frames)</span>`);
     calibrated(r, v.id);
   };
   $('#passes').onclick = (e) => {
@@ -719,12 +762,13 @@ function drive({ vst, body, cfg, st, n }) {
 
   const onVehicle = (e) => { recent.unshift(e.detail); paintPasses(); $('#passes .pass')?.classList.add('fresh'); };
   vst.addEventListener('vehicle', onVehicle);
+  vst.addEventListener('pass', onVehicle);   // timed under the logging minimum: a slow calibration drive
 
   // Show passes from the last few minutes too, in case the drive happened before opening this screen,
   // and offer straight away a pass picked from its detail page.
   (async () => {
     const since = new Date(opened - 10 * 60e3).toISOString();
-    const earlier = await vst.vehicles({ from: since, limit: 20 });
+    const earlier = await vst.vehicles({ from: since, limit: 20, passes: 1 });
     recent.push(...earlier.filter((v) => !recent.some((r) => r.id === v.id)));
     if (preselect) {
       const v = recent.find((x) => x.id === preselect) || await vst.vehicle(preselect).catch(() => null);
@@ -755,5 +799,5 @@ function drive({ vst, body, cfg, st, n }) {
   vst.addEventListener('status', onStatus);
 
   paintSpeed(); paintCal(cfg, st.calibration); paintPhase(); paintPasses(); paintRun(st);
-  return () => { vst.removeEventListener('vehicle', onVehicle); vst.removeEventListener('status', onStatus); stopLive(); cst.destroy(); };
+  return () => { vst.removeEventListener('vehicle', onVehicle); vst.removeEventListener('pass', onVehicle); vst.removeEventListener('status', onStatus); stopLive(); cst.destroy(); };
 }

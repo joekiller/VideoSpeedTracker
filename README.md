@@ -317,7 +317,9 @@ reads both versions. Spreadsheets that read columns by position are unaffected: 
 
 Only vehicles timed at `minLoggedSpeed` or faster get a row. This optional `VST.cfg` key is in MPH; the default is 18,
 the value that was hard-coded before v1.2. Slower ones, such as walkers, cyclists and cars turning into a driveway, are
-counted in the run manifest instead. Set it to 0 to log every timed vehicle:
+counted in the run manifest instead. VST Studio sets it from the posted limit on slower streets, 5 mph under it (a
+15 mph street logs from 10), so legal traffic isn't dropped; it never raises it above 18, and a value you set by hand
+in Run settings stays. Set it to 0 to log every timed vehicle:
 
 ```
 minLoggedSpeed = 0

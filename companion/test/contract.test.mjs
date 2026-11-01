@@ -60,7 +60,7 @@ const VEHICLE = {
   dir: (d) => DIRS.includes(d), compass: isStr, wrongWay: isBool,
   speed: isInt, speeding: isBool, egregious: isBool,
   area: isInt, large: isBool, frames: isInt, startFrame: isInt, endFrame: isInt, fps: isNum,
-  snapshot: isStr, clip: (c) => c === null || isStr(c),
+  snapshot: (x) => x === null || isStr(x), clip: (c) => c === null || isStr(c), belowMin: isBool,
 };
 
 /** "Every error is JSON {"error": "message"}." */
@@ -151,9 +151,20 @@ describe('GET /api/vehicles', () => {
         assert.equal(v.egregious, v.speed >= st.egregious, `vehicle ${v.id} egregious`);
         assert.equal(v.wrongWay, st.legalDirection !== 'both' && v.dir !== st.legalDirection, `vehicle ${v.id} wrongWay`);
       }
+      assert.equal(v.belowMin, false, `vehicle ${v.id}: /api/vehicles without passes=1 lists only logged passes`);
       assert.equal(v.snapshot, `/api/vehicles/${v.id}/snapshot.jpg`);
       if (v.clip !== null) assert.equal(v.clip, `/api/vehicles/${v.id}/clip.mp4`);
     }
+  });
+
+  it('passes=1 adds the slow passes (belowMin, no snapshot) to the logged ones, ids descending', async () => {
+    const [{ data: logged }, r] = await Promise.all([api.get('/api/vehicles?limit=50'), api.get('/api/vehicles?limit=5000&passes=1')]);
+    assert.equal(r.status, 200);
+    r.data.forEach((v, i) => assertShape(v, VEHICLE, `passes[${i}]`));
+    for (let i = 1; i < r.data.length; i++) assert.ok(r.data[i - 1].id > r.data[i].id, 'ids descend');
+    const ids = new Set(r.data.map((v) => v.id));
+    for (const v of logged) assert.ok(ids.has(v.id), `logged vehicle ${v.id} is a pass too`);
+    for (const v of r.data.filter((x) => x.belowMin)) assert.equal(v.snapshot, null, `slow pass ${v.id} has no snapshot`);
   });
 
   it('since= returns only newer ids', async () => {
@@ -299,6 +310,24 @@ describe('PUT /api/config', () => {
       assert.equal((await api.get('/api/status')).data.siteName, site);
     } finally {
       await api.put('/api/config', { siteName: before.siteName });
+    }
+  });
+
+  it('a new speedLimit moves an automatic minLoggedSpeed (5 under, at most 18); an explicit one wins', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
+    const { data: before } = await api.get('/api/config');
+    try {
+      await api.put('/api/config', { speedLimit: 25, minLoggedSpeed: 18 });
+      let r = await api.put('/api/config', { speedLimit: 15 });
+      assert.equal(r.data.config.minLoggedSpeed, 10, '15 mph street logs from 10');
+      r = await api.put('/api/config', { speedLimit: 25 });
+      assert.equal(r.data.config.minLoggedSpeed, 18, 'and back to 18 at 25');
+      r = await api.put('/api/config', { speedLimit: 15, minLoggedSpeed: 12 });
+      assert.equal(r.data.config.minLoggedSpeed, 12, 'an explicit value in the same body wins');
+      r = await api.put('/api/config', { speedLimit: 20 });
+      assert.equal(r.data.config.minLoggedSpeed, 12, 'a hand-set value stays');
+    } finally {
+      await api.put('/api/config', { speedLimit: before.speedLimit, minLoggedSpeed: before.minLoggedSpeed });
     }
   });
 });

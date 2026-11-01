@@ -268,7 +268,7 @@ void AppPrefs::load() {
 	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor); str("calibratedLines", calibratedLines); str("lastPage", lastPage);
 	b("planDistMeasured", planDistMeasured);
 	str("planNote", planNote); str("planCalSig", planCalSig); i("planSource", planSource); d("planCarLengths", planCarLengths);
-	i("speedLimit", speedLimit); i("egregious", egregious); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
+	i("speedLimit", speedLimit); i("egregious", egregious); i("calibTarget", calibTarget); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
 	i("remotePort", remotePort); i("keepVideoGB", keepVideoGB); i("planPreset", planPreset);
 	b("realtime", realtime); b("highlights", highlights); b("trace", trace); b("showMotion", showMotion);
 	b("guideDone", guideDone); b("remote", remoteEnabled);
@@ -295,7 +295,7 @@ std::string AppPrefs::render() const {
 	std::ostringstream out;
 	out << "# VST Studio preferences\n"
 		<< "config = " << configPath << "\nsource = " << lastSource << "\nsite = " << siteName << "\n"
-		<< "speedLimit = " << speedLimit << "\negregious = " << egregious << "\n"
+		<< "speedLimit = " << speedLimit << "\negregious = " << egregious << "\ncalibTarget = " << calibTarget << "\n"
 		<< "realtime = " << realtime << "\nhighlights = " << highlights << "\nhlMin = " << hlMin << "\nhlMax = " << hlMax
 		<< "\nhlArea = " << hlArea << "\ntrace = " << trace << "\nshowMotion = " << showMotion << "\nguideDone = " << guideDone
 		<< "\nremote = " << remoteEnabled << "\nremotePort = " << remotePort << "\nremoteToken = " << remoteToken << "\nremoteAddress = " << remoteAddress << "\nkeepVideoGB = " << keepVideoGB

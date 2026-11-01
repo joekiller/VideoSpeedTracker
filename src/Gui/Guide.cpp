@@ -311,6 +311,7 @@ bool App::planCommit(bool quiet) {
 	PlanDraft& d = planDraft_;
 	bool wasShort = cfg.g.subFrameTiming != 0;
 	bool cfgTouched = d.shortView || !d.legal.empty() || !d.l2r.empty() || !d.r2l.empty();
+	int limitBefore = prefs.speedLimit;
 	// Where the saved distance came from decides what a later calibration keeps (syncPlanFromCalibration).
 	plan::Source src = plan::sourceOf(d.plan.source);
 	if (std::fabs(d.plan.dist - prefs.planDist) > 1e-4 || d.plan.source != prefs.planSource) {
@@ -318,6 +319,7 @@ bool App::planCommit(bool quiet) {
 		else if (src == plan::Source::Guess || src == plan::Source::Picture) prefs.planDistMeasured = false;
 	}
 	d.plan.store(prefs);
+	followSpeedLimit(limitBefore);   // a slower limit logs slower traffic too (Calibration.h minLoggedForLimit)
 	prefs.planConfirmed = true;
 	Globals& g = cfg.g;
 	if (d.shortView) applyShortView(g, d.plan);

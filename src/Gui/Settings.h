@@ -46,6 +46,7 @@ struct AppPrefs {
 	std::string siteName = "My street";
 	int speedLimit = 25;
 	int egregious = 35;
+	int calibTarget = 0;   // the drive-by calibration's target speed the user picked (mph); 0: the posted limit
 	bool realtime = true;
 	bool highlights = true;
 	int hlMin = 35, hlMax = 100, hlArea = 100;

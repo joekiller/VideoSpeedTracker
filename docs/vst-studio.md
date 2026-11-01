@@ -205,8 +205,16 @@ car and give 47 ft between the lines; the sample's own calibration drive works o
 VST counts frames rather than measuring distance, so it needs one pass at a known speed, or a measured distance it
 can turn into one: cones a taped distance apart, or a car whose length you know.
 
-- **Drive-through:** run tracking, drive past on cruise control, pick your pass from the list and enter the
-  speed you drove. From the Results page, **This was me** on a selected vehicle does the same.
+- **Drive-through:** pick a target speed (chips for 10, 15, 20 and 25 mph and your posted limit, which is the
+  default; type any other speed under **I drove at**), run tracking, drive past at that speed, pick your pass from
+  the list and enter the speed you drove. Any steady speed calibrates equally well, and a slow pass is counted in more
+  frames (each one-frame miss is a smaller share), so there's no need to drive faster than your street is comfortable
+  with. Passes slower than **Slowest logged** (5 mph under the posted limit, at most 18, unless you set it yourself)
+  aren't written to the csv or Results, but they are
+  listed here, marked "slow", so a 10 or 15 mph drive can still be picked. Most cruise control won't hold under
+  25 mph; hold it steady by eye, or let VST Ride-along read the speed (below). **Check it with a second drive**
+  suggests a speed 5 mph away from the first. From the Results page, **This was me** on a selected vehicle does the
+  same.
 - **Count frames:** step through a calibration video (←/→, Shift for 10 frames, Space to play), mark the frame
   where the front bumper touches each line, and enter the speed.
 - **Cones or pole:** no car needed. Chalk two spots a taped distance apart along the lane (10 ft or more), stand
@@ -264,7 +272,8 @@ You can drive past at any steady speed and let a recording supply the speed, ins
 - **A Tesla's dashcam.** Teslas on software 2025.44.25 or later (HW3 and newer) record the car's speed in every
   dashcam frame. Use the `-front.mp4` clip for that minute from the USB drive's `TeslaCam` folder.
 - **Any phone, with VST Ride-along.** Open [joekiller.github.io/VideoSpeedTracker](https://joekiller.github.io/VideoSpeedTracker/)
-  on the phone (add it to the home screen and it works with no signal), tap **Start recording** before you set off,
+  on the phone (add it to the home screen and it works with no signal), pick your target speed (it shows on target,
+  too fast or too slow while you drive), tap **Start recording** before you set off,
   drive past, then **Stop** and save the `.csv` to the computer. It records the phone's GPS position and speed, which
   is good to about half a mph at a steady speed. It sends nothing anywhere.
 
@@ -389,6 +398,20 @@ in view (the median, so a branch or a walker caught in one box doesn't stretch i
 and scaled by the calibration's feet per pixel, so any calibration, a known parked car included, scales sizes too.
 Each new calibration also resets VST.cfg's `largeVehicleArea` to about 190 sq ft at that scale, which is what rows
 opened from an older csv (no length in it) use.
+
+**Your own drives are marked.** A pass you used to calibrate or check (Calibrate's *Use this pass* or *Check this
+pass*, or the phone's *That was me*) shows a **calibration** or **check** tag, and its details say the speed you drove.
+It stays in the table but is left out of the tiles, the charts and the street report, since the person setting up
+isn't traffic. The marks are kept in `calibration-passes.csv` in the config folder (the pass's stats csv and frame),
+so they survive a restart.
+
+**Runs from before your latest calibration.** Each run's manifest records the calibration it was measured with. When
+that differs from the current one, its rows get an **old calibration** tag, and a line under the toolbar counts them:
+*2 runs (65 vehicles) measured before your latest calibration*. **Set them aside** moves those csvs and manifests to
+`Stats/Before calibration`. Nothing is deleted, and Open CSV still reads them. They drop out of Results and the street
+report, which reads only `Stats/`. **Put them back** undoes it. Calibrating during a live run
+(camera or stream) restarts tracking, so the cars from then on are measured with the new value in a new csv. A video
+keeps the calibration it started with until you run it again.
 
 ![Results](images/studio/06-results.jpg)
 

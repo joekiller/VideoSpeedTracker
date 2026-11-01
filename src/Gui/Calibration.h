@@ -12,6 +12,7 @@
 // The per-direction state (Not calibrated / Calibrated, not checked / Verified / Check failed) is computed from
 // those rows rather than kept anywhere else, so it survives restarts and can't drift from the record.
 #pragma once
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,25 @@ struct CalState {
 	const char* apiName() const { return kind == None ? "none" : kind == Unchecked ? "unchecked" : kind == Verified ? "verified" : "failed"; }
 };
 
+// A pass the user drove to calibrate or check, so Results can mark it ("Calibration drive, you drove 15 mph") and the
+// street report can leave it out: the person calibrating isn't traffic.  Kept in <configDir>/calibration-passes.csv
+// (Studio's own file, apart from the shared history format), one row per use:
+//
+//   PassTime, Stats, Frame, Kind, Direction, DrivenMph
+//
+// Stats (the stats csv's file name) and Frame identify the row the pass wrote, which is what a Results or report row
+// is matched on (report::passKey).  The file name, not the path, so a run set aside into Stats/Before calibration
+// still matches; re-running the same video overwrites its csv, and the same frame is then the same car.  PassTime is
+// for people reading the file.  A slow pass (under minLoggedSpeed) has no csv row and is recorded only for the record.
+struct CalPass {
+	std::string time;            // "2026-11-01T14:13:57" (local), "" when the source has no clock
+	std::string stats;           // "stats_camera0_20261101_141200.csv"
+	int frame = 0;
+	bool check = false;
+	bool l2r = true;
+	double drivenMph = 0;
+};
+
 namespace calib {
 
 constexpr double kVerifiedMph = 2.0;   // a check within this many mph of the speedometer verifies the calibration
@@ -46,6 +66,10 @@ std::string nowIso();                  // "2026-10-30T14:03:22-04:00"
 
 // Appends one row, writing the header first when the file is new.  Returns false (with err) if it can't write.
 bool append(const CalEvent& e, std::string& err);
+
+std::string passesPath();              // <configDir>/calibration-passes.csv
+bool appendPass(const CalPass& p, std::string& err);
+std::vector<CalPass> loadPasses();     // every row, oldest first; unreadable lines skipped
 // The rows for one VST.cfg (paths compared after canonicalising), oldest first.  Lines it can't parse are skipped.
 std::vector<CalEvent> load(const std::string& configPath);
 
@@ -105,5 +129,46 @@ inline constexpr KnownCar kKnownCars[] = {
 // `calibratedOffRecord` says whether the setup counts as calibrated without a history row (a v1.1 calibration made
 // before the history existed, or the bundled sample's VST.cfg).
 CalState state(const std::vector<CalEvent>& rows, bool l2r, int currentFrames, bool calibratedOffRecord);
+
+// The drive-by's target speed: what the Calibrate page (and the phone's) suggests driving at.  Any steady speed
+// calibrates equally well, since the engine scales every pass by speed × frames, and a slower pass is counted in more
+// frames, so its own one-frame uncertainty is smaller.  (The stored CalibrationFrames is still a whole number at
+// CalibrationSpeed, whatever was driven.)  The default is the posted limit, the speed a neighbour can
+// drive past without being the speeder; the presets cover quiet streets (10-20) and the old 25.
+// The pass list includes passes timed under minLoggedSpeed (Tracker::passesSince), so 10 or 15 still shows up there.
+inline constexpr int kTargetPresets[] = { 10, 15, 20, 25 };
+inline constexpr int kTargetMin = 5, kTargetMax = 80;   // the "I drove at" stepper's range
+// The chips to offer: the presets plus the posted limit when it's none of them, in order.
+inline std::vector<int> targetPresets(int speedLimit) {
+	std::vector<int> out(std::begin(kTargetPresets), std::end(kTargetPresets));
+	if (speedLimit >= kTargetMin && speedLimit <= kTargetMax && std::find(out.begin(), out.end(), speedLimit) == out.end()) {
+		out.push_back(speedLimit);
+		std::sort(out.begin(), out.end());
+	}
+	return out;
+}
+// The target to start from: the one the user picked last time (`saved`, 0 for never), else the posted limit.
+inline int defaultTarget(int saved, int speedLimit) {
+	return std::clamp(saved > 0 ? saved : speedLimit > 0 ? speedLimit : 25, kTargetMin, kTargetMax);
+}
+// A speed for the check drive, different from the calibration's so the check also shows speeds scale the way the
+// engine assumes: 5 mph faster, or 5 slower from 20 up so it stays near a quiet street's limit.
+inline int checkTarget(int calibratedAt) {
+	return std::clamp(calibratedAt >= 20 ? calibratedAt - 5 : calibratedAt + 5, kTargetMin, kTargetMax);
+}
+// The engine's minLoggedSpeed for a posted limit: 5 mph under it, never above the engine default of 18 nor below 5.
+// 18 was chosen for 25 mph streets (walkers and cyclists out, traffic in); on a 15 mph street it also drops legal
+// traffic at 12-17 mph, which skews the share over the limit.  So 15 -> 10, 20 -> 15, 25 and up -> 18.
+inline constexpr int kDefaultMinLogged = 18;
+inline int minLoggedForLimit(int speedLimit) { return std::clamp(speedLimit - 5, 5, kDefaultMinLogged); }
+// Whether a minLoggedSpeed is still the automatic one (the default, or what minLoggedForLimit gave for `speedLimit`),
+// so a new limit may move it.  A value the user typed in Run settings or VST.cfg stays as it is.
+inline bool minLoggedFollows(int minLogged, int speedLimit) {
+	return minLogged == kDefaultMinLogged || minLogged == minLoggedForLimit(speedLimit);
+}
+
+// Many cars' cruise control won't engage below about 20-25 mph, so a slower target needs a steady foot, or a speed
+// read afterwards from VST Ride-along or a Tesla dashcam clip.
+inline bool belowCruiseControl(int mph) { return mph < 25; }
 
 }  // namespace calib

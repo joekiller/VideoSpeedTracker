@@ -13,6 +13,7 @@ using Clock = std::chrono::steady_clock;
 
 static constexpr size_t kRing = 90;          // frame pairs of analysis-box history (~6 s at 30 fps) for snapshots/clips
 static constexpr size_t kMaxVehicles = 5000;  // session history cap
+static constexpr size_t kMaxSlowPasses = 200; // slow passes kept for calibration (walkers and bikes add up on a busy day)
 static constexpr size_t kMaxLog = 400;
 
 static std::string nowIso() {
@@ -87,6 +88,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 	hooks.onFrame = [this](const vst::FrameInfo& f) { onFrame(f); };
 	hooks.onVehicle = [this](const vst::VehicleEvent& e) { onVehicle(e); };
 	hooks.onAttempt = [this](const vst::AttemptEvent& a) {
+		if (a.timed) onSlowPass(a);
 		std::lock_guard<std::mutex> l(mu_);
 		(a.timed ? slow_ : untimed_)++;
 	};
@@ -109,6 +111,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 		std::string stem = jobStem(job.input);
 		job.statsPath = (data / "Stats" / ("stats_" + stem + ".csv")).string();
 		job.manifestPath = vst::manifestPathFor(job.statsPath);
+		currentStats_ = job.statsPath;
 		std::vector<std::string> args = {
 			"--input", job.input, "--config", opt.configPath, "--stats", job.statsPath,
 			"--speed-limit", std::to_string(opt.speedLimit), "--egregious", std::to_string(opt.egregious),
@@ -150,13 +153,14 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 		paceFrame0_ = -1;
 		rateFrames_ = 0;
 		rateStart_ = Clock::now();
-		int before = lastVehicleId();
+		int before;
+		{ std::lock_guard<std::mutex> l(mu_); before = loggedTotal_; }
 
 		int rc = vst::run(args, hooks);
 
 		std::lock_guard<std::mutex> l(mu_);
 		progress_.reconnecting = false;
-		job.vehicles = nextId_ - 1 - before;
+		job.vehicles = loggedTotal_ - before;
 		job.state = stop_ ? Job::Stopped : rc == 0 ? Job::Done : Job::Failed;
 		if (rc != 0 && !log_.empty()) job.message = log_.back();
 		jobs_[i] = job;
@@ -217,11 +221,12 @@ void Tracker::onFrame(const vst::FrameInfo& f) {
 	}
 }
 
-void Tracker::onVehicle(const vst::VehicleEvent& e) {
+Vehicle Tracker::passFor(const vst::VehicleEvent& e) {
 	Vehicle v;
 	v.time = nowIso();
 	v.video = displayName(currentInput_);
 	v.videoPath = currentInput_;
+	v.statsPath = currentStats_;
 	v.fps = fps_;
 	v.live = liveSource_;
 	v.ev = e;
@@ -232,6 +237,35 @@ void Tracker::onVehicle(const vst::VehicleEvent& e) {
 		if (liveSource_) v.time = e.timestamp.substr(0, 19);
 		else v.recorded = e.timestamp.substr(0, 19);
 	}
+	return v;
+}
+
+// A pass timed under minLoggedSpeed: no csv row, but its frames are as good for calibration as a logged one's, which
+// matters on a slow street (a 15 mph calibration drive against the default minLoggedSpeed of 18).  Kept apart from
+// vehicles_ so Results, the counts and /api/vehicles see only what the csv has.
+void Tracker::onSlowPass(const vst::AttemptEvent& a) {
+	vst::VehicleEvent e;
+	e.leftToRight = a.leftToRight;
+	e.wrongWay = false;
+	e.speed = a.speed;
+	e.frame = a.frame;
+	e.startFrame = a.startFrame;
+	e.endFrame = a.endFrame;
+	e.startPixel = a.startPixel;
+	e.endPixel = a.endPixel;
+	e.area = 0;
+	e.timestamp = a.timestamp;
+	e.compass = a.compass;
+	Vehicle v = passFor(e);
+	v.belowMin = true;
+	std::lock_guard<std::mutex> l(mu_);
+	v.id = nextId_++;
+	slowPasses_.push_back(std::move(v));
+	while (slowPasses_.size() > kMaxSlowPasses) slowPasses_.pop_front();
+}
+
+void Tracker::onVehicle(const vst::VehicleEvent& e) {
+	Vehicle v = passFor(e);
 	v.large = e.area >= opt_.largeArea;
 	v.speeding = e.speed > opt_.speedLimit;
 	v.egregious = e.speed >= opt_.egregious;
@@ -278,6 +312,8 @@ void Tracker::onVehicle(const vst::VehicleEvent& e) {
 
 	std::lock_guard<std::mutex> l(mu_);
 	v.id = nextId_++;
+	lastLoggedId_ = v.id;
+	loggedTotal_++;
 	vehicles_.push_back(std::move(v));
 	while (vehicles_.size() > kMaxVehicles) vehicles_.pop_front();
 }
@@ -318,14 +354,33 @@ std::vector<Vehicle> Tracker::vehiclesSince(int afterId, size_t limit) {
 	return out;
 }
 
+std::vector<Vehicle> Tracker::passesSince(int afterId, size_t limit) {
+	std::lock_guard<std::mutex> l(mu_);
+	std::vector<Vehicle> out;
+	// Both deques are in id order: merge them.
+	auto a = vehicles_.begin(), b = slowPasses_.begin();
+	while (a != vehicles_.end() || b != slowPasses_.end()) {
+		const Vehicle& v = b == slowPasses_.end() || (a != vehicles_.end() && a->id < b->id) ? *a++ : *b++;
+		if (v.id > afterId) out.push_back(v);
+	}
+	if (limit && out.size() > limit) out.erase(out.begin(), out.end() - limit);
+	return out;
+}
+
 bool Tracker::vehicle(int id, Vehicle& out) {
 	std::lock_guard<std::mutex> l(mu_);
-	for (const Vehicle& v : vehicles_)
-		if (v.id == id) { out = v; return true; }
+	for (const auto* q : { &vehicles_, &slowPasses_ })
+		for (const Vehicle& v : *q)
+			if (v.id == id) { out = v; return true; }
 	return false;
 }
 
 int Tracker::lastVehicleId() {
+	std::lock_guard<std::mutex> l(mu_);
+	return lastLoggedId_;
+}
+
+int Tracker::lastPassId() {
 	std::lock_guard<std::mutex> l(mu_);
 	return nextId_ - 1;
 }
@@ -352,7 +407,25 @@ Counts Tracker::counts() {
 void Tracker::clearVehicles() {
 	std::lock_guard<std::mutex> l(mu_);
 	vehicles_.clear();
+	slowPasses_.clear();
 	slow_ = untimed_ = 0;
+}
+
+int Tracker::forgetRun(const std::string& statsPath) {
+	std::lock_guard<std::mutex> l(mu_);
+	auto from = [&](std::deque<Vehicle>& q) {
+		size_t before = q.size();
+		q.erase(std::remove_if(q.begin(), q.end(), [&](const Vehicle& v) { return v.statsPath == statsPath; }), q.end());
+		return int(before - q.size());
+	};
+	int gone = from(vehicles_);
+	slow_ = std::max(0, slow_ - from(slowPasses_));
+	return gone;
+}
+
+std::string Tracker::runningStatsPath() {
+	std::lock_guard<std::mutex> l(mu_);
+	return running_ ? lastStats_ : std::string();
 }
 
 std::vector<std::string> Tracker::logTail(size_t n) {

@@ -110,7 +110,11 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     return out;
   };
   const commit = () => {
-    if (draft.speedLimit != null) { config.speedLimit = draft.speedLimit; if (config.egregious <= config.speedLimit) config.egregious = config.speedLimit + 10; }
+    if (draft.speedLimit != null) {
+      if (plan.minLoggedFollows(config.minLoggedSpeed, config.speedLimit)) config.minLoggedSpeed = plan.minLoggedForLimit(draft.speedLimit);
+      config.speedLimit = draft.speedLimit;
+      if (config.egregious <= config.speedLimit) config.egregious = config.speedLimit + 10;
+    }
     if (pending.shortView) config.subFrameTiming = 1;
     for (const k of ['legalDirection', 'L2RDirection', 'R2LDirection', 'siteName']) if (pending[k]) config[k] = pending[k];
     delete draft.speedLimit;
@@ -241,6 +245,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       frames, startFrame: frame - frames - 30, endFrame: frame - 30, fps: 30,
       snapshot: `/api/vehicles/${id}/snapshot.jpg`,
       clip: withClip ? `/api/vehicles/${id}/clip.mp4` : null,
+      belowMin: false,   // the demo's passes are all at or over minLoggedSpeed
     };
   }
 
@@ -363,6 +368,9 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
 
   function setConfig(partial) {
     const merged = { ...config, ...partial };
+    // Like VST Studio's applyConfig: a new limit moves an automatic minLoggedSpeed, unless the body sets one.
+    if (partial.speedLimit != null && partial.minLoggedSpeed == null && merged.speedLimit !== config.speedLimit
+      && plan.minLoggedFollows(config.minLoggedSpeed, config.speedLimit)) merged.minLoggedSpeed = plan.minLoggedForLimit(merged.speedLimit);
     const problems = validate(merged);
     if (problems.length) return { ok: false, problems, config: { ...config } };
     Object.assign(config, merged);

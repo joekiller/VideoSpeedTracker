@@ -254,6 +254,15 @@ static void readManifest(const fs::path& p, Run& run) {
 	}
 }
 
+bool runConfigOf(const std::string& csvPath, RunConfig& out) {
+	Run run;
+	run.cfg = out;
+	readManifest(manifestFor(csvPath), run);
+	if (!run.cfgFromManifest) return false;
+	out = run.cfg;
+	return true;
+}
+
 // Times for a row.  The Timestamp column (VST 1.1+) is when the vehicle passed.  Older csvs only have Date/Time, which
 // for Foscam recordings (manual_yyyymmddhhmmss) is when the recording started, the same on every row: the vehicle's
 // offset into the video (Frame / fps) is added.  For other sources Date/Time was already the moment it passed.
@@ -304,6 +313,7 @@ std::vector<Run> loadRuns(const Input& in, std::vector<Obs>& obs) {
 		std::string legal = run.cfg.resolveLegal();
 		int idx = int(runs.size());
 		for (const StatsRow& r : rows) {
+			if (in.calibrationPasses.count(passKey(run.name, r.frame))) { run.calibrationDrives++; continue; }
 			Obs o;
 			o.run = idx;
 			o.t = rowTime(r, recordingStart, fps);
@@ -653,6 +663,9 @@ Study analyze(const Input& in, const Settings& s) {
 	if (st.undatedExcluded) st.caveats.push_back(count(st.undatedExcluded, "vehicle has", "vehicles have") + " no time at all and " + (st.undatedExcluded == 1 ? "is" : "are") + " left out of this date range.");
 	if (st.undatedIncluded) st.caveats.push_back(count(st.undatedIncluded, "vehicle has", "vehicles have") + " no time: counted in the speed statistics but not in the time-of-day charts or coverage.");
 	if (st.flaggedExcluded) st.caveats.push_back(count(st.flaggedExcluded, "vehicle", "vehicles") + " flagged as implausible (*****) left out of every statistic.");
+	int calDrives = 0;
+	for (const Run& r : st.runs) calDrives += r.calibrationDrives;
+	if (calDrives) st.caveats.push_back(count(calDrives, "calibration or check drive", "calibration or check drives") + " by the person setting up VST left out of every statistic.");
 	if (legals.size() > 1) st.caveats.push_back("The one-way setting (LegalDirection) changed between runs; the wrong-way count uses each run's own setting.");
 	for (int k = 0; k < 2; k++)
 		if (st.checkMismatch[k])
