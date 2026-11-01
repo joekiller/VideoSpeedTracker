@@ -3,6 +3,7 @@
 #include "Report.h"
 #include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <cmath>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -70,7 +71,9 @@ static json toJson(const Info& in) {
 	for (const Vehicle& v : in.vehicles)
 		vs.push_back({ { "passed", v.passed }, { "speed", v.speed }, { "direction", v.l2r ? "L2R" : "R2L" }, { "compass", v.compass },
 			{ "wrongWay", v.wrongWay }, { "frames", v.frames }, { "area", v.area }, { "frame", v.frame }, { "large", v.large },
-			{ "flagged", v.flagged }, { "fps", v.fps }, { "source", v.source }, { "snapshot", v.snapshot }, { "clip", v.clip } });
+			{ "flagged", v.flagged }, { "fps", v.fps }, { "source", v.source }, { "snapshot", v.snapshot }, { "clip", v.clip },
+			{ "lengthFt", std::round(v.lengthFt * 10) / 10 }, { "trend", v.trend }, { "entryMph", v.entryMph }, { "exitMph", v.exitMph },
+			{ "accel", v.accel }, { "mphIn20ft", v.mphIn20ft }, { "ownDrive", v.ownDrive }, { "drivenMph", v.drivenMph } });
 	const Calibration& c = in.cal;
 	return {
 		{ "format", "vst-archive" }, { "version", 1 },
@@ -131,6 +134,14 @@ static void fromJson(const json& j, Info& out) {
 			v.source = str(o, "source", "");
 			v.snapshot = str(o, "snapshot", "");
 			v.clip = str(o, "clip", "");
+			v.lengthFt = num(o, "lengthFt", 0);
+			v.trend = str(o, "trend", "");
+			v.entryMph = int(num(o, "entryMph", 0));
+			v.exitMph = int(num(o, "exitMph", 0));
+			v.accel = num(o, "accel", 0);
+			v.mphIn20ft = int(num(o, "mphIn20ft", 0));
+			v.ownDrive = int(num(o, "ownDrive", 0));
+			v.drivenMph = num(o, "drivenMph", 0);
 			out.vehicles.push_back(v);
 		}
 	out.firstPassed.clear();
@@ -144,12 +155,19 @@ static void fromJson(const json& j, Info& out) {
 
 static std::string vehiclesCsv(const Info& in) {
 	std::ostringstream o;
-	o << "#,Passed,Speed (mph),Direction,Compass,Wrong way,Frames,Size,Truck or bus,Flagged,Source,Snapshot,Clip\n";
+	// New columns go at the end, so a spreadsheet made from an older vehicles.csv keeps its column letters.
+	o << "#,Passed,Speed (mph),Direction,Compass,Wrong way,Frames,Size,Truck or bus,Flagged,Source,Snapshot,Clip,"
+		"Length (ft),In (mph),Out (mph),Accel (mph/s),Trend,In 20 ft (mph),Own drive\n";
 	for (size_t i = 0; i < in.vehicles.size(); i++) {
 		const Vehicle& v = in.vehicles[i];
 		o << i + 1 << ',' << cell(v.passed) << ',' << v.speed << ',' << (v.l2r ? "L2R" : "R2L") << ',' << cell(v.compass) << ','
 			<< (v.wrongWay ? "yes" : "") << ',' << v.frames << ',' << v.area << ',' << (v.large ? "yes" : "") << ','
-			<< (v.flagged ? "yes" : "") << ',' << cell(v.source) << ',' << cell(v.snapshot) << ',' << cell(v.clip) << '\n';
+			<< (v.flagged ? "yes" : "") << ',' << cell(v.source) << ',' << cell(v.snapshot) << ',' << cell(v.clip) << ',';
+		if (v.lengthFt > 0) o << std::round(v.lengthFt * 10) / 10;
+		o << ',';
+		if (!v.trend.empty()) o << v.entryMph << ',' << v.exitMph << ',' << v.accel << ',' << v.trend << ',' << v.mphIn20ft;
+		else o << ",,,,";
+		o << ',' << (v.ownDrive == 1 ? "calibration" : v.ownDrive == 2 ? "check" : "") << '\n';
 	}
 	return o.str();
 }
@@ -361,24 +379,27 @@ const when=v=>v.passed?v.passed.replace('T',' '):(v.fps>0?Math.floor(v.frame/v.f
 document.getElementById('title').textContent=A.name||'Archived dataset';
 document.title=(A.name||'Archive')+' · VST';
 document.getElementById('sub').textContent=[A.siteName,'archived '+(A.created||'').slice(0,10),'from '+(A.from=='This session'?'this session':A.from),'limit '+L+' mph'].filter(Boolean).join(' · ');
-const sp=V.map(v=>v.speed).sort((a,b)=>a-b),p85=sp.length?sp[Math.ceil(.85*sp.length)-1]:0;
+const T=V.filter(v=>!v.ownDrive);  // traffic: the tiles leave out the user's own calibration and check drives
+const sp=T.map(v=>v.speed).sort((a,b)=>a-b),p85=sp.length?sp[Math.ceil(.85*sp.length)-1]:0;
 const tile=(k,v,s)=>`<div class="tile"><span class="dim">${k}</span><b>${v}</b><span class="dim">${s}</span></div>`;
-document.getElementById('tiles').innerHTML=tile('Vehicles',V.length,'')+tile('Speeding',V.filter(v=>v.speed>L).length,'over '+L+' mph')
- +tile('Way over',V.filter(v=>v.speed>=W).length,W+' mph or more')+tile('Wrong way',V.filter(v=>v.wrongWay).length,'')+tile('85th percentile',p85+' mph','');
+document.getElementById('tiles').innerHTML=tile('Vehicles',T.length,V.length>T.length?(V.length-T.length)+' own drives left out':'')+tile('Speeding',T.filter(v=>v.speed>L).length,'over '+L+' mph')
+ +tile('Way over',T.filter(v=>v.speed>=W).length,W+' mph or more')+tile('Wrong way',T.filter(v=>v.wrongWay).length,'')+tile('85th percentile',p85+' mph','');
 const F=[['All',v=>true],['Speeding',v=>v.speed>L],['Way over',v=>v.speed>=W],['Wrong way',v=>v.wrongWay]];
 let f=0,key='speed',asc=false,sel=0;
 function draw(){
  document.getElementById('filters').innerHTML=F.map((x,i)=>`<button class="${i==f?'on':''}" onclick="f=${i};draw()">${x[0]}</button>`).join('');
  const r=V.filter(F[f][1]).sort((a,b)=>{const x=a[key],y=b[key];return (x<y?-1:x>y?1:0)*(asc?1:-1)});
  document.getElementById('rows').innerHTML=r.map(v=>`<tr class="${v.n==sel?'sel':''}" onclick="pick(${v.n})"><td>${v.n}</td>`
-  +`<td><span class="pill" style="background:${col(v)}">${v.speed} mph</span></td><td>${v.direction=='R2L'?'←':'→'} ${esc(v.compass)}${v.wrongWay?' <span class="pill" style="background:var(--wrong)">wrong way</span>':''}</td>`
+  +`<td><span class="pill" style="background:${col(v)}">${v.speed} mph</span></td><td>${v.direction=='R2L'?'←':'→'} ${esc(v.compass)}${v.wrongWay?' <span class="pill" style="background:var(--wrong)">wrong way</span>':''}${v.ownDrive?' <span class="pill" style="background:var(--acc)">'+(v.ownDrive==2?'check':'calibration')+'</span>':''}</td>`
   +`<td>${esc(when(v))}</td><td class="dim src">${esc(v.source)}${v.flagged?' ⚠':''}</td></tr>`).join('');
 }
 function pick(n){sel=n;const v=V[n-1];draw();
  document.getElementById('det').innerHTML=(v.snapshot?`<img src="${esc(v.snapshot)}" alt="snapshot">`:'<p class="dim">No snapshot for this vehicle.</p>')
  +`<div class="big" style="color:${col(v)}">${v.speed} <span class="dim" style="font-size:16px">mph</span></div>`
  +`<div>${v.direction=='R2L'?'Right to left':'Left to right'}${v.compass?', '+esc(v.compass):''}${v.wrongWay?' · <b>wrong way</b>':''}</div>`
- +`<div class="dim">${esc(when(v))} · ${v.frames} frames · size ${v.area}${v.large?' (truck or bus)':''}</div>`
+ +`<div class="dim">${esc(when(v))} · ${v.frames} frames · ${v.lengthFt>0?Math.round(v.lengthFt)+' ft long':'size '+v.area}${v.large?' (truck or bus)':''}</div>`
+ +(v.trend?`<div class="dim">${v.entryMph} → ${v.exitMph} mph in the zone (${v.accel>0?'+':''}${v.accel} mph/s, ${esc(v.trend)}), ${v.mphIn20ft} mph 20 ft on</div>`:'')
+ +(v.ownDrive?`<div><b>Your own ${v.ownDrive==2?'check':'calibration'} drive</b> at ${v.drivenMph} mph: left out of the counts.</div>`:'')
  +(v.clip?`<p><video src="${esc(v.clip)}" controls muted playsinline></video><br><a href="${esc(v.clip)}">Open the clip</a></p>`:'');
  if(innerWidth<820)document.getElementById('det').scrollIntoView({behavior:'smooth'});}
 document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{const k=th.dataset.k;asc=key==k?!asc:k!='speed';key=k;draw()});

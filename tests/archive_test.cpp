@@ -16,6 +16,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <cstdio>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -92,6 +93,9 @@ int main(int argc, char** argv) {
 	b.row.speed = 12; b.row.l2r = false; b.row.wrongWay = true; b.row.passed = "2026-11-03T17:10:00"; b.row.compass = "NW";
 	b.clipPath = (data / "Clips" / "vehicle_2.mp4").string();
 	c.row.speed = 40; c.row.frame = 900; c.row.fps = 30;   // a recording with no time: "0:30 in video"
+	// What Results adds beyond the csv (sizes, speed trend, the user's own drive) survives the round trip.
+	a.row.lengthFt = 15.24; a.row.trend = "accelerating"; a.row.entryMph = 29; a.row.exitMph = 33; a.row.accel = 3.5; a.row.mphIn20ft = 34;
+	b.row.ownDrive = 1; b.row.drivenMph = 15;
 	req.vehicles = { a, b, c };
 
 	std::string dir, err;
@@ -136,6 +140,9 @@ int main(int argc, char** argv) {
 	CHECK_EQ(info.vehicles[0].source, std::string("cam</script><b>x"));
 	CHECK(!info.vehicles[1].l2r && info.vehicles[1].wrongWay && info.vehicles[1].snapshot.empty());
 	CHECK_EQ(info.vehicles[2].frame, 900);
+	CHECK(std::fabs(info.vehicles[0].lengthFt - 15.2) < 1e-9 && info.vehicles[0].trend == "accelerating" && info.vehicles[0].entryMph == 29
+		&& info.vehicles[0].exitMph == 33 && std::fabs(info.vehicles[0].accel - 3.5) < 1e-9 && info.vehicles[0].mphIn20ft == 34);
+	CHECK(info.vehicles[1].ownDrive == 1 && info.vehicles[1].drivenMph == 15 && info.vehicles[1].trend.empty() && info.vehicles[2].ownDrive == 0);
 	CHECK_EQ(info.firstPassed, std::string("2026-11-02T07:05:00"));
 	CHECK_EQ(info.lastPassed, std::string("2026-11-03T17:10:00"));
 	CHECK(std::find(info.files.begin(), info.files.end(), "Stats/run_cam_20261103.json") != info.files.end());

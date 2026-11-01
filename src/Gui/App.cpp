@@ -785,6 +785,7 @@ bool App::appendStatsRows(const std::string& path, const std::string& label, int
 		r.exitMph = s.exitMph;
 		r.accel = s.accel;
 		r.mphIn20ft = s.mphIn20ft;
+		r.widthPx = s.lengthPx;
 		rows.push_back(r);
 	}
 	return true;
@@ -879,7 +880,7 @@ void App::showSessionResults() {
 	archive_ = archive::Info();
 }
 
-// Each vehicle's length in feet when the calibration gives the scale (session rows; a csv has no length column), and
+// Each vehicle's length in feet when the calibration gives the scale (session rows, and csv rows from v1.10's LengthPx), and
 // truck-or-bus by that real size: about 24 ft long or more.  A csv row keeps the area test, against the threshold
 // retuneLargeVehicles() set from the same calibration.
 void App::sizeRows() {
@@ -924,6 +925,14 @@ bool App::openArchive(const std::string& dir) {
 		r.flagged = v.flagged;
 		r.fps = v.fps > 0 ? v.fps : 30;
 		r.time = v.passed;
+		r.lengthFt = v.lengthFt;   // feet at the archive's own calibration; sizeRows() isn't run on an archive
+		r.trend = v.trend;
+		r.entryMph = v.entryMph;
+		r.exitMph = v.exitMph;
+		r.accel = v.accel;
+		r.mphIn20ft = v.mphIn20ft;
+		r.calKind = v.ownDrive;
+		r.drivenMph = v.drivenMph;
 		if (!v.snapshot.empty()) r.snapshotPath = (fs::path(a.dir) / fs::path(v.snapshot)).string();
 		if (!v.clip.empty()) r.clipPath = (fs::path(a.dir) / fs::path(v.clip)).string();
 		rows.push_back(r);
@@ -998,6 +1007,14 @@ archive::Request App::archiveRequest(const std::string& name, bool move) {
 		v.flagged = r.flagged;
 		v.fps = r.fps;
 		v.source = r.source;
+		v.lengthFt = r.lengthFt;
+		v.trend = r.trend;
+		v.entryMph = r.entryMph;
+		v.exitMph = r.exitMph;
+		v.accel = r.accel;
+		v.mphIn20ft = r.mphIn20ft;
+		v.ownDrive = r.calKind;
+		v.drivenMph = r.drivenMph;
 		Vehicle tv;
 		if (r.vehicleId && tracker.vehicle(r.vehicleId, tv)) { s.snapshot = tv.snapshot; s.clipPath = tv.clipPath; }
 		req.vehicles.push_back(std::move(s));

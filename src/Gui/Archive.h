@@ -44,6 +44,14 @@ struct Vehicle {
 	double fps = 30;
 	std::string source;                   // the video or camera's display name
 	std::string snapshot, clip;
+	// What Results knows beyond the csv's first columns, kept so the reviewer shows the same table (all 0 / "" when
+	// unknown, and in archives written before these existed):
+	double lengthFt = 0;                  // side-on length in feet at the calibration of the time
+	std::string trend;                    // SpeedTrend name ("decelerating", "steady", "accelerating", "rapid"), "" = can't tell
+	int entryMph = 0, exitMph = 0, mphIn20ft = 0;
+	double accel = 0;                     // mph per second, + speeding up
+	int ownDrive = 0;                     // 1: the user's own calibration drive, 2: their check drive; left out of the counts
+	double drivenMph = 0;                 // for those, the speed they said they drove
 };
 
 // The calibration and directions the runs used, for the report's runs that have no manifest of their own.
