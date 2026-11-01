@@ -416,7 +416,17 @@ stops VST reconnects as described above. `VST_RPICAM_VID` names a different prog
 the tests use it to stand in a recording for the camera.
 
 A USB camera (`--input 0`) is asked for 1280x720 at 60 fps in MJPG, the mode most webcams need for 60 fps over USB 2;
-one without it uses its nearest mode. Video files and stream URLs are decoded on the graphics chip when it has a video
+one without it uses its nearest mode. Its shutter is then fixed at 1/1000 s, like a Pi camera's, so cars stay sharp and
+a webcam can't slow to 30 fps in shade while still reporting 60 (speeds are counted in frames). If the picture is too
+dark at 1/1000 s VST tries 1/500 and 1/250 s, and puts the camera back on automatic if none is bright enough. This works
+on Linux (V4L2) and Windows (Media Foundation, DirectShow); macOS doesn't let VST set it, so lock exposure in the
+camera's own app there. The log says what happened, and whether the camera sent fewer frames than it reported.
+`VST_CAMERA_SHUTTER_US` sets a different shutter in microseconds, or `0` to leave it automatic.
+
+On **Connect the camera**, *Check what this camera can do* tries a USB camera at 720p and 1080p, 30 and 60 fps, times
+what it really sends and lists the settings its driver takes. *Report this camera* then opens a new GitHub issue in the
+browser with those details filled in (no pictures, no file paths), for adding support for a camera that doesn't work
+well. Nothing is sent unless you submit the issue. Video files and stream URLs are decoded on the graphics chip when it has a video
 decoder (Intel Quick Sync, VA-API, D3D11), which takes most of the work off the CPU; without one VST decodes in software
 as before. Set `VST_HW_DECODE=0` to turn hardware decoding off.
 

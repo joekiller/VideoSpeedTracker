@@ -116,6 +116,7 @@ public:
 	int width() const { return settings_.width; }
 	int height() const { return settings_.height; }
 	double fps() const { return fps_; }
+	int shutterUs() const { return settings_.shutterUs; }   // the exposure time rpicam-vid was given; 0 = automatic
 	const Camera& camera() const { return camera_; }
 	const std::string& error() const { return error_; }
 	// Lines worth showing once the camera is open: the model and settings, and any frame rate fallback.

@@ -958,6 +958,99 @@ void App::drawToasts(float w, float h) {
 // Source
 // ======================================================================================================
 
+// "Check what this camera can do" and, after it, "Report this camera" (frameio::probeCamera, FrameInput.h).  The probe
+// needs the camera to itself, so the preview closes, the probe runs on a worker for a few seconds, and the camera
+// opens again when it's done.  The report is shown here and goes nowhere by itself: the button opens a new GitHub issue
+// in the browser with the details filled in, for the person to read, add the camera's name to and submit (or not).
+// `failure` is the connection error when the camera didn't open, which goes in the report too.
+void App::cameraCheck(const std::string& path, const std::string& failure) {
+	ImGui::Dummy(ImVec2(0, px(4)));
+	if (cameraProbe_.valid()) {
+		if (cameraProbe_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
+			ImGui::TextUnformatted(ICON_GAUGE "  Checking what this camera can do… (about 10 s)");
+			ImGui::PopStyleColor();
+			return;
+		}
+		cameraReport_ = cameraProbe_.get();
+		haveCameraReport_ = true;
+		std::string reopen = probeSource_;
+		probeSource_.clear();
+		if (!reopen.empty()) openSource(reopen);
+		return;
+	}
+	ImGui::BeginDisabled(tracker.running());
+	if (ghostButton(ICON_GAUGE "  Check what this camera can do", ImVec2(-FLT_MIN, 0))) {
+		int index = std::atoi(path.c_str());
+		probeSource_ = path;
+		haveCameraReport_ = false;
+		player.closeAndWait(3);
+		cameraProbe_ = std::async(std::launch::async, [index] { return frameio::probeCamera(index); });
+	}
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip(tracker.running() ? "Live tracking is using the camera. Stop tracking first."
+			: "Tries the camera at 720p and 1080p, 30 and 60 fps, times what it really sends, and lists the settings its driver takes.");
+	if (!haveCameraReport_ || cameraReport_.index != std::atoi(path.c_str())) return;
+
+	// The short version: the best mode for timing, and the shutter.
+	const frameio::CameraReport& r = cameraReport_;
+	const frameio::CameraReport::Mode* best = nullptr;
+	for (const auto& m : r.modes)
+		if (m.measured > 0 && m.h >= 480 && (!best || m.measured > best->measured + 5 || (std::fabs(m.measured - best->measured) <= 5 && m.h > best->h))) best = &m;
+	ImGui::PushTextWrapPos(0);
+	if (!r.opened) dimText(ICON_WARN "  %s", r.error.c_str());
+	else if (best) dimText(ICON_CHECK_CIRCLE "  Best for timing: %d × %d at about %.0f fps.", best->w, best->h, best->measured);
+	else dimText(ICON_WARN "  It opened but sent no picture in any mode tried.");
+	if (r.opened) {
+		int sets = 0;
+		for (const auto& k : r.controls) sets += k.settable;
+		dimText("%d of %d settings take a value from VST. Shutter as VST opens it: %s.", sets, int(r.controls.size()),
+			r.policy.shutter == frameio::Shutter::Fixed ? "fixed" : r.policy.shutter == frameio::Shutter::CantSet ? "can't be set here" : "automatic");
+	}
+	dimText("If this camera isn't working well, a report helps us add support for it. It opens a GitHub issue in your browser "
+		"with these details filled in; nothing is sent unless you submit it.");
+	ImGui::PopTextWrapPos();
+	float bw = (ImGui::GetContentRegionAvail().x - px(8)) / 2;
+	if (ghostButton(ICON_EXTERNAL "  Report this camera", ImVec2(bw, 0))) openWithSystem(cameraIssueUrl(failure));
+	ImGui::SameLine(0, px(8));
+	if (ghostButton(ICON_LAYERS "  Copy details", ImVec2(bw, 0))) {
+		ImGui::SetClipboardText(r.markdown().c_str());
+		toast("Camera details copied", c::accent2, ICON_CHECK_CIRCLE);
+	}
+}
+
+// A new-issue link with the title and body filled in.  The body is percent-encoded and kept under about 6 KB so the
+// link stays inside what browsers and GitHub accept.
+std::string App::cameraIssueUrl(const std::string& failure) const {
+	auto encode = [](const std::string& t) {
+		std::string o;
+		char b[4];
+		for (unsigned char ch : t) {
+			if (std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') o += char(ch);
+			else { snprintf(b, sizeof b, "%%%02X", ch); o += b; }
+		}
+		return o;
+	};
+#if defined(_WIN32)
+	const char* os = "Windows";
+#elif defined(__APPLE__)
+	const char* os = "macOS";
+#else
+	const char* os = "Linux";
+#endif
+	const frameio::CameraReport& r = cameraReport_;
+	std::string title = "Camera support: " + (r.name.empty() ? "camera " + std::to_string(r.index) : r.name) + " (" + (r.backend.empty() ? os : r.backend) + ")";
+	std::string body = "<!-- Filled in by VST Studio's \"Report this camera\". Add what you know, then submit. -->\n\n"
+		"**Camera make and model:** \n\n**What happens:** (for example: no picture, only 30 fps, too dark)\n\n"
+		"**VST** " VST_VERSION " on " + std::string(os) + ", OpenCV " CV_VERSION "\n\n";
+	if (!failure.empty()) body += "**Connecting said:** " + failure + "\n\n";
+	body += r.markdown();
+	std::string encoded = encode(body);
+	if (encoded.size() > 6000) encoded = encode(body.substr(0, 4000) + "\n\n(cut short: use Copy details for the rest)");
+	return "https://github.com/joekiller/VideoSpeedTracker/issues/new?title=" + encode(title) + "&body=" + encoded;
+}
+
 // The Pi camera settings popup on the camera card.  Defaults suit a street seen from the side (PiCamera.h): 60 fps, a
 // 1/1000 s shutter so cars don't smear, and Camera Module 3's focus locked so it never hunts as cars pass.
 void App::piCameraSettings() {
@@ -1234,6 +1327,11 @@ void App::pageSource() {
 				fact("Length", buf);
 			}
 			if (!in.codec.empty()) fact("Codec", in.codec);
+			if (in.shutter == frameio::Shutter::Fixed && in.shutterUs > 0) {
+				snprintf(buf, sizeof buf, "1/%d s, fixed", int(std::lround(1e6 / in.shutterUs)));
+				fact("Shutter", buf);
+			}
+			else if (in.shutter != frameio::Shutter::Unknown) fact("Shutter", "automatic");
 		}
 		ImGui::Dummy(ImVec2(0, px(4)));
 		// Plain-language checks against what the tracker needs (README "Set-up Checklist").
@@ -1250,6 +1348,23 @@ void App::pageSource() {
 		if (in.kind == SourceInfo::Image) check(false, "", "A still photo: use it to plan zones; tracking needs video");
 		else if (in.fps <= 0) check(true, "Frame rate is good for timing", "");
 		else { std::string fr = frameRateAdvice(in.fps); check(in.fps >= 24, fr.c_str(), fr.c_str()); }   // what it means for the planned view (Guide.cpp)
+		// The shutter, for cameras (FrameInput.h's opening policy fixes it when it can).  On automatic, a webcam can drop
+		// to half its frame rate in shade while still reporting the full one, and speeds are counted in frames.
+		if (in.shutter == frameio::Shutter::Fixed)
+			check(true, "Shutter fixed: cars stay sharp and the frame rate holds steady in shade", "");
+		else if (in.shutter == frameio::Shutter::Automatic)
+			check(false, "", "Shutter on automatic: the picture was too dark at a fixed fast shutter. It still counts cars. "
+				"In daylight, Disconnect and connect again and VST fixes it for you.");
+		else if (in.shutter == frameio::Shutter::CantSet)
+			check(false, "", "Shutter on automatic: VST can't fix it on this camera here. Lock exposure in the camera's own app "
+				"(Logitech G HUB, for one) so it keeps its frame rate in shade.");
+		if (in.measuredFps > 0 && in.fps > 0 && in.measuredFps < in.fps * .8) {
+			char b[240];
+			snprintf(b, sizeof b, "Sending about %.0f fps though it reports %.0f. Speeds are counted in frames, so fix the shutter "
+				"or add light before you calibrate.", in.measuredFps, in.fps);
+			check(false, "", b);
+		}
+		if (frameio::classify(in.path) == frameio::Kind::Camera) cameraCheck(in.path, "");
 	}
 	else if (!player.error.empty()) {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad));
@@ -1257,7 +1372,11 @@ void App::pageSource() {
 		ImGui::SameLine();
 		ImGui::TextWrapped("%s", player.error.c_str());
 		ImGui::PopStyleColor();
+		// A USB camera that won't open is the case a report helps most: the probe says what the driver does offer.
+		std::string failed = !probeSource_.empty() ? probeSource_ : player.info().path;
+		if (frameio::classify(failed) == frameio::Kind::Camera) cameraCheck(failed, player.error);
 	}
+	else if (cameraProbe_.valid()) cameraCheck(probeSource_, "");   // the preview let go of the camera for the check
 	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(4)));

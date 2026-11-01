@@ -318,6 +318,14 @@ private:
 	int piChoice_ = -1;                 // index into piCams_ when the menu is on a Pi camera, -1 for the USB camera
 	picam::Settings piSettings_;        // the Pi camera settings popup; made into the source name on Connect
 	void piCameraSettings();            // that popup's contents
+	// "Check what this camera can do" and "Report this camera" on the Connect page (frameio::probeCamera): the preview
+	// lets go of the camera, the probe runs in the background for a few seconds, then the camera is opened again.
+	std::future<frameio::CameraReport> cameraProbe_;
+	frameio::CameraReport cameraReport_;
+	bool haveCameraReport_ = false;
+	std::string probeSource_;           // the source to reopen once the probe is done
+	void cameraCheck(const std::string& path, const std::string& failure);
+	std::string cameraIssueUrl(const std::string& failure) const;
 	char searchBuf_[64] = "";
 	bool logOpen_ = false;
 	std::string status_;

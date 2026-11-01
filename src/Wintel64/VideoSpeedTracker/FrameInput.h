@@ -53,13 +53,46 @@ std::string safeName(const std::string& name);
 // A short name for the log: "camera 0", "Pi camera 0", or safeName().
 std::string label(const std::string& name);
 
+// How a camera's shutter (exposure time) was left by the opening policy.  Only cameras have one: files and streams are
+// Unknown.  A fixed shutter matters twice for timing: it keeps cars sharp, and it stops a webcam on automatic exposure
+// from quietly dropping from 60 to 30 fps (or 15) in shade while still reporting 60, which would double every speed.
+enum class Shutter {
+	Unknown,     // not a camera, or not looked at
+	Fixed,       // held at Facts::shutterUs
+	Automatic,   // left (or put back) on automatic: asked to, or the picture was too dark at every fixed setting tried
+	CantSet,     // the camera or this platform's driver doesn't take an exposure time from VST (macOS, some webcams)
+};
+
 // The facts about an open source that the UI and the run report.
 struct Facts {
 	int width = 0, height = 0;   // as delivered, before toWorking()
 	double fps = 0;              // 0 when unknown or implausible
 	int frames = 0;              // frame count, 0 for anything live (and some H.264 files)
 	std::string codec;           // fourcc as text, "" when unknown
+	Shutter shutter = Shutter::Unknown;
+	int shutterUs = 0;           // the fixed shutter in microseconds when shutter == Fixed (1000 = 1/1000 s), else 0
+	double measuredFps = 0;      // frames a camera actually delivered per second while opening; 0 when not measured
 };
+
+// USB camera exposure through cv::VideoCapture.  Each OpenCV backend speaks its own units, so these are kept apart from
+// the camera to be checked without one (tests/frame_input_test.cpp).  `backend` is VideoCapture::getBackendName().
+namespace uvc {
+	// CAP_PROP_EXPOSURE for a shutter of `us` microseconds: V4L2 (Linux) takes the UVC exposure_time_absolute in 100 us
+	// steps; Media Foundation and DirectShow (Windows) take log2 of the time in seconds, whole steps only (-10 is 1/1024 s).
+	// NaN for backends with no exposure control through OpenCV (AVFoundation on macOS, GStreamer and the rest).
+	double exposureValue(const std::string& backend, int us);
+	// CAP_PROP_AUTO_EXPOSURE that turns automatic exposure off (manual) or back on.  V4L2 passes it straight to
+	// V4L2_CID_EXPOSURE_AUTO (1 manual, 3 aperture priority, the UVC default); Windows takes 0 / 1.
+	double autoExposureValue(const std::string& backend, bool automatic);
+	// Whether the camera's read-back CAP_PROP_EXPOSURE shows it took `wanted` (within a step), not just that set() said yes.
+	bool tookExposure(const std::string& backend, double wanted, double readBack);
+	// The shutters to try, fastest first: `us`, then twice and four times as long, never longer than 1/250 s (4000 us),
+	// which still keeps a 30 mph car to under 2 in of blur.
+	std::vector<int> ladder(int us);
+	// Whether a picture at a fixed shutter is bright enough to track: mean brightness (0-255) at least 40, and at least
+	// 45% of what the camera chose on automatic (so a dim evening isn't held to a daylight standard).
+	bool brightEnough(double automaticMean, double fixedMean);
+}
 
 // The port.  Property ids are VideoCapture's (cv::CAP_PROP_*), so existing calls read the same on every adapter.
 class FrameSource {
@@ -80,10 +113,14 @@ public:
 	virtual bool set(int prop, double value) { (void)prop; (void)value; return false; }
 	// Why the open failed, in plain language, where the adapter knows (Pi cameras, photos); else "".
 	virtual std::string error() const { return ""; }
-	// Lines worth logging once it's open: a Pi camera's model and settings, a frame rate fallback.
+	// Lines worth logging once it's open: a Pi camera's model and settings, a frame rate fallback, a USB camera's shutter.
 	virtual std::vector<std::string> notes() const { return {}; }
-	// get()'s answers gathered up, with an implausible fps (some cameras say 0 or 1000) reported as 0.
+	// get()'s answers gathered up, with an implausible fps (some cameras say 0 or 1000) reported as 0, plus what the
+	// adapter knows beyond get() (shutter, measured frame rate) through addFacts().
 	Facts facts() const;
+protected:
+	virtual void addFacts(Facts& f) const { (void)f; }
+public:
 };
 
 // How frameio::open() opens things.  The defaults are what both the engine and VST Studio use.
@@ -100,7 +137,48 @@ struct OpenOptions {
 	// cameras manage 720p60 over USB 2, and cheaper to read than raw YUYV).  A camera without the mode picks its nearest.
 	int cameraWidth = kWorkingWidth, cameraHeight = kWorkingHeight;
 	double cameraFps = 60;
+	// Then fix its shutter at this many microseconds (1000 = 1/1000 s, as the Pi cameras run; 0 leaves it automatic).
+	// The camera is tried at uvc::ladder(cameraShutterUs) in turn, keeping the first that gives a bright enough picture,
+	// and put back on automatic if none does, so a dark room or a night start is never worse than before.  Takes about
+	// 40 frames (under a second at 60 fps).  VST_CAMERA_SHUTTER_US in the environment overrides it (0 = automatic).
+	int cameraShutterUs = 1000;
+	bool cameraShutterFromEnv = true;
 };
+
+// What a USB camera can do, found by asking it (probeCamera): the modes it really runs, the controls its driver takes,
+// and what the opening policy made of it.  Made for "Report this camera" in VST Studio, so whoever adds support for a
+// camera has the facts without owning one.  Holds no pictures and no paths.
+struct CameraReport {
+	int index = 0;
+	std::string backend;        // VideoCapture::getBackendName(): V4L2, MSMF, DSHOW, AVFOUNDATION, ...
+	std::string name;           // the device's own name where the system says it (Linux), else ""
+	std::string available;      // the camera backends this build of OpenCV has, comma-separated (a missing one is a missing driver)
+	bool opened = false;
+	std::string error;          // why it didn't open, when it didn't
+	struct Mode {
+		int askW = 0, askH = 0;
+		double askFps = 0;
+		int w = 0, h = 0;       // what the camera chose
+		double fps = 0;         // what it reports
+		double measured = 0;    // what it sent, timed over a second's frames; 0 when it sent nothing
+	};
+	std::vector<Mode> modes;
+	struct Control {
+		std::string name;       // CAP_PROP_ name without the prefix
+		double value = 0;       // as read; meaningful only when readable
+		bool readable = false;  // get() gave a value other than -1 / NaN (0 is ambiguous on some backends; noted as read)
+		bool settable = false;  // set() of its own value back was accepted
+	};
+	std::vector<Control> controls;
+	Facts policy;               // facts() after a normal frameio::open(): shutter, measured fps
+	std::vector<std::string> notes;
+	// Plain text for an issue body: Markdown tables, under about 4 KB.
+	std::string markdown() const;
+};
+
+// Asks camera `index` what it can do.  Takes a few seconds (each mode is run for about a second); the camera must not
+// be open elsewhere, and is released afterwards.  Never throws.
+CameraReport probeCamera(int index);
 
 // Opens `name` with the adapter for its kind.  Never returns null: check isOpened(), and error() for why not.
 std::unique_ptr<FrameSource> open(const std::string& name, const OpenOptions& options = OpenOptions());
@@ -120,6 +198,8 @@ public:
 	bool read(cv::Mat& frame) override;
 	void release() override { open_ = false; fresh_ = false; latest_.release(); }
 	double get(int prop) const override;
+protected:
+	void addFacts(Facts& f) const override { f.shutter = about_.shutter; f.shutterUs = about_.shutterUs; f.measuredFps = about_.measuredFps; }
 private:
 	Facts about_;
 	cv::Mat latest_;

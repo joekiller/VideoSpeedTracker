@@ -34,7 +34,15 @@ namespace {
 
 struct Preset { const char* name; double hfov, width, fps, shutter; };
 const Preset kPresets[] = {
+	// Phones first: the commonest first camera.  A phone streamed as a webcam usually sends 30 fps on an automatic
+	// shutter; a recorded video from a camera app with manual controls (Blackmagic Camera, free on iPhone, Galaxy and
+	// Pixel) can be 60 fps at 1/1000 s, which VST times afterwards like any recording.
 	{ "Phone as a USB webcam (1080p, 30 fps)", 66, 1920, 30, 120 },
+	{ "Phone video at 60 fps (Blackmagic Camera app)", 66, 1920, 60, 1000 },
+	// USB webcams.  The 60 fps ones are run at 1/1000 s by VST's opening policy (FrameInput.h) when the camera lets it;
+	// field of view is the horizontal angle (the C922's 78 degree diagonal is about 70 across, 1080p60 webcams 70-80).
+	{ "Webcam at 60 fps, e.g. Logitech C922", 70, 1280, 60, 1000 },
+	{ "Webcam at 1080p 60 fps, e.g. Elgato Facecam", 75, 1920, 60, 1000 },
 	{ "USB webcam, e.g. Logitech C920 (1080p, 30 fps)", 70, 1920, 30, 250 },
 	{ "PoE IP camera, 2.8 mm lens (1080p, 30 fps)", 100, 1920, 30, 250 },
 	{ "PoE IP camera, 4 mm lens (1080p, 30 fps)", 80, 1920, 30, 250 },
@@ -487,12 +495,15 @@ void App::sitePlanner() {
 	ImGui::PopTextWrapPos();
 	ImGui::SetNextItemWidth(-FLT_MIN);
 	prefs.planPreset = std::clamp(prefs.planPreset, 0, n - 1);
-	// Presets are saved by position, and new ones get inserted (the Pi cameras were); a saved choice whose numbers no
-	// longer match the preset now at that position is shown as Custom, keeping the numbers the user had.
-	const Preset& chosen = kPresets[prefs.planPreset];
-	if (chosen.hfov > 0 && (chosen.hfov != prefs.planHfov || chosen.width != prefs.planWidth || chosen.fps != prefs.planFps
-		|| chosen.shutter != prefs.planShutter))
+	// Presets are saved by position, and new ones get inserted (the Pi cameras and 60 fps webcams were).  A saved choice
+	// whose numbers no longer match the preset now at that position moves to the preset that has its numbers, or else
+	// shows as Custom, keeping the numbers the user had either way.
+	auto matches = [&](const Preset& q) { return q.hfov == prefs.planHfov && q.width == prefs.planWidth && q.fps == prefs.planFps
+		&& q.shutter == prefs.planShutter; };
+	if (kPresets[prefs.planPreset].hfov > 0 && !matches(kPresets[prefs.planPreset])) {
 		prefs.planPreset = n - 1;
+		for (int i = 0; i < n - 1; i++) if (matches(kPresets[i])) { prefs.planPreset = i; break; }
+	}
 	if (ImGui::BeginCombo("##preset", kPresets[prefs.planPreset].name)) {
 		for (int i = 0; i < n; i++)
 			if (ImGui::Selectable(kPresets[i].name, prefs.planPreset == i)) {
@@ -636,7 +647,8 @@ void App::aimCard(float width) {
 	bullet(ICON_ARROWS_LR, c::accent2, "Street across the middle", "Point straight across the street. Lenses distort near the edges, so keep the lanes in the middle third of the picture.");
 	bullet(ICON_LOCATE, c::accent2, "Any mount that holds still", "A window clamp, a tripod, even a phone propped on a stack of books. If it gets bumped, VST notices the view moved and says so; marking the street again takes a minute.");
 	bullet(ICON_SUN, c::accent2, "Lens to the glass, screen out", "Take out any insect screen and press the lens against the glass. Black craft foam or a dark cloth around it stops the room reflecting. Avoid pointing into the sun.");
-	bullet(ICON_CAMERA, c::accent2, "Using a phone? We've got you", "Keep it on the charger and on Do Not Disturb. In its webcam app pick 30 or 60 fps and lock exposure if it can, so it doesn't slow down in shade.");
+	bullet(ICON_CAMERA, c::accent2, "Using a phone? We've got you", "Keep it on the charger and on Do Not Disturb. In its webcam app pick 30 or 60 fps and lock exposure if it can, so it doesn't slow down in shade. "
+		"For faster cars, record instead: a camera app with manual controls (Blackmagic Camera is free) at 60 fps and 1/1000 s, then open the video here.");
 	endCard();
 }
 
@@ -688,7 +700,8 @@ void App::pageGuide() {
 		ImGui::SameLine(0, px(20));
 		ImGui::BeginGroup();
 		bullet(ICON_SUN, c::accent2, "Lens to the glass", "Take out the insect screen, press the lens to the window and put black foam or a dark cloth around it, so the room doesn't reflect.");
-		bullet(ICON_EYE, c::accent2, "Fixed focus and exposure", "Turn off auto-zoom and stabilisation. Lock focus and exposure, with a fast shutter (1/500 s or faster) if the camera lets you.");
+		bullet(ICON_EYE, c::accent2, "Fixed focus and exposure", "Turn off auto-zoom and stabilisation. Lock focus and exposure, with a fast shutter (1/500 s or faster) if the camera lets you. "
+			"VST fixes a USB webcam's shutter for you where the camera allows it.");
 		bullet(ICON_BOLT, c::accent2, "Daylight first", "Start with daytime video. Night through glass needs streetlights; infrared bounces off the window.");
 		bullet(ICON_FOLDER, c::accent2, "Your data stays yours", "Results are CSV files and videos in a folder on this computer. VST makes traffic studies, not tickets, and reads no plates.");
 		ImGui::EndGroup();
