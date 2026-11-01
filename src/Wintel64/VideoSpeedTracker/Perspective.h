@@ -33,6 +33,7 @@
 // All y values are relative to AnalysisBoxTop and x values to AnalysisBoxLeft, like the rest of VST.cfg; "left" and
 // "right" mean the analysis box's left and right edges (x = 0 and x = AnalysisBoxWidth).
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <limits>
