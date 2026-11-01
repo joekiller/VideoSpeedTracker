@@ -105,7 +105,7 @@ async function detail({ vst, view, go }, id) {
       <div id="share"></div>
       <h3>Calibration</h3>
       <div class="callout">${icon('ruler')}<p>Was this your own car, driven at a known speed? Use it to calibrate VST.
-        <br><a class="btn small" href="#/setup/4" id="use-cal" style="margin-top:8px">Calibrate from this pass</a></p></div>
+        <br><a class="btn small" href="#/setup/5" id="use-cal" style="margin-top:8px">Calibrate from this pass</a></p></div>
     </div>`.__html;
 
   $('#use-cal').onclick = () => sessionStorage.setItem('vst.calPass', String(v.id));

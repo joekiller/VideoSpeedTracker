@@ -38,6 +38,11 @@ static void testPresets() {
 	narrow.distM = findStreetPreset("narrow")->distFt / kFt;
 	narrow.clearM = findStreetPreset("narrow")->clearFt / kFt;
 	CHECK(verdict(narrow, false).shortView);
+	// A phone's 1/120 s smears a car about 32 px there: good timing, but "a bit rougher" until the shutter is faster.
+	CHECK(verdict(narrow, false).blurry && verdict(narrow, false).grade == 1);
+	Inputs crisp = narrow;
+	crisp.shutter = 1000;
+	CHECK(verdict(crisp, false).grade == 0);
 }
 
 static void testSources() {
@@ -160,8 +165,8 @@ void testMap() {
 	// Pins on top of each other, or a mile apart, aren't a placement.
 	MapPick same = m; same.laneLat = same.camLat; same.laneLon = same.camLon;
 	CHECK(!fromMap(same).valid);
-	MapPick far = m; far.laneLat += .01;
-	CHECK(!fromMap(far).valid);
+	MapPick apart = m; apart.laneLat += .01;
+	CHECK(!fromMap(apart).valid);
 	CHECK(std::string(compass8(359)) == "N" && std::string(compass8(-90)) == "W" && std::string(compass8(113)) == "SE");
 	CHECK(std::string(sourceName(Source::Map)) == "From the map");
 	Source s;

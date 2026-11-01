@@ -185,8 +185,16 @@ grep -q '"ok":true' <<< "$BODY" && grep -q '"source":"guess"' <<< "$BODY" && gre
   && pass "a preset sets a rough guess" || fail "preset narrow: ${BODY:0:400}"
 req PUT /api/plan -H 'Content-Type: application/json' --data '{"distFt": 24, "clearFt": 30}'
 grep -q '"source":"typed"' <<< "$BODY" && grep -q '"clearFt":30' <<< "$BODY" && pass "typed numbers stick" || fail "typed plan: ${BODY:0:400}"
+# The smoke run plays the bundled sample, which isn't the user's street, so sizing from the picture is refused in words.
 req PUT /api/plan -H 'Content-Type: application/json' --data '{"carLengths": 6}'
-grep -q '"source":"picture"' <<< "$BODY" && grep -q '"coverFt":93' <<< "$BODY" && pass "6 car lengths is 93 ft across" || fail "car lengths: ${BODY:0:400}"
+grep -q '"ok":false' <<< "$BODY" && grep -q 'sample video' <<< "$BODY" && pass "car lengths on the sample are refused, with why" || fail "car lengths: ${BODY:0:400}"
+# Changes are a draft until saved; discard puts the saved plan back.
+grep -q '"dirty":true' <<< "$BODY" && pass "plan changes are an unsaved preview" || fail "draft: ${BODY:0:400}"
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"discard": true}'
+grep -q '"dirty":false' <<< "$BODY" && pass "discard drops the preview" || fail "discard: ${BODY:0:400}"
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"distFt": 22}'
+req PUT /api/plan -H 'Content-Type: application/json' --data '{"save": true}'
+grep -q '"dirty":false' <<< "$BODY" && grep -q '"saved":{[^}]*"distFt":22' <<< "$BODY" && pass "save keeps it" || fail "save: ${BODY:0:600}"
 req PUT /api/plan -H 'Content-Type: application/json' --data '{"preset": "castle"}'
 grep -q '"ok":false' <<< "$BODY" && pass "an unknown preset is refused in-band" || fail "unknown preset: ${BODY:0:300}"
 req PUT /api/plan -H 'Content-Type: application/json' --data '{"distFt": "far"}'

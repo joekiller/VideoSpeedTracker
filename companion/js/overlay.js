@@ -121,6 +121,13 @@ export function handlePoint(c, h, k = 2) {
 }
 
 /** Which way each handle can move: speed lines and obstruction edges slide sideways, lane lines up and down. */
+/** One-way: the wrong-way direction's lane follows the legal one (App.cpp setLane(..., both)), since it is one lane. */
+export function oneLane(c) {
+  if (c.legalDirection !== 'L2R' && c.legalDirection !== 'R2L') return c;
+  const from = c.legalDirection, to = from === 'L2R' ? 'R2L' : 'L2R';
+  return { ...c, [`${to}StreetY`]: c[`${from}StreetY`], [`${to}StreetYRight`]: c[`${from}StreetYRight`] || 0 };
+}
+
 export const HANDLE_AXES = { tl: 'xy', br: 'xy', sl: 'x', sr: 'x', r2l: 'y', l2r: 'y', o0: 'x', o1: 'x' };
 
 /** Chevron arrow path pointing along `dir`, centred at (cx, cy). */
@@ -151,6 +158,8 @@ export function tracksSvg(tracks, { k = 2, speedLimit = 25, egregious = 40 } = {
  *   editable - adds drag handles (data-h attributes) for Setup;
  *   selected - the handle id picked on the phone, drawn bigger with an accent ring so it is clear what the arrows move;
  *   tracks   - live tracked boxes [{x,y,w,h,dir,speed}], coloured by speed against the limit.
+ * A one-way street (legalDirection L2R or R2L) has one lane line, like VST Studio's Mark your street: only the legal
+ * direction's line and handle are drawn, and Setup keeps the other direction's line on top of it (oneLane()).
  */
 export function zonesSvg(c, { k = 2, editable = false, selected = null, tracks = [], speedLimit = 25, egregious = 40 } = {}) {
   const g = geometry(c);
@@ -184,13 +193,14 @@ export function zonesSvg(c, { k = 2, editable = false, selected = null, tracks =
   // The street edge (set in VST Studio): a thin green dashed line along the curb.
   if (g.edge) s += `<line x1="${x}" y1="${g.edge[0]}" x2="${x + w}" y2="${g.edge[1]}" stroke="${EDGE}" stroke-width="${sw * 0.8}" stroke-dasharray="${5 * k} ${4 * k}"/>`;
 
-  // Lane ("hubcap") lines, at their angle.
-  for (const dir of ['R2L', 'L2R']) {
+  // Lane ("hubcap") lines, at their angle.  One-way: just the one lane.
+  const lanes = legal === 'L2R' || legal === 'R2L' ? [legal] : ['R2L', 'L2R'];
+  for (const dir of lanes) {
     const ly = dir === 'R2L' ? g.r2l : g.l2r, lyR = dir === 'R2L' ? g.r2lR : g.l2rR;
     s += `<line x1="${x}" y1="${ly}" x2="${x + w}" y2="${lyR}" stroke="${LANE[dir]}" stroke-width="${sw}" stroke-dasharray="${2 * k} ${3 * k}"/>`;
     // Labels go on opposite sides of the two lines, which usually sit close together.
     const ty = laneYAt(g, ly, lyR, x + 6 * k);
-    if (editable) s += label(x + 6 * k, dir === 'R2L' ? ty - 6 * k : ty + 15 * k, dir === 'R2L' ? '← WHEELS' : 'WHEELS →', LANE[dir]);
+    if (editable) s += label(x + 6 * k, dir === 'R2L' ? ty - 6 * k : ty + 15 * k, lanes.length === 1 ? 'LANE' : dir === 'R2L' ? '← WHEELS' : 'WHEELS →', LANE[dir]);
   }
 
   s += tracksSvg(tracks, { k, speedLimit, egregious });
@@ -211,7 +221,7 @@ export function zonesSvg(c, { k = 2, editable = false, selected = null, tracks =
     s += handle('sl', g.sl, y + h / 2, '#fff', 'pill');
     s += handle('sr', g.sr, y + h / 2, '#fff', 'pill');
     // Lane handles sit at the right end, away from the box corner and the labels on the left.
-    for (const dir of ['R2L', 'L2R']) {
+    for (const dir of lanes) {
       const hx = laneHandleX(g, dir, k);
       s += handle(dir.toLowerCase(), hx, laneYAt(g, dir === 'R2L' ? g.r2l : g.l2r, dir === 'R2L' ? g.r2lR : g.l2rR, hx), LANE[dir]);
     }

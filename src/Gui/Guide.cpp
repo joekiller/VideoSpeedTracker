@@ -564,15 +564,16 @@ void App::planSaveBar(float width) {
 		ImGui::SameLine();
 		dimText(prefs.planAutosave ? "" : "Try anything: changes here are a preview until you press Save.");
 	}
-	// Right side: autosave switch, Discard, Save.
+	// Right side: the autosave switch, then Discard and Save only while there is something to save (disabled buttons
+	// next to "All changes saved" read as a broken page).
 	const char* saveLabel = ICON_SAVE "  Save changes";
 	const char* discardLabel = ICON_UNDO "  Discard";
-	float sw = buttonWidth(saveLabel), dw = buttonWidth(discardLabel);
+	float sw = dirty ? buttonWidth(saveLabel) : 0, dw = dirty ? buttonWidth(discardLabel) : 0;
 	const char* autoLabel = "Save automatically";
 	float aw = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(autoLabel).x;
 	float right = p.x + width - px(12);
 	float y = p.y + px(10);
-	ImGui::SetCursorScreenPos(ImVec2(right - sw - dw - aw - px(28), y));
+	ImGui::SetCursorScreenPos(ImVec2(right - sw - dw - aw - (dirty ? px(28) : 0), y));
 	bool autoOn = prefs.planAutosave;
 	if (ImGui::Checkbox(autoLabel, &autoOn)) {
 		prefs.planAutosave = autoOn;
@@ -580,12 +581,12 @@ void App::planSaveBar(float width) {
 		if (persist) prefs.save();
 	}
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: changes are a preview until you press Save.\nOn: every change is saved as you make it.");
-	ImGui::SetCursorScreenPos(ImVec2(right - sw - dw - px(8), y));
-	ImGui::BeginDisabled(!dirty);
-	if (ghostButton(discardLabel, ImVec2(dw, 0))) planDiscard();
-	ImGui::SetCursorScreenPos(ImVec2(right - sw, y));
-	if (primaryButton(saveLabel, ImVec2(sw, 0), dirty ? c::warn : c::accent)) planCommit();
-	ImGui::EndDisabled();
+	if (dirty) {
+		ImGui::SetCursorScreenPos(ImVec2(right - sw - dw - px(8), y));
+		if (ghostButton(discardLabel, ImVec2(dw, 0))) planDiscard();
+		ImGui::SetCursorScreenPos(ImVec2(right - sw, y));
+		if (primaryButton(saveLabel, ImVec2(sw, 0), c::warn)) planCommit();
+	}
 	ImGui::SetCursorScreenPos(p + ImVec2(0, h + px(12)));
 }
 
@@ -953,7 +954,10 @@ void App::sitePlanner() {
 	linePill(plan::gradeName(verdict), c::bg0, gradeColor(verdict), fonts.strong);
 	ImGui::SameLine();
 	ImGui::AlignTextToFramePadding();
+	// Wraps inside the card: the blur advice makes the sentence longer than the card on a narrow window.
+	ImGui::PushTextWrapPos(0);
 	ImGui::TextUnformatted(plan::verdictText(pv).c_str());
+	ImGui::PopTextWrapPos();
 	// The saved plan's verdict next to the preview's, so a change's effect is plain before it's saved.
 	if (planDirty()) {
 		plan::Verdict sv = plan::verdict(planInputs(), cfg.g.subFrameTiming != 0);
@@ -1049,8 +1053,11 @@ void App::aimCard(float width) {
 	bullet(ICON_ARROWS_LR, c::accent2, "Street across the middle", "Point straight across the street. Lenses distort near the edges, so keep the lanes in the middle third of the picture.");
 	bullet(ICON_LOCATE, c::accent2, "Any mount that holds still", "A window clamp, a tripod, even a phone propped on a stack of books. If it gets bumped, VST notices the view moved and says so; marking the street again takes a minute.");
 	bullet(ICON_SUN, c::accent2, "Lens to the glass, screen out", "Take out any insect screen and press the lens against the glass. Black craft foam or a dark cloth around it stops the room reflecting. Avoid pointing into the sun.");
-	bullet(ICON_CAMERA, c::accent2, "Using a phone? We've got you", "Keep it on the charger and on Do Not Disturb. In its webcam app pick 30 or 60 fps and lock exposure if it can, so it doesn't slow down in shade. "
-		"For faster cars, record instead: a camera app with manual controls (Blackmagic Camera is free) at 60 fps and 1/1000 s, then open the video here.");
+	bullet(ICON_CAMERA, c::accent2, "Using a phone? We've got you", "Android 14 or later: plug it in by USB and pick \"Webcam\" in the USB notification. iPhone with a Mac: "
+		"Continuity Camera shows it as a camera by itself. Otherwise a free webcam app (Camo, DroidCam or Iriun) does it over Wi-Fi or USB. "
+		"Keep it on the charger and on Do Not Disturb; pick 30 or 60 fps and lock exposure if the app can.");
+	bullet(ICON_STOPWATCH, c::accent2, "Or record, then open the video", "For faster cars, or with no webcam app at all: record with a camera app that has manual controls "
+		"(Blackmagic Camera is free) at 60 fps and 1/1000 s, copy the video over and open it in step 3. VST times it just the same.");
 	endCard();
 }
 

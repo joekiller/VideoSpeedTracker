@@ -258,7 +258,11 @@ starts. If it isn't valid nothing changes, and the answer is still `200`:
 
 ### `GET /api/plan`, `PUT /api/plan`
 
-VST Studio's site planner (step 2, Pick your spot), so the phone can plan the street and size it from the picture.
+VST Studio's site planner (step 2, Pick your spot), so the phone can plan the street, size it from the picture and
+place it on the map.  The planner edits a **draft**: every change is a preview (on the phone and on the computer's
+page alike) until it is saved with `{"save": true}`, here or by Save in VST Studio, or dropped with `{"discard": true}`.
+With autosave on (`{"autosave": true}`, off by default) each change is saved as it is made.  The draft survives a
+restart of VST Studio.
 
 ```json
 {
@@ -272,13 +276,28 @@ VST Studio's site planner (step 2, Pick your spot), so the phone can plan the st
   "measured": { "coverFt": 97.9, "clearFt": 92.5, "how": "your step 5 calibration, 2026-10-31" },
   "carLengths": null,
   "picture": true,
-  "typicalCarFt": 15.5
+  "typicalCarFt": 15.5,
+  "map": { "camLat": 38.02950, "camLon": -78.48900, "laneLat": 38.02950, "laneLon": -78.48892, "street": "7th 1/2 Street Southwest",
+           "distFt": 23.0, "facing": "E" },
+  "legalDirection": "R2L", "L2RDirection": "S", "R2LDirection": "N",
+  "shortViewOnSave": false,
+  "dirty": true,
+  "changes": [ "Window to the lane: 20 → 23 ft", "Map: camera and lane pins on 7th 1/2 Street Southwest" ],
+  "autosave": false,
+  "saved": { "distFt": 20.0, "clearFt": 20.0, "speedLimit": 25, "source": "guess", "grade": 1, "label": "Works, a bit rougher",
+             "text": "About ±0.9 mph at 35 mph, over a 18 ft zone. Cars blur a lot at this shutter: 1/500 s or faster sharpens them." }
 }
 ```
 
+* Everything outside `saved` describes the draft.  `dirty` says it differs from the saved plan, and `changes` lists how,
+  in words.  `saved` is the saved plan's numbers and verdict.  `legalDirection`, `L2RDirection` and `R2LDirection` are
+  as they will be once saved (the map can set them); `shortViewOnSave` says saving also turns on short-view timing.
+* `map` is `null` until the map's two pins are placed; then it holds them, the street's name and the distance and
+  the camera's facing worked out from them.
+
 * `street.distFt` is the camera to the middle of the moving lane, `clearFt` the stretch of it with nothing in the way,
   `coverFt` the width of street the whole picture spans there. `source` says where they came from: `guess` (a preset
-  or the first-run default), `typed`, `picture` (car lengths across the picture) or `calibration` (measured by the
+  or the first-run default), `typed`, `picture` (car lengths across the picture), `map` or `calibration` (measured by the
   calibration in force; VST Studio applies a new calibration's measurement by itself, once). `note` says how, in words.
 * `verdict` is the planner's, in its words: `grade` 0 good, 1 rougher, 2 needs a tweak; `errorMph` is `null` when the
   view can't time a car at `checkMph` (the speed limit + 10); `fastest`/`fastest60` are set for a short view;
@@ -292,6 +311,14 @@ VST Studio's site planner (step 2, Pick your spot), so the phone can plan the st
 * `{"distFt": 24, "clearFt": 30}`: typed numbers (either or both, 3 to 1000 ft).
 * `{"carLengths": 6}`: that many `typicalCarFt` car lengths span the picture (1 to 20).
 * `{"useMeasured": true}`: back to what the calibration measured.
+* `{"speedLimit": 25}`: the posted limit the plan checks against (5 to 80).
+* `{"shortView": true}`: turn on short-view timing, fitted to this plan, when the draft is saved.
+* `{"map": {"camLat", "camLon", "laneLat", "laneLon", "wayBearing", "oneway", "maxspeedMph", "street"}}`: the map's two pins
+  (2 to 500 ft apart), and what OpenStreetMap says about the street under the lane pin, all but the pins optional:
+  `wayBearing` is the street's drawn direction there in degrees from north, `oneway` 1 along it, -1 against it, 0
+  two-way.  Sets the distance, the compass headings across the picture, the legal direction of a one-way street, the
+  limit and (when the site has no name yet) the site name.
+* `{"save": true}`, `{"discard": true}`, `{"autosave": true|false}`: as above.
 
 ### `POST /api/run`
 
