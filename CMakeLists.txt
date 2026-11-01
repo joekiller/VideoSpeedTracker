@@ -55,6 +55,20 @@ target_include_directories(vst_common PUBLIC ${COMMON_DIR})
 if(WIN32)
   target_link_libraries(vst_common PUBLIC shell32 ole32)
 endif()
+# USB cameras as the system lists them (Webcam.h): names, every mode the driver offers, and the mode VST picks for
+# timing.  Linux uses V4L2 ioctls, Windows Media Foundation, macOS AVFoundation (WebcamMac.mm); no OpenCV.
+if(APPLE)
+  enable_language(OBJCXX)
+  add_library(vst_webcam STATIC ${VST_DIR}/Webcam.cpp ${VST_DIR}/WebcamList.cpp ${VST_DIR}/WebcamMac.mm)
+  target_link_libraries(vst_webcam PUBLIC "-framework AVFoundation" "-framework CoreMedia" "-framework Foundation")
+else()
+  add_library(vst_webcam STATIC ${VST_DIR}/Webcam.cpp ${VST_DIR}/WebcamList.cpp)
+endif()
+target_include_directories(vst_webcam PUBLIC ${VST_DIR})
+if(WIN32)
+  target_link_libraries(vst_webcam PUBLIC mfplat mf mfuuid ole32)
+endif()
+
 add_executable(VideoSpeedTracker
   ${VST_DIR}/videoSpeedTracker.cpp
   ${VST_DIR}/Globals.cpp
@@ -64,7 +78,7 @@ add_executable(VideoSpeedTracker
   ${VST_DIR}/PiCamera.cpp
   ${VST_DIR}/FrameInput.cpp)
 target_include_directories(VideoSpeedTracker PRIVATE ${VST_DIR})
-target_link_libraries(VideoSpeedTracker PRIVATE vst_common ${OpenCV_LIBS})
+target_link_libraries(VideoSpeedTracker PRIVATE vst_common vst_webcam ${OpenCV_LIBS})
 # Keep a*b+c as two roundings everywhere. GCC on arm64 and Clang fuse them into FMA by default,
 # which nudges tracked pixel positions by one and makes speeds differ from the x86 baseline.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -80,7 +94,7 @@ target_link_libraries(level_test PRIVATE ${OpenCV_LIBS})
 # VideoCapture, a photo, a pushed feed) read through the port alone.
 add_executable(frame_input_test tests/frame_input_test.cpp ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
 target_include_directories(frame_input_test PRIVATE ${VST_DIR})
-target_link_libraries(frame_input_test PRIVATE ${OpenCV_LIBS})
+target_link_libraries(frame_input_test PRIVATE vst_webcam ${OpenCV_LIBS})
 # Angled lane lines and a receding street (Perspective.h, Globals::lane / vanishingX / zoneFraction): equal steps along a
 # simulated street come out as equal steps of zoneFraction, and VST.cfg's checks refuse an unusable street edge.
 add_executable(perspective_test tests/perspective_test.cpp ${VST_DIR}/Globals.cpp)
@@ -91,7 +105,7 @@ target_include_directories(perspective_test PRIVATE ${VST_DIR})
 add_executable(ProcessHiLites ${CMAKE_SOURCE_DIR}/src/Wintel64/ProcessHiLites/ProcessHilites.cpp
   ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
 target_include_directories(ProcessHiLites PRIVATE ${VST_DIR})
-target_link_libraries(ProcessHiLites PRIVATE vst_common ${OpenCV_LIBS})
+target_link_libraries(ProcessHiLites PRIVATE vst_common vst_webcam ${OpenCV_LIBS})
 
 enable_testing()
 add_test(NAME sample_video_baseline
@@ -127,6 +141,10 @@ foreach(side left left100 right)
       -P ${CMAKE_SOURCE_DIR}/tests/flush_zone.cmake)
 endforeach()
 add_test(NAME software_level COMMAND level_test)
+add_executable(webcam_test tests/webcam_test.cpp ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
+target_include_directories(webcam_test PRIVATE ${VST_DIR})
+target_link_libraries(webcam_test PRIVATE vst_webcam ${OpenCV_LIBS})
+add_test(NAME webcam COMMAND webcam_test)
 add_test(NAME frame_input COMMAND frame_input_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-frame-input)
 add_test(NAME perspective COMMAND perspective_test)
 # Speed trend (SpeedTrend.h): entry and exit speed, the acceleration class and the speed 20 ft on, from exact and noisy
@@ -355,7 +373,7 @@ if(Python3_Interpreter_FOUND AND NOT MSVC)
 endif()
 
 if(VST_WERROR AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_engine vst_report VSTStudio level_test frame_input_test
+  foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_webcam webcam_test vst_engine vst_report VSTStudio level_test frame_input_test
       perspective_test speed_trend_test report_test health_test plan_test resume_test dashcam_test calibration_test engine_reconnect_test)
     if(TARGET ${t})
       target_compile_options(${t} PRIVATE -Werror)

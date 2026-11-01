@@ -54,6 +54,7 @@ const TIERS = [
   ['Your phone, as a webcam', '$0', 'already in your pocket', 'Live, at 30 fps. The easiest start.'],
   ['Your phone, recording at 60 fps', '$0', 'free Blackmagic Camera app', 'Record, then open the video in VST Studio. Fast shutter, great timing.'],
   ['Logitech C922 webcam', 'about $70–100', 'Best Buy, Walmart, Staples', '60 fps at 720p; VST sets its shutter for you.'],
+  ['Elgato Facecam or Logitech StreamCam', 'about $100–170', 'Best Buy, Staples', '1080p at 60 fps: real-deal timing on short views.'],
   ['Raspberry Pi 5 + Camera Module 3', 'about $150', 'online or Micro Center', 'Always on, 60 fps, sips power. For later.'],
 ];
 

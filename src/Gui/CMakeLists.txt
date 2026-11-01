@@ -120,7 +120,7 @@ add_library(vst_engine STATIC
   ${VST_DIR}/FrameInput.cpp)
 target_include_directories(vst_engine PUBLIC ${VST_DIR})
 target_compile_definitions(vst_engine PUBLIC VST_EMBEDDED PRIVATE VST_VERSION="${VST_VERSION}")
-target_link_libraries(vst_engine PUBLIC vst_common ${OpenCV_LIBS})
+target_link_libraries(vst_engine PUBLIC vst_common vst_webcam ${OpenCV_LIBS})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(vst_engine PRIVATE -ffp-contract=off)
 endif()
