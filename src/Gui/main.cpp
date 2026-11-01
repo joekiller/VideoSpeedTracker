@@ -152,11 +152,21 @@ struct DemoScript {
 				app.inspectorScroll_ = 1000;
 			}
 			if (frames == 80) shot("04d-zones-ghost.png");
-			if (frames == 81) { app.ghostCar_ = false; app.inspectorScroll_ = 0; app.player.seek(2186); }
+			// A parking lane on the far side, 40 px above the lane line, with the ghost car's camera still typed in (so the
+			// card says how far beyond the lane that is).
+			if (frames == 81) {
+				app.ghostCar_ = false;
+				app.player.seek(2186);
+				const Globals& g = app.cfg.g;
+				app.prefs.parkY0 = app.prefs.parkY1 = g.AnalysisBoxTop + g.R2LStreetY - 40;
+				app.inspectorScroll_ = 1500;
+			}
+			if (frames == 100) shot("04e-zones-parking.png");
+			if (frames == 101) { app.prefs.parkY0 = app.prefs.parkY1 = 0; app.inspectorScroll_ = 0; }
 			// Back on Pick your spot with a picture: the "Zero in on it" card's car-length ruler over the sample.
-			if (frames == 82) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
-			if (frames == 101) shot("02b-zero-in.png");
-			if (frames == 103) next();
+			if (frames == 102) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
+			if (frames == 121) shot("02b-zero-in.png");
+			if (frames == 123) next();
 			break;
 		case 4:
 			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }
@@ -284,22 +294,29 @@ struct DemoScript {
 			}
 			if (frames == 65) app.toasts_.clear();
 			if (frames == 80) shot("07d-calibrate-cones.png");
-			// Known car: a parked Camry's bumpers ~190 px apart, 7 ft beyond the lane, as on a narrow one-way street.
+			// Known car: a Camry parked on the far side, its wheel centres ~150 px apart on a parking lane drawn 40 px above
+			// the lane line, with the sample's camera (the ghost car's numbers) so the page reads Parked and scales it.
 			if (frames == 81) {
 				const Globals& g = app.cfg.g;
 				app.calibMode_ = 3;
+				app.carWheels_ = true;
 				app.carModel_ = 3;
-				app.carFt_ = calib::kKnownCars[3].inches / 12;
+				app.carFt_ = calib::kKnownCars[3].wheelbaseIn / 12;
+				app.prefs.planDist = kGhostDistFt / plan::kFt;
+				app.prefs.calcHeightFt = kGhostHeightFt;
+				app.prefs.planHfov = kGhostHfov;
+				app.prefs.parkY0 = app.prefs.parkY1 = g.AnalysisBoxTop + g.R2LStreetY - 40;
+				for (int i = 0; i < 2; i++) { app.carX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 170 + 150 * i); app.carY_[i] = float(app.prefs.parkY0); }
 				app.carParked_ = true;
-				for (int i = 0; i < 2; i++) { app.carX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 150 + 190 * i); app.carY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
 			}
 			// And added: three measurements now (the sample's own, the cones, the car), each with its share.
 			if (frames == 82) {
 				const Globals& g = app.cfg.g;
-				double laneFt = app.prefs.planDist * 3.281;   // as the Known car card reads it
-				double markPx = calib::markPxAtLane(190, laneFt, app.carFartherFt_);
-				app.applyDistanceCalibration(true, true, calib::framesForDistance(markPx, app.carFt_, g.speedLineRight - g.speedLineLeft, g.CalibrationSpeed,
-					g.CalibrationFPS), "the known car", "car", calib::sigmaCar(190, true, laneFt, app.carFartherFt_), "Toyota Camry 2018-2024, parked");
+				double laneFt = app.prefs.planDist * plan::kFt;   // as the Known car card reads it
+				calib::CarSpot spot = app.carSpot(true);
+				double markPx = std::fabs(app.carX_[1] - app.carX_[0]);
+				app.applyDistanceCalibration(true, true, calib::framesForDistance(markPx * app.carScale(true), app.carFt_, g.speedLineRight - g.speedLineLeft,
+					g.CalibrationSpeed, g.CalibrationFPS), "the car's wheelbase", "car", calib::sigmaCar(markPx, true, laneFt, spot.parkedFt), "Toyota Camry 2018-2024, parked");
 			}
 			if (frames == 85) app.toasts_.clear();
 			if (frames == 100) { shot("07e-calibrate-car.png"); next(); }

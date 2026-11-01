@@ -242,6 +242,7 @@ if(TARGET vst_report)
   # method's measurement into one calibration (src/Gui/CalEvidence.h), with its file round trip.
   add_executable(calibration_test tests/calibration_test.cpp)
   target_link_libraries(calibration_test PRIVATE vst_report)
+  target_include_directories(calibration_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Gui ${VST_DIR})
   add_test(NAME distance_calibration COMMAND calibration_test ${CMAKE_BINARY_DIR}/calibration-test)
 endif()
 

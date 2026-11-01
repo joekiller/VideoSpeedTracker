@@ -117,6 +117,8 @@ export class Vst extends EventTarget {
   calibrationDistance(body) { return this.request('POST', '/api/calibration/distance', body); }
   /** Take one calibration measurement out ({ id, removed: true }) or put it back ({ id, removed: false }). */
   calibrationInputs(body) { return this.request('POST', '/api/calibration/inputs', body); }
+  calibrationCar(body) { return this.request('POST', '/api/calibration/car', body); }
+  calibrationCars() { return this.request('GET', '/api/calibration/cars'); }
 
   // ---- media ------------------------------------------------------------------------------------
 

@@ -80,6 +80,9 @@ struct AppPrefs {
 	// Mark your street's "Work it out from the camera" (Perspective.h CameraSetup): the camera's height above the road
 	// and how far it is turned from square to the street (+ = toward the right).  Distance and lens come from step 2.
 	double calcHeightFt = 12, calcYawDeg = 0;
+	// Mark your street's parking lane (ParkingLane.h): rows of a line on the parked cars' wheel centres at frame x 0 and
+	// 1280 (0, 0 = no parking lane), and how far beyond the moving cars it is if measured (ft; 0 = from the picture).
+	double parkY0 = 0, parkY1 = 0, parkFt = 0;
 	// The camera zone's spot on the map (degrees; 0, 0 = not set), for matching Tesla dashcam clips by GPS.
 	double siteLat = 0, siteLon = 0;
 	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config

@@ -19,6 +19,7 @@ import * as plan from './plan.js';
 import * as calib from './calib.js';
 // The narrowest speed zone VST accepts (Globals::kMinZone; overlay.js MIN_ZONE). Kept here so the demo needs no DOM module.
 const MIN_ZONE = 200;
+import * as ground from './ground.js';
 
 const SNAPSHOTS = 6;
 const DIRS = ['L2R', 'R2L'];
@@ -68,7 +69,17 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     // Reported by VST Studio too (docs: "VST Studio also reports"); the companion doesn't edit them.
     obstruction_extent: 30, SENSITIVITY_VALUE: 30, BLUR_SIZE: 20, largeVehicleArea: 100, minLoggedSpeed: 18,
     frameWidth: 1280, frameHeight: 720,
+    // VST Studio's parking lane (src/Gui/ParkingLane.h): rows at frame x 0 and 1280, [0, 0] = none; a measured distance.
+    parkingLane: [0, 0], parkingLaneFt: 0,
   };
+  // The KNOWN_CARS of src/Gui/Calibration.h (lengths and wheelbases in inches), for GET /api/calibration/cars.
+  const KNOWN_CARS = [
+    ['Toyota Highlander 2020-on', 195, 112], ['Toyota Highlander 2014-2019', 192, 110], ['Toyota RAV4 2019-2025', 181, 106],
+    ['Toyota Camry 2018-2024', 192, 111], ['Toyota Corolla sedan 2019-on', 182, 106], ['Honda CR-V 2023-on', 185, 106],
+    ['Honda CR-V 2017-2022', 182, 105], ['Honda Civic sedan 2022-on', 184, 108], ['Honda Accord 2018-2022', 192, 111],
+    ['Subaru Outback 2020-2025', 191, 108], ['Subaru Forester 2019-2024', 182, 105], ['Tesla Model 3', 185, 113],
+    ['Tesla Model Y', 187, 114], ['Ford F-150 SuperCrew, 5.5 ft bed, 2015-on', 232, 145],
+  ].map(([name, lengthIn, wheelbaseIn]) => ({ name, lengthIn, wheelbaseIn }));
   const state = { running: true, paused: false, frame: 0, marks: {} };
   // Step 2's site planner (GET/PUT /api/plan), with VST Studio's draft model (src/Gui/Guide.cpp planCommit): every
   // change goes into a draft the plan previews, and only {"save": true} (or autosave) makes it the saved plan; the
@@ -404,7 +415,32 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     if (!['L2R', 'R2L', 'both'].includes(c.legalDirection)) p.push('legalDirection must be L2R, R2L or both');
     if (!(c.speedLimit > 0 && c.egregious > c.speedLimit)) p.push('The "way too fast" speed must be above the limit');
     if (!(c.CalibrationFramesL2R > 0 && c.CalibrationFramesR2L > 0 && c.CalibrationSpeed > 0 && c.CalibrationFPS > 0)) p.push('Calibration values must be positive');
+    const pk = c.parkingLane;
+    if (!(Array.isArray(pk) && pk.length === 2 && pk.every(Number.isFinite))) p.push('parkingLane must be [left, right]');
+    else if ((pk[0] || pk[1]) && !pk.every((y) => y >= 1 && y <= 719)) p.push("parkingLane must be [0,0] (none) or two rows between 1 and 719, where the line on the parked cars' wheels meets the picture's left and right edges");
+    if (!(c.parkingLaneFt >= 0 && c.parkingLaneFt <= 40)) p.push('parkingLaneFt must be between 0 (work it out from the picture) and 40');
     return p;
+  }
+
+  /** VST Studio's camera model inputs: step 2's distance and lens, and the ghost car's height (12 ft unless set). */
+  const cameraSetup = () => ({ distanceFt: saved.distFt, heightFt: 12, yawDeg: 0, hfovDeg: camera.hfov });
+  const oneWay = () => config.legalDirection === 'L2R' || config.legalDirection === 'R2L';
+  /** A lane line's frame row at frame x (Globals::lane, extended past the box). */
+  const laneRowAt = (l2r, x) => {
+    const c = config, left = l2r ? c.L2RStreetY : c.R2LStreetY, right = (l2r ? c.L2RStreetYRight : c.R2LStreetYRight) || left;
+    return c.AnalysisBoxTop + left + (right - left) * (x - c.AnalysisBoxLeft) / (c.AnalysisBoxWidth || 1);
+  };
+  const parkSet = () => config.parkingLane[0] > 0 && config.parkingLane[1] > 0;
+  /** GET /api/config: the settings plus, read-only, how far beyond the lane the parking lane is (Server.cpp configJson). */
+  function configJson() {
+    const out = { ...config, parkingLane: [...config.parkingLane], parkingLaneBeyondFt: null, parkingLaneHow: null };
+    if (parkSet()) {
+      const lane = laneRowAt(oneWay() ? config.legalDirection === 'L2R' : true, 640);
+      const pk = config.parkingLane, b = ground.parkedBeyond(cameraSetup(), 640, lane, pk[0] + (pk[1] - pk[0]) / 2, config.parkingLaneFt);
+      out.parkingLaneBeyondFt = Math.round(b.parkedFt * 10) / 10;
+      out.parkingLaneHow = b.how;
+    }
+    return out;
   }
 
   function setConfig(partial) {
@@ -413,11 +449,11 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     if (partial.speedLimit != null && partial.minLoggedSpeed == null && merged.speedLimit !== config.speedLimit
       && plan.minLoggedFollows(config.minLoggedSpeed, config.speedLimit)) merged.minLoggedSpeed = plan.minLoggedForLimit(merged.speedLimit);
     const problems = validate(merged);
-    if (problems.length) return { ok: false, problems, config: { ...config } };
+    if (problems.length) return { ok: false, problems, config: configJson() };
     Object.assign(config, merged);
     refreshFlags();
-    emit('config', { ...config });
-    return { ok: true, problems: [], config: { ...config } };
+    emit('config', configJson());
+    return { ok: true, problems: [], config: configJson() };
   }
 
   const ok = (json) => ({ status: 200, json });
@@ -443,7 +479,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     switch (`${method} ${path}`) {
       case 'GET /api/hello': return ok({ app: 'VST', version: '1.1.0-demo', auth: true });
       case 'GET /api/status': return ok(status());
-      case 'GET /api/config': return ok({ ...config });
+      case 'GET /api/config': return ok(configJson());
       case 'PUT /api/config': return ok(setConfig(body || {}));
       case 'GET /api/frame.jpg': return { status: 200, file: 'demo/frame.jpg' };
       case 'GET /api/plan': return ok(planJson());
@@ -519,6 +555,53 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         emit('status', status());
         return ok({ ...r, calibration: calibrationJson() });
       }
+      case 'GET /api/calibration/cars': return ok({ cars: KNOWN_CARS.map((k) => ({ ...k })), typicalWheelbaseIn: 111 });
+      case 'POST /api/calibration/car': {
+        // Like VST Studio (Server.cpp): two marks on a car `feet` apart, scaled to the travel lane when it's parked.
+        const { marks: mk, feet, dir = 'both', where = 'auto', how = 'wheels', beyondFt = ground.TYPICAL_PARK_FT, preview = false } = body || {};
+        const shaped = Array.isArray(mk) && mk.length === 2 && mk.every((c) => Array.isArray(c) && c.length === 2
+          && c.every(Number.isFinite) && c[0] >= 0 && c[0] <= 1280 && c[1] >= 0 && c[1] <= 720);
+        const markPx = shaped ? Math.abs(mk[1][0] - mk[0][0]) : 0;
+        const problem = !shaped ? 'mark both points on the car first'
+          : !(Number(feet) > 0) ? "enter the car's wheelbase (or length) in feet"
+          : !['both', 'L2R', 'R2L'].includes(dir) ? 'dir must be both, L2R or R2L'
+          : !['auto', 'lane', 'parked'].includes(where) ? 'where must be auto, lane or parked'
+          : !['wheels', 'bumpers'].includes(how) ? 'how must be wheels or bumpers'
+          : !(beyondFt >= -30 && beyondFt <= 50) ? 'beyondFt must be between -30 and 50'
+          : markPx < 60 ? 'the car is too small on the picture to measure; pick a nearer one' : null;
+        if (!shaped) return ok({ ok: false, problems: [problem], config: configJson() });
+        const cam = cameraSetup(), midX = (mk[0][0] + mk[1][0]) / 2, row = (mk[0][1] + mk[1][1]) / 2;
+        const primaryL2R = oneWay() ? config.legalDirection === 'L2R' : dir !== 'R2L';
+        const park = parkSet() ? { y: config.parkingLane, ft: config.parkingLaneFt } : null;
+        const spot = ground.placeCar(cam, laneRowAt(primaryL2R, midX), park, midX, row);
+        const parked = where === 'parked' || (where === 'auto' && spot.where === 'parked');
+        const scaleFor = (l2r) => !parked ? 1 : park ? ground.placeCar(cam, laneRowAt(l2r, midX), park, midX, row).parkedScale : ground.scaleBeyond(cam, midX, beyondFt);
+        const zonePx = config.speedLineRight - config.speedLineLeft, byDir = {}, raw = {};
+        for (const d of DIRS) {
+          if ((d === 'L2R' && dir === 'R2L') || (d === 'R2L' && dir === 'L2R')) continue;
+          if (oneWay() && dir === 'both' && (d === 'L2R') !== primaryL2R) continue;
+          const sc = scaleFor(d === 'L2R'), zoneFeet = zonePx / (markPx * sc) * Number(feet);
+          raw[d] = markPx ? zoneFeet / (config.CalibrationSpeed * 5280 / 3600) * config.CalibrationFPS : 0;
+          byDir[d] = { scale: Math.round(sc * 1000) / 1000, frames: Math.round(raw[d] * 10) / 10, zoneFeet: Math.round(zoneFeet * 10) / 10 };
+        }
+        const first = byDir[primaryL2R ? 'L2R' : 'R2L'];
+        const bft = park ? spot.parkedFt : beyondFt;
+        const out = { where: parked ? 'parked' : 'lane', detected: spot.where, offLines: !!park && spot.offLines,
+          beyondFt: parked && Number.isFinite(bft) ? Math.round(bft * 10) / 10 : null, beyondHow: !parked ? null : park ? spot.how : 'typed',
+          scale: first.scale, frames: first.frames, zoneFeet: first.zoneFeet, byDir };
+        if (problem) return ok({ ok: false, problems: [problem], ...out, config: configJson() });
+        if (preview) return ok({ ok: true, problems: [], ...out, config: configJson() });
+        // One "car" input per direction (both on a one-way street), combined with the rest like Studio's Known car card.
+        const sigma = calib.sigmaCar(markPx, parked, cam.distanceFt, Number.isFinite(bft) ? bft : beyondFt);
+        const label = `${how === 'wheels' ? "A car's wheelbase" : 'A car of known length'}${parked ? ', parked' : ''}`;
+        let r = { ok: true, problems: [] };
+        for (const [d, f] of Object.entries(raw)) {
+          const dirs = oneWay() && dir === 'both' ? 'both' : d;
+          r = addInput({ method: 'car', label, dirs, zoneFt: f * config.CalibrationSpeed * calib.FT_PER_S_PER_MPH / config.CalibrationFPS, sigma });
+        }
+        emit('status', status());
+        return ok({ ...r, ...out, calibration: calibrationJson() });
+      }
       case 'POST /api/calibration/check': {
         const pass = calibrationPass(body);
         if (pass.problem) return ok({ ok: false, problems: [pass.problem] });
@@ -588,7 +671,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
       scheduleNext();
     }
     fn('status', status());
-    fn('config', { ...config });
+    fn('config', configJson());
     return () => {
       listeners.delete(fn);
       if (!listeners.size) { timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); timers = []; }

@@ -533,6 +533,32 @@ perspective::CameraSetup App::cameraSetup() const {
 	return c;
 }
 
+calib::ParkingLane App::parkingLane() const {
+	calib::ParkingLane p;
+	p.yLeft = prefs.parkY0;
+	p.yRight = prefs.parkY1;
+	p.measuredFt = prefs.parkFt;
+	return p;
+}
+
+double App::laneRowAt(bool l2r, double frameX) const {
+	const Globals& g = cfg.g;
+	return g.AnalysisBoxTop + g.lane(l2r).at(frameX - g.AnalysisBoxLeft);
+}
+
+calib::CarSpot App::carSpot(bool l2r) const {
+	if (carX_[0] < 0 || carX_[1] < 0) return calib::CarSpot();
+	double midX = (carX_[0] + carX_[1]) * .5, row = (carY_[0] + carY_[1]) * .5;
+	return calib::placeCar(cameraSetup(), laneRowAt(l2r, midX), parkingLane(), midX, row);
+}
+
+double App::carScale(bool l2r) const {
+	if (!carParked_ || carX_[0] < 0 || carX_[1] < 0) return 1;
+	double midX = (carX_[0] + carX_[1]) * .5;
+	if (parkingLane().set()) return carSpot(l2r).parkedScale;
+	return calib::scaleBeyond(cameraSetup(), midX, carFartherFt_);
+}
+
 void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from, const char* method, double sigma,
 	const std::string& label) {
 	const Globals& g = cfg.g;
@@ -702,6 +728,9 @@ CalState App::calibrationState(bool l2r) {
 }
 
 void App::toast(const std::string& text, unsigned color, const char* icon) {
+	// The same note twice in a row (a two-way calibration applies each direction) shows once, its timer restarted.
+	for (auto it = toasts_.begin(); it != toasts_.end(); ++it)
+		if (it->text == text) { toasts_.erase(it); break; }
 	toasts_.push_back({ text, color, icon, now() + 4.5 });
 	if (toasts_.size() > 3) toasts_.pop_front();
 }
@@ -1819,8 +1848,14 @@ void App::pageZones() {
 		feedHint("Open a video, camera or photo of your street to draw on"));
 	OverlayStyle st;
 	const char* hovered = nullptr;
-	st.editable = !levelTool_;   // the level dots get the mouse while they're out
+	st.editable = !levelTool_ && !parkingLineDragging();   // the level dots get the mouse while they're out
 	if (player.isOpen()) zoneOverlay(v, cfg.g, st, &hovered);   // with no picture, the lines would only cover the hint
+	// The parking lane (ParkingLane.h) gets the mouse only where the zones don't want it: it usually lies outside the
+	// analysis box, and a zone handle on top of it stays reachable.
+	if (player.isOpen() && parkingLane().set()) {
+		double py[2] = { prefs.parkY0, prefs.parkY1 };
+		if (parkingLineOverlay(v, py, !levelTool_ && !hovered, &hovered)) { prefs.parkY0 = py[0]; prefs.parkY1 = py[1]; savePrefsSoon(); }
+	}
 	if (player.isOpen() && ghostCar_) ghostCars(v, cfg.g, cameraSetup(), ghostGoesRight());
 	if (player.isOpen() && (levelTool_ || levelGrid_)) {
 		levelGuide(v, levelDots_, levelTool_);
@@ -1869,6 +1904,7 @@ void App::pageZones() {
 	};
 	if (!oneWay) keys.push_back({ c::r2l, "← Lane", "hubcap height of cars going left" });
 	if (cfg.g.hasStreetEdge()) keys.push_back({ c::streetEdge, "Street edge", "along the curb: how the street recedes" });
+	if (parkingLane().set()) keys.push_back({ c::parking, "Parking lane", "wheel centres of parked cars, for step 5" });
 	float kw = (canvasW - px(36)) / 3;
 	for (int i = 0; i < int(keys.size()); i++) {
 		if (i % 3) ImGui::SameLine(px(18) + kw * (i % 3));
@@ -2150,6 +2186,66 @@ void App::zoneInspector() {
 		}
 		endCard();
 	}
+
+	// The parking lane: a line on the parked cars' wheel centres, kept for step 5's Known car mode (ParkingLane.h), which
+	// then tells a parked car from a passing one by itself and scales a parked one to the travel lane.  The tracker never
+	// uses it.  It starts parallel to the lane line, 50 px above it (the far side, the usual view from a window), or below
+	// when there's no room above; the user drags it onto a parked car's wheels.
+	ImGui::Dummy(ImVec2(0, px(2)));
+	beginCard("parking", ICON_CAR, "Parking lane");
+	{
+		const bool oneWayP = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+		const bool laneL2R = oneWayP ? g.LegalDirection == "L2R" : true;
+		bool hasPark = parkingLane().set();
+		if (ImGui::Checkbox("Cars park along this street", &hasPark)) {
+			if (hasPark) {
+				// It starts 50 px beyond the farther lane line (above it), or, with no room there, 50 px nearer than the
+				// nearer one, so on a two-way street it never begins between the two lanes.
+				double l1 = laneRowAt(true, 0), r1 = laneRowAt(true, 1280), l2 = laneRowAt(false, 0), r2 = laneRowAt(false, 1280);
+				if (oneWayP) { l2 = l1 = laneRowAt(laneL2R, 0); r2 = r1 = laneRowAt(laneL2R, 1280); }
+				const bool farL1 = l1 + r1 <= l2 + r2;
+				double l = farL1 ? l1 : l2, r = farL1 ? r1 : r2, off = -50;
+				if (std::min(l, r) - 50 < 20) { l = farL1 ? l2 : l1; r = farL1 ? r2 : r1; off = 50; }
+				prefs.parkY0 = std::clamp(std::round(l + off), 1.0, 719.0);
+				prefs.parkY1 = std::clamp(std::round(r + off), 1.0, 719.0);
+			}
+			else prefs.parkY0 = prefs.parkY1 = 0;
+			savePrefsSoon();
+		}
+		ImGui::PushTextWrapPos(0);
+		if (!hasPark)
+			dimText("Optional. Mark where parked cars' wheels sit, and step 5 can calibrate from a parked car of a known model: "
+				"it tells parked from passing by itself and corrects for the parked car being farther away.");
+		else {
+			dimText("Drag the blue dashed line onto the middle of a parked car's wheels, the way the lane line sits on a moving "
+				"car's hubcaps. Drag an end if the street runs at an angle. The tracker ignores it; it's for step 5.");
+			calib::ParkingLane park = parkingLane();
+			calib::CarSpot sp;
+			double laneRow = laneRowAt(laneL2R, 640);
+			calib::parkedBeyond(cameraSetup(), 640, laneRow, park, sp);
+			if (std::isfinite(sp.parkedFt)) {
+				const char* how = sp.fromPicture ? "worked out from the picture, your camera's height and step 2's distance"
+					: sp.typical ? "a typical guess: VST can't read it from this camera" : "as you measured";
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(c::parking));
+				ImGui::TextWrapped(ICON_RULER "  Parked cars' wheels are about %.1f ft %s than moving cars' (%s).",
+					std::fabs(sp.parkedFt), sp.parkedFt >= 0 ? "farther" : "nearer", how);
+				ImGui::PopStyleColor();
+			}
+			formLabel("Measured (ft)", col);
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
+			if (ImGui::InputDouble("##parkft", &prefs.parkFt, .5, 1, prefs.parkFt > 0 ? "%.1f" : "auto")) {
+				prefs.parkFt = std::clamp(prefs.parkFt, 0.0, 40.0);
+				savePrefsSoon();
+			}
+			helpMarker("Optional. Across the street, from a moving car's wheels to a parked car's (for a car in the middle of\n"
+				"the travel lane, about half a lane plus half a parking lane). Leave it at 0 (auto) and VST works it out from the\n"
+				"two lines, using the camera height under \"Check it with a ghost car\" above.");
+			int cmp = std::fabs(laneRow - park.at(640)) < 4 ? 0 : 1;
+			if (!cmp) dimText(ICON_WARN "  The parking lane sits on the lane line. Drag it onto the parked cars.");
+		}
+		ImGui::PopTextWrapPos();
+	}
+	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("obs", ICON_BAN, "Obstruction");
@@ -2438,21 +2534,61 @@ void App::pageCalibrate() {
 	bool carMode = calibMode_ == 3;
 	float* markX = carMode ? carX_ : coneX_;
 	float* markY = carMode ? carY_ : coneY_;
-	auto markName = [&](int i) { return carMode ? std::string(i == 0 ? "Front bumper" : "Rear bumper") : "Spot " + std::to_string(i + 1); };
+	auto markName = [&](int i) {
+		if (!carMode) return "Spot " + std::to_string(i + 1);
+		return std::string(i == 0 ? "Left " : "Right ") + (carWheels_ ? "wheel" : "bumper");
+	};
 	if ((calibMode_ == 2 || carMode) && player.isOpen()) {
 		ImDrawList* dl = ImGui::GetWindowDrawList();
+		// Known car: the parking lane as drawn in step 4, so it's plain which line a car's wheels are on.
+		const calib::ParkingLane park = parkingLane();
+		if (carMode && park.set()) {
+			double py[2] = { park.yLeft, park.yRight };
+			parkingLineOverlay(v, py, false, nullptr, .8f);
+		}
 		float top = float(g.AnalysisBoxTop) - 30, bottom = float(g.AnalysisBoxTop + g.AnalysisBoxHeight) + 30;
+		if (carMode)
+			for (int i = 0; i < 2; i++)
+				if (markX[i] >= 0) { top = std::min(top, markY[i] - 60); bottom = std::max(bottom, markY[i] + 30); }
 		for (int i = 0; i < 2; i++) {
 			if (markX[i] < 0) continue;
 			ImVec2 a = v.at(markX[i], top), b = v.at(markX[i], bottom), base = v.at(markX[i], markY[i]);
 			dl->AddLine(a, b, alpha(c::warn, .8f), px(2));
-			dl->AddTriangleFilled(base + ImVec2(0, -px(16)), base + ImVec2(-px(8), 0), base + ImVec2(px(8), 0), c::warn);
+			if (carMode && carWheels_) {
+				// A crosshair on the wheel's centre, as the card's picture shows it.
+				dl->AddCircle(base, px(9), c::warn, 0, 2.5f);
+				dl->AddLine(base - ImVec2(px(14), 0), base + ImVec2(px(14), 0), c::warn, 2.f);
+			}
+			else dl->AddTriangleFilled(base + ImVec2(0, -px(16)), base + ImVec2(-px(8), 0), base + ImVec2(px(8), 0), c::warn);
+			// Each name on its line's outer side, so two marks close together (a car's wheels) don't print over each other.
 			std::string t = markName(i);
-			dl->AddText(fonts.strong, fsz(fonts.strong), a + ImVec2(px(6), 0), c::warn, t.c_str());
+			const int other = 1 - i;
+			const bool outLeft = markX[other] >= 0 && markX[i] < markX[other];
+			const float tw = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t.c_str()).x;
+			float tx = outLeft ? a.x - px(6) - tw : a.x + px(6);
+			tx = std::clamp(tx, v.origin.x + px(4), v.origin.x + v.size.x - tw - px(4));
+			dl->AddText(fonts.strong, fsz(fonts.strong), ImVec2(tx, a.y), c::warn, t.c_str());
 		}
 		if (markX[0] >= 0 && markX[1] >= 0) {
 			ImVec2 a = v.at(markX[0], markY[0]), b = v.at(markX[1], markY[0]);
 			dl->AddLine(a + ImVec2(0, px(8)), b + ImVec2(0, px(8)), c::warn, px(2));
+		}
+		// Known car: where the car is, on the car itself, in the colour of the line it's on.
+		if (carMode && markX[0] >= 0 && markX[1] >= 0) {
+			const bool oneWayC = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+			bool l2r = oneWayC ? g.LegalDirection == "L2R" : coneDir_ != 2;
+			calib::CarSpot spot = carSpot(l2r);
+			char t[96];
+			ImU32 col;
+			if (park.set() && spot.offLines) { std::snprintf(t, sizeof t, ICON_WARN "  Not on a line: click the wheel centres"); col = c::warn; }
+			else if (carParked_) { std::snprintf(t, sizeof t, ICON_CAR "  PARKED  ·  scaled x%.2f to the travel lane", carScale(l2r)); col = c::parking; }
+			else { std::snprintf(t, sizeof t, ICON_CHECK_CIRCLE "  IN THE TRAVEL LANE"); col = l2r ? c::l2r : c::r2l; }
+			ImVec2 ts = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t);
+			ImVec2 mid = v.at(float(markX[0] + markX[1]) * .5f, std::min(markY[0], markY[1]));
+			ImVec2 tp(std::clamp(mid.x - ts.x * .5f - px(8), v.origin.x + px(6), v.origin.x + v.size.x - ts.x - px(22)),
+				std::max(mid.y - px(46) - ts.y, v.origin.y + px(44)));
+			dl->AddRectFilled(tp, tp + ts + ImVec2(px(16), px(10)), col, px(6));
+			dl->AddText(fonts.strong, fsz(fonts.strong), tp + ImVec2(px(8), px(5)), c::bg0, t);
 		}
 		if (coneTimerAt_ >= 0) {
 			// Big enough to read from across the room on the way out.
@@ -2467,7 +2603,8 @@ void App::pageCalibrate() {
 		}
 		if (conePlacing_ >= 0) {
 			ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-			std::string t = carMode ? "Click the " + std::string(conePlacing_ == 0 ? "front" : "rear") + " bumper, at the corner facing the camera"
+			std::string t = carMode ? (carWheels_ ? "Click the middle of the " + std::string(conePlacing_ == 0 ? "left" : "right") + " wheel, on the side facing you"
+					: "Click the " + std::string(conePlacing_ == 0 ? "left" : "right") + " bumper, where it ends on the side facing the camera")
 				: "Click the cone or pole at spot " + std::to_string(conePlacing_ + 1);
 			ImVec2 ts = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t.c_str());
 			ImVec2 tp = v.origin + ImVec2((v.size.x - ts.x) * .5f, px(12));
@@ -2774,109 +2911,194 @@ void App::pageCalibrate() {
 		endCard();
 	}
 	else if (calibMode_ == 3) {
-		// A car of known length as the measuring stick: the same arithmetic as the cones (calib::framesForDistance), with
-		// the bumpers as the two marks and the maker's overall length as the distance.  What it adds over the cones is
+		// A car of known size as the measuring stick: the same arithmetic as the cones (calib::framesForDistance), with
+		// two points on the car as the marks and the maker's figure as the distance.  What it adds over the cones is
 		// convenience (no tape, no trip outside, and any car of a known model that shows up will do); what it costs is
 		// accuracy, from three places the copy below steers around:
-		//  - Depth.  A car parked beyond the traffic lane looks shorter than a moving one, so speeds read high unless
-		//    the "parked beyond" correction (calib::markPxAtLane) is set.  A passing car has no such error.
-		//  - Corners.  Off to one side the camera also sees the car's front or back, which looks like extra length.
-		//    Marking the corners facing the camera, with the car near the middle of the picture, keeps that small.
-		//  - The model's length: the picker names each generation's years, since generations differ by inches.
+		//  - Where to click.  The wheel centres (the default) are two sharp points on the side facing the camera, so a
+		//    car at a slight angle, rounded corners or a bike rack change nothing; bumpers are there for a car whose
+		//    wheels are hidden.  See calib::kKnownCars.
+		//  - Depth.  A parked car isn't where moving cars are, so its span is scaled to the travel lane (carScale): from
+		//    the parking lane drawn in step 4 when there is one (ParkingLane.h; the page then says Parked or In the
+		//    travel lane by itself), otherwise from "Parked" and how far beyond, through the camera model.  A passing
+		//    car needs nothing.
+		//  - The model's figures: the picker names each generation's years, since generations differ by inches.
 		// The marks span the car, not the zone, so a camera not square to the street (the zone's ends at different
 		// depths) adds error the cones placed at the white lines don't have.
-		beginCard("car", ICON_CAR, "A car you know the length of");
-		stepLine(1, "Find a frame with the car side-on in the zone, near the middle of the picture. A parked car works, "
+		const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+		const calib::ParkingLane park = parkingLane();
+		const bool marked = carX_[0] >= 0 && carX_[1] >= 0;
+		beginCard("car", ICON_CAR, "A car you know the model of");
+		stepLine(1, "Find a frame with the car side-on, near the middle of the picture and as big as it gets. A parked car works, "
 			"or step through a recording to a sharp frame of one passing by.");
-		stepLine(2, "Click its front bumper, then its rear bumper, each at the corner facing the camera.");
-		stepLine(3, "Pick the model or type its length, say where it is, and apply. Then check it with one drive past.");
+		stepLine(2, carWheels_ ? "Click the centre of each wheel on the side facing you, left wheel first."
+			: "Click the left bumper, then the right one, each where it ends on the side facing the camera.");
+		stepLine(3, "Pick the model, check it says where the car is, and apply. Then check it with one drive past.");
 		ImGui::Dummy(ImVec2(0, px(4)));
+
+		// What to click, as a picture: the two marks and the span they measure.
+		static const char* const how[] = { "Wheel centres", "Bumpers" };
+		int hw = carWheels_ ? 0 : 1;
+		if (segmented("carhow", &hw, how, 2) && carWheels_ != (hw == 0)) {
+			carWheels_ = hw == 0;
+			// The picked model gives the other figure; a typed one starts again from a typical car.
+			carFt_ = carModel_ >= 0 ? (carWheels_ ? calib::kKnownCars[carModel_].wheelbaseIn : calib::kKnownCars[carModel_].inches) / 12
+				: carWheels_ ? calib::kTypicalWheelbaseFt : 15.5;
+			carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1;
+			conePlacing_ = -1;
+		}
+		{
+			float sw = ImGui::GetContentRegionAvail().x, sh = px(84);
+			ImVec2 at = ImGui::GetCursorScreenPos();
+			wheelbaseSketch(ImGui::GetWindowDrawList(), at + ImVec2(sw * .08f, 0), ImVec2(sw * .84f, sh), carWheels_);
+			ImGui::Dummy(ImVec2(sw, sh));
+		}
+		ImGui::PushTextWrapPos(0);
+		dimText("%s", carWheels_
+			? "The middle of each wheel is a sharp point at the lane line's height, so a car at a slight angle, rounded corners "
+			  "or a bike rack don't matter. The easiest and most accurate choice."
+			: "Only when the wheels are hidden. Bumpers are rounded, and at an angle the camera sees some of the front or back, "
+			  "which reads as extra length.");
+		ImGui::PopTextWrapPos();
+		ImGui::Dummy(ImVec2(0, px(2)));
+
 		float bw = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
 		ImGui::BeginDisabled(!player.isOpen());
 		for (int i = 0; i < 2; i++) {
 			if (i) ImGui::SameLine(0, px(10));
-			std::string label = std::string(conePlacing_ == i ? ICON_CROSSHAIRS "  Click the picture" : i == 0 ? ICON_FLAG "  Front bumper" : ICON_FLAG "  Rear bumper")
+			const char* name = carWheels_ ? (i == 0 ? "Left wheel" : "Right wheel") : (i == 0 ? "Left bumper" : "Right bumper");
+			std::string label = std::string(conePlacing_ == i ? ICON_CROSSHAIRS "  Click the picture" : std::string(ICON_FLAG "  ") + name)
 				+ "##car" + std::to_string(i);
 			if (conePlacing_ == i ? primaryButton(label.c_str(), ImVec2(bw, 0)) : ghostButton(label.c_str(), ImVec2(bw, 0)))
 				conePlacing_ = conePlacing_ == i ? -1 : i;
 		}
 		ImGui::EndDisabled();
 		auto carText = [&](int i) { return carX_[i] < 0 ? std::string("not marked") : "x " + std::to_string(int(std::lround(carX_[i]))); };
-		dimText("Front: %s    Rear: %s", carText(0).c_str(), carText(1).c_str());
+		dimText("Left: %s    Right: %s", carText(0).c_str(), carText(1).c_str());
 
-		// The model picker fills the length; typing a length switches the picker to "typed in".
+		// The model picker fills the span; typing one switches the picker to "typed in".
 		formLabel("Model", px(130));
 		ImGui::SetNextItemWidth(-FLT_MIN);
-		const char* shownModel = carModel_ >= 0 ? calib::kKnownCars[carModel_].name : "Other (type the length)";
+		const char* shownModel = carModel_ >= 0 ? calib::kKnownCars[carModel_].name : "Other (type it)";
 		if (ImGui::BeginCombo("##carmodel", shownModel, ImGuiComboFlags_HeightLarge)) {
 			for (int i = 0; i < int(IM_ARRAYSIZE(calib::kKnownCars)); i++) {
-				char item[96];
-				double in = calib::kKnownCars[i].inches;
+				char item[112];
+				double in = carWheels_ ? calib::kKnownCars[i].wheelbaseIn : calib::kKnownCars[i].inches;
 				snprintf(item, sizeof item, "%s   %d ft %d in", calib::kKnownCars[i].name, int(in) / 12, int(in) % 12);
 				if (ImGui::Selectable(item, carModel_ == i)) { carModel_ = i; carFt_ = in / 12; }
 			}
-			if (ImGui::Selectable("Other (type the length)", carModel_ < 0)) carModel_ = -1;
+			if (ImGui::Selectable("Other (type it)", carModel_ < 0)) carModel_ = -1;
 			ImGui::EndCombo();
 		}
-		formLabel("Length (ft)", px(130));
+		formLabel(carWheels_ ? "Wheelbase (ft)" : "Length (ft)", px(130));
 		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
 		if (ImGui::InputDouble("##carft", &carFt_, .1, 1, "%.2f")) carModel_ = -1;
 		carFt_ = std::clamp(carFt_, 0.0, 80.0);
-		helpMarker("Bumper to bumper. Search the year and model with \"overall length\"; makers list it in inches (divide by 12).\n"
-			"An inch either way is about half a percent, or 0.1 mph at 25 mph.");
+		helpMarker(carWheels_
+			? "Front wheel centre to rear wheel centre. Search the year and model with \"wheelbase\"; makers list it in inches\n"
+			  "(divide by 12). An inch either way is about 0.9%, or 0.2 mph at 25 mph."
+			: "Bumper to bumper. Search the year and model with \"overall length\"; makers list it in inches (divide by 12).\n"
+			  "An inch either way is about half a percent, or 0.1 mph at 25 mph.");
 
-		// Where the car is, for the depth correction.  The camera-to-lane distance is the site planner's (step 2),
-		// kept in metres there; it's edited here in feet because that's what the "farther" box is in.
-		static const char* const where[] = { "Driving by", "Parked beyond traffic" };
+		// Where the car is.  With a parking lane drawn (step 4) the marks' rows say it, and the choice follows each new
+		// pair of marks; a click on the other option overrides it until the car is marked again.  Without one it is the
+		// user's call, with how far beyond the moving cars a parked car sits.
+		const bool primaryL2R = oneWay ? g.LegalDirection == "L2R" : coneDir_ != 2;
+		calib::CarSpot spot = carSpot(primaryL2R);
+		bool newMarks = !std::equal(carX_, carX_ + 2, carAutoFor_) || !std::equal(carY_, carY_ + 2, carAutoFor_ + 2);
+		if (marked && park.set() && newMarks && spot.where != calib::CarSpot::Unknown) {
+			carParked_ = spot.where == calib::CarSpot::Parked;
+			std::copy(carX_, carX_ + 2, carAutoFor_);
+			std::copy(carY_, carY_ + 2, carAutoFor_ + 2);
+		}
+		static const char* const where[] = { "In the travel lane", "Parked" };
 		int w = carParked_ ? 1 : 0;
 		if (segmented("carwhere", &w, where, 2)) carParked_ = w == 1;
-		double laneFt = prefs.planDist * 3.281;
-		if (carParked_) {
-			formLabel("Camera to lane (ft)", px(130));
-			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
-			if (ImGui::InputDouble("##carlane", &laneFt, 1, 5, "%.0f")) prefs.planDist = std::max(laneFt, 3.0) / 3.281;
-			helpMarker("From the camera to the middle of the lane traffic drives in. Step 2, Pick your spot, has the same number.");
-			formLabel("Car is farther (ft)", px(130));
-			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
-			ImGui::InputDouble("##carfar", &carFartherFt_, .5, 1, "%.1f");
-			carFartherFt_ = std::clamp(carFartherFt_, 0.0, 50.0);
-			helpMarker("From the middle of the traffic lane to the middle of the parked car. Across a lane and a parking lane\n"
-				"that's usually 6 to 9 ft. A car parked on the near side, between you and traffic, can't be corrected this way.");
+		const double midX = marked ? (carX_[0] + carX_[1]) * .5 : 640;
+		ImGui::PushTextWrapPos(0);
+		if (park.set()) {
+			if (!marked) dimText(ICON_INFO "  Mark the car and VST says whether it's parked, from the parking lane you drew in step 4.");
+			else if (spot.offLines) {
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+				ImGui::TextWrapped(ICON_WARN "  The marks aren't on the lane line or the parking lane. Click the middle of each wheel, "
+					"or move the lines in step 4 if they've drifted.");
+				ImGui::PopStyleColor();
+			}
+			else {
+				bool autoParked = spot.where == calib::CarSpot::Parked;
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(carParked_ ? c::parking : c::ok));
+				if (carParked_ == autoParked)
+					ImGui::TextWrapped(carParked_ ? ICON_CAR "  Parked: its wheels are on the parking lane." : ICON_CHECK_CIRCLE "  In the travel lane: its wheels are on the lane line.");
+				else ImGui::TextWrapped(ICON_INFO "  You chose %s; its wheels look %s.", carParked_ ? "parked" : "in the travel lane", autoParked ? "parked" : "in the travel lane");
+				ImGui::PopStyleColor();
+			}
+			if (carParked_ && marked && std::isfinite(spot.parkedFt)) {
+				const char* how2 = spot.fromPicture ? "from your picture and camera" : spot.typical ? "a typical guess" : "as you measured";
+				dimText("Parked cars are about %.1f ft %s than moving ones (%s), so VST scales this car ×%.2f to the travel lane.",
+					std::fabs(spot.parkedFt), spot.parkedFt >= 0 ? "farther" : "nearer", how2, spot.parkedScale);
+			}
 		}
 		else {
-			ImGui::PushTextWrapPos(0);
-			dimText(ICON_INFO "  A parked car? Choose \"Parked beyond traffic\". It sits farther from the camera than moving cars, "
-				"so it looks shorter, and speeds would read high.");
-			ImGui::PopTextWrapPos();
+			if (carParked_) {
+				formLabel("Farther by (ft)", px(130));
+				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
+				ImGui::InputDouble("##carfar", &carFartherFt_, .5, 1, "%.1f");
+				carFartherFt_ = std::clamp(carFartherFt_, -30.0, 50.0);
+				helpMarker("From a passing car's wheels to the parked car's, across the street. Across half a lane and a parking\n"
+					"lane that's usually 6 to 9 ft. A car parked between you and traffic is nearer: type it negative.");
+				if (marked) dimText("VST scales this car ×%.2f to the travel lane, from your camera's height (step 4) and distance (step 2).", carScale(primaryL2R));
+			}
+			dimText(ICON_INFO "  Tip: draw the parking lane in step 4 and VST tells parked cars from passing ones by itself.");
+			if (ImGui::SmallButton("Draw the parking lane in step 4##car")) goFlow(3);
 		}
+		ImGui::PopTextWrapPos();
 		static const char* const carDirs[] = { "Both ways", "→ only", "← only" };
 		segmented("cardir", &coneDir_, carDirs, 3);
 
-		double rawPx = (carX_[0] >= 0 && carX_[1] >= 0) ? std::fabs(carX_[1] - carX_[0]) : 0;
-		double markPx = calib::markPxAtLane(rawPx, laneFt, carParked_ ? carFartherFt_ : 0);
+		// Each direction's frames: on a two-way street the two lanes are at different depths, so a parked car scales
+		// differently to each.  The card shows the primary direction (the legal one, or → unless "← only").
+		const bool doL2R = coneDir_ != 2, doR2L = coneDir_ != 1;
+		double rawPx = marked ? std::fabs(carX_[1] - carX_[0]) : 0;
 		double zonePx = g.speedLineRight - g.speedLineLeft;
-		double framesD = calib::framesForDistance(markPx, carFt_, zonePx, g.CalibrationSpeed, g.CalibrationFPS);
+		auto framesFor = [&](bool l2r) { return calib::framesForDistance(rawPx * carScale(l2r), carFt_, zonePx, g.CalibrationSpeed, g.CalibrationFPS); };
+		double framesD = framesFor(primaryL2R);
 		bool tooSmall = rawPx > 0 && rawPx < 60;
 		if (framesD > 0 && !tooSmall) {
-			double zoneFt = zonePx / markPx * carFt_;
+			double zoneFt = zonePx / (rawPx * carScale(primaryL2R)) * carFt_;
 			int rounded = std::max(1, int(std::lround(framesD)));
 			ImGui::PushFont(fonts.stat);
 			ImGui::Text("%.1f ft zone", zoneFt);
 			ImGui::PopFont();
 			ImGui::PushTextWrapPos(0);
 			dimText("A car at %.0f mph crosses it in %.1f frames at %.0f fps, saved as %d.", g.CalibrationSpeed, framesD, g.CalibrationFPS, rounded);
-			if (carParked_ && laneFt > 0)
-				dimText("Each foot the \"farther\" guess is off moves speeds about %.0f%%.", 100 / (laneFt + carFartherFt_));
+			if (!oneWay && doL2R && doR2L) dimText("← lane: %.1f frames.", framesFor(false));
+			if (carParked_ && !(park.set() && spot.fromPicture)) {
+				// How much a foot of error in "how far beyond" moves the result, so the user knows whether to measure it.
+				double ft = park.set() ? spot.parkedFt : carFartherFt_;
+				double s0 = calib::scaleBeyond(cameraSetup(), midX, ft), s1 = calib::scaleBeyond(cameraSetup(), midX, ft + 1);
+				if (s0 > 0) dimText("Each foot that distance is off moves speeds about %.0f%%.", std::fabs(s1 / s0 - 1) * 100);
+			}
 			ImGui::PopTextWrapPos();
 		}
 		else if (tooSmall) dimText(ICON_WARN "  The car is too small on the picture to measure. Pick a nearer one.");
 		ImGui::BeginDisabled(framesD <= 0 || tooSmall);
 		if (primaryButton(ICON_PLUS "  Add to calibration", ImVec2(-FLT_MIN, 0))) {
-			std::string label = std::string(carModel_ >= 0 ? calib::kKnownCars[carModel_].name : "A car of known length") + (carParked_ ? ", parked" : "");
-			applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD, "the known car", "car", calib::sigmaCar(rawPx, carParked_, laneFt, carFartherFt_), label);
+			// One input per direction it speaks for (a parked car scales differently to each lane of a two-way street),
+			// weighted by how well the marks and the parked-car depth are known (calib::sigmaCar).
+			const char* from = carWheels_ ? "the car's wheelbase" : "the car's length";
+			const double laneFt = prefs.planDist * plan::kFt;
+			const double fartherFt = park.set() && std::isfinite(spot.parkedFt) ? spot.parkedFt : carFartherFt_;
+			const double sigma = calib::sigmaCar(rawPx, carParked_, laneFt, fartherFt);
+			std::string label = std::string(carModel_ >= 0 ? calib::kKnownCars[carModel_].name : carWheels_ ? "A car's wheelbase" : "A car of known length")
+				+ (carParked_ ? ", parked" : "");
+			if (oneWay || !(doL2R && doR2L)) applyDistanceCalibration(doL2R, doR2L, framesD, from, "car", sigma, label);
+			else {
+				applyDistanceCalibration(true, false, framesFor(true), from, "car", sigma, label + ", →");
+				applyDistanceCalibration(false, true, framesFor(false), from, "car", sigma, label + ", ←");
+			}
 		}
 		ImGui::EndDisabled();
-		if (ImGui::SmallButton("Clear bumpers##car")) { carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1; conePlacing_ = -1; }
+		if (ImGui::SmallButton(carWheels_ ? "Clear wheels##car" : "Clear bumpers##car")) { carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1; conePlacing_ = -1; }
 		if (anyCalibrated) {
 			ImGui::Dummy(ImVec2(0, px(2)));
 			if (ghostButton(ICON_BULLSEYE "  Check it with a drive past##car", ImVec2(-FLT_MIN, 0))) {

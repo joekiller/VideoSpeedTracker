@@ -21,6 +21,17 @@ export const framesForZone = (zoneFt, calSpeed, calFps) => (zoneFt > 0 && calSpe
 export const sigmaPass = (mph, frames) => (mph > 0 && frames > 0 ? Math.hypot(Math.hypot(0.02 * mph, 0.5) / mph, 0.41 / frames) : 1);
 /** Two marks on a tape-measured spacing: 1% tape, ~4 px of clicking over the span, 2.5% for the marks' depth. */
 export const sigmaCones = (markPx) => (markPx > 0 ? Math.sqrt(0.01 ** 2 + (4 / markPx) ** 2 + 0.025 ** 2) : 1);
+/**
+ * A car of known size (CalEvidence.h sigmaCar): 0.5% for the published size, ~4 px of clicking, and the marks' depth:
+ * 2% in the lane, or for a parked car the 1.5 ft its distance beyond the lane is good to, over the lane's distance plus
+ * that (8% with no lane distance).
+ */
+export function sigmaCar(markPx, parked, laneFt, fartherFt) {
+  if (!(markPx > 0)) return 1;
+  let depth = 0.02;
+  if (parked && fartherFt > 0) depth = laneFt > 0 ? Math.hypot(0.02, 1.5 / (laneFt + fartherFt)) : 0.08;
+  return Math.sqrt(0.005 ** 2 + (4 / markPx) ** 2 + depth ** 2);
+}
 
 const applies = (input, dir) => input.dirs === 'both' || input.dirs === dir;
 

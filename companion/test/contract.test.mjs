@@ -53,6 +53,10 @@ const CONFIG = {
   legalDirection: (d) => ['L2R', 'R2L', 'both'].includes(d),
   speedLimit: isInt, egregious: isInt, siteName: isStr,
   minLoggedSpeed: isInt,
+  parkingLane: (o) => Array.isArray(o) && o.length === 2 && o.every(isInt),
+  parkingLaneFt: isNum,
+  parkingLaneBeyondFt: (v) => v === null || isNum(v),
+  parkingLaneHow: (v) => v === null || ['picture', 'measured', 'typical'].includes(v),
 };
 
 const VEHICLE = {
@@ -270,6 +274,9 @@ describe('PUT /api/config', () => {
       { speedLineLeft: 900, speedLineRight: 100 },
       { AnalysisBoxLeft: 'left' },
       { AnalysisBoxWidth: 5000 },
+      { parkingLane: [300, 0] },
+      { parkingLane: [300, 900] },
+      { parkingLaneFt: -2 },
     ]) {
       const r = await api.put('/api/config', bad);
       assert.equal(r.status, 200, `${JSON.stringify(bad)}: rejected in-band, not as an HTTP error`);
@@ -592,6 +599,85 @@ describe('calibration', () => {
     assert.equal(r.data.ok, false);
     assert.ok(r.data.problems.length > 0 && r.data.problems.every(isStr));
     assertError(await api.post('/api/calibration/inputs', 'not json'), 400, 'inputs with a body that is not JSON');
+  });
+
+  it('cars lists the Known car models with their lengths and wheelbases', async () => {
+    const r = await api.get('/api/calibration/cars');
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.data.cars) && r.data.cars.length >= 10);
+    for (const c of r.data.cars) {
+      assert.ok(isStr(c.name) && c.name.length > 0);
+      assert.ok(isNum(c.lengthIn) && isNum(c.wheelbaseIn) && c.wheelbaseIn < c.lengthIn, JSON.stringify(c));
+    }
+    assert.ok(isNum(r.data.typicalWheelbaseIn));
+  });
+
+  it('car: marks missing, too close, no feet or bad words are {ok:false, problems}', async () => {
+    for (const bad of [{}, { marks: [[300, 400]], feet: 9 }, { marks: [[300, 400], [330, 400]], feet: 9 }, { marks: [[300, 400], [600, 400]] },
+      { marks: [[300, 400], [600, 400]], feet: 9, dir: 'up' }, { marks: [[300, 400], [600, 400]], feet: 9, where: 'garage' },
+      { marks: [[300, 400], [600, 400]], feet: 9, how: 'doors' }]) {
+      const r = await api.post('/api/calibration/car', { ...bad, preview: true });
+      assert.equal(r.status, 200, JSON.stringify(bad));
+      assert.equal(r.data.ok, false, JSON.stringify(bad));
+      assert.ok(r.data.problems.length > 0 && r.data.problems.every(isStr));
+    }
+    assertError(await api.post('/api/calibration/car', 'not json'), 400, 'car with a body that is not JSON');
+  });
+
+  it('car preview: in the travel lane it is the cones arithmetic, and nothing changes', async () => {
+    const { data: before } = await api.get('/api/config');
+    // On the lane line itself, so "auto" says in the travel lane even with a parking lane drawn.
+    const legalL2R = before.legalDirection === 'L2R';
+    const row = before.AnalysisBoxTop + (legalL2R ? before.L2RStreetY : before.R2LStreetY);
+    const r = await api.post('/api/calibration/car', { marks: [[400, row], [700, row]], feet: 9.25, where: 'lane', preview: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, true, JSON.stringify(r.data.problems));
+    assert.equal(r.data.where, 'lane');
+    assert.equal(r.data.scale, 1);
+    const zoneFeet = (before.speedLineRight - before.speedLineLeft) / 300 * 9.25;
+    assert.ok(Math.abs(r.data.zoneFeet - zoneFeet) <= 0.05 + 1e-9, `zoneFeet ${r.data.zoneFeet} vs ${zoneFeet}`);
+    assert.ok(isNum(r.data.frames) && r.data.byDir && typeof r.data.byDir === 'object');
+    const { data: after } = await api.get('/api/config');
+    assert.equal(after.CalibrationFramesL2R, before.CalibrationFramesL2R);
+    assert.equal(after.CalibrationFramesR2L, before.CalibrationFramesR2L);
+  });
+
+  it('car: a parked car on the parking lane is called parked and scaled up, then applied', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
+    const { data: before } = await api.get('/api/config');
+    const legalL2R = before.legalDirection === 'L2R';
+    const lane = before.AnalysisBoxTop + (legalL2R ? before.L2RStreetY : before.R2LStreetY);
+    const park = Math.max(20, lane - 60);
+    // The car joins the calibration's inputs (CalEvidence.h): take the others out first so it is the whole calibration.
+    const ids = inputIds((await api.get('/api/status')).data);
+    const wasIn = (await api.get('/api/status')).data.calibration.inputs.filter((i) => !i.removed);
+    try {
+      await takeOut(wasIn);
+      const p = await api.put('/api/config', { parkingLane: [park, park] });
+      assert.equal(p.data.ok, true, JSON.stringify(p.data.problems));
+      assert.deepEqual(p.data.config.parkingLane, [park, park]);
+      assert.ok(isNum(p.data.config.parkingLaneBeyondFt) && p.data.config.parkingLaneBeyondFt > 0, 'a line above the lane is farther');
+      const body = { marks: [[400, park], [700, park]], feet: 9.25, dir: 'both' };
+      const r = await api.post('/api/calibration/car', { ...body, preview: true });
+      assert.equal(r.data.ok, true, JSON.stringify(r.data.problems));
+      assert.equal(r.data.where, 'parked');
+      assert.equal(r.data.detected, 'parked');
+      assert.ok(r.data.scale > 1, `scale ${r.data.scale}`);
+      const a = await api.post('/api/calibration/car', body);
+      assert.equal(a.data.ok, true, JSON.stringify(a.data.problems));
+      const frames = a.data.byDir[legalL2R ? 'L2R' : 'R2L'].frames;
+      assert.ok(Math.abs(a.data.config[legalL2R ? 'CalibrationFramesL2R' : 'CalibrationFramesR2L'] - frames) <= 0.5 + 1e-9);
+      // Taken as in the travel lane, the same marks make the zone look longer (the far car looks small), so more frames
+      // and every speed reading high: the error the parking lane corrects.
+      const lanePrev = await api.post('/api/calibration/car', { ...body, where: 'lane', preview: true });
+      assert.ok(lanePrev.data.frames > r.data.frames);
+      const mine = await added(ids);
+      assert.ok(mine.length >= 1 && mine.every((i) => i.method === 'car'), 'kept as a car input');
+    } finally {
+      await takeOut(await added(ids));
+      for (const i of wasIn) await api.post('/api/calibration/inputs', { id: i.id, removed: false });
+      await api.put('/api/config', { parkingLane: before.parkingLane, CalibrationFramesL2R: before.CalibrationFramesL2R, CalibrationFramesR2L: before.CalibrationFramesR2L });
+    }
   });
 
   it('apply from a vehicle that is gone is {ok:false, problems}', async () => {

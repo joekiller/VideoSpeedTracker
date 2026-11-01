@@ -51,6 +51,17 @@ ImVec2 levelTurn(ImVec2 p, double degrees);
 // distance or lens is off, leaning wrong means the angle is.  Draws nothing where the setup can't place it.
 void ghostCars(const View& v, const Globals& g, const perspective::CameraSetup& cam, bool goingRight);
 
+// The parking lane (ParkingLane.h): a dashed line across the whole frame through rows y[0] (at x 0) and y[1] (at x 1280),
+// labelled.  Editable, it drags like a lane line: anywhere along it to move it, an end grip to tilt it.  Returns true when
+// y changed; `hovered` gets a hint while the mouse is on it.  Call zoneOverlay first and pass editable only when it isn't
+// using the mouse; parkingLineDragging() says when this one is, so zoneOverlay can be told to keep off.
+bool parkingLineOverlay(const View& v, double y[2], bool editable, const char** hovered = nullptr, float opacity = 1.f);
+bool parkingLineDragging();
+
+// The Known car card's picture: a side-on car with the two points to click marked and the span between them dimensioned,
+// the wheel centres (wheels) or the bumpers, in a box `size` at screen position `at`.
+void wheelbaseSketch(ImDrawList* dl, ImVec2 at, ImVec2 size, bool wheels);
+
 // Draws the tracker's live boxes with speed tags.
 void trackOverlay(const View& v, const Globals& g, const cv::Rect& analysisBox, const std::vector<vst::TrackBox>& boxes,
 	int speedLimit, int egregious);
