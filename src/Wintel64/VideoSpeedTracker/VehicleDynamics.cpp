@@ -784,4 +784,4 @@ Projection VehicleDynamics::getBestProjection(Globals& g, int frameNum){
 		return Projection(Rect(int(nextFrontBumper), nextY, int(nextRearBumper - nextFrontBumper), nextHeight), vState, estVelocity, frameNum);
 	}
 		
-};
+};
