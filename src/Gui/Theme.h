@@ -30,6 +30,7 @@ inline const ImU32 wrong = rgb(0xF43F5E);
 inline const ImU32 l2r = rgb(0xB06CFF);
 inline const ImU32 r2l = rgb(0xFF8A3D);
 inline const ImU32 obstruction = rgb(0xFACC15);
+inline const ImU32 streetEdge = rgb(0x84CC16);  // the optional street-edge line (Perspective.h)
 }  // namespace c
 
 ImVec4 v4(ImU32 col, float alpha = -1.f);

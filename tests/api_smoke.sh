@@ -162,7 +162,7 @@ expect 200 "GET /api/config"
 has AnalysisBoxLeft AnalysisBoxTop AnalysisBoxWidth AnalysisBoxHeight speedLineLeft speedLineRight obstruction \
     R2LStreetY L2RStreetY L2RDirection R2LDirection CalibrationFramesL2R CalibrationFramesR2L CalibrationSpeed \
     CalibrationFPS legalDirection speedLimit egregious siteName minLoggedSpeed subFrameTiming maxL2RDistOnEntry \
-    maxR2LDistOnEntry entryLookBack
+    maxR2LDistOnEntry entryLookBack R2LStreetYRight L2RStreetYRight streetEdge
 CONFIG_BEFORE=$BODY
 
 echo "Health"

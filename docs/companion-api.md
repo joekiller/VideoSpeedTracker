@@ -64,7 +64,9 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
   (a still opened for planning zones; it can't be tracked); `totalFrames` is 0 for live sources.
 * `reconnecting` is true while a camera or stream has stopped sending pictures and the tracker is reopening it
   (after 1, 2, 4, 8, 16, then every 30 s). Passes resume when it's back.
-* `counts` cover the current session (since VST Studio started).
+* `counts` cover the current session (since VST Studio started). `vehicles` are the ones logged (timed, a clean track, at least
+  `minLoggedSpeed`). Studio also reports `tries` (every car the tracker followed into the speed zone), split into
+  `vehicles`, `slow` (timed but under `minLoggedSpeed`) and `untimed` (lost before a usable speed).
 * `liveViews` is how many streams (`/api/stream.mjpg`, `/api/live`) are open, out of 4 (see
   [Stream limits](#stream-limits-and-signing-out)).
 * `legalDirection` is `L2R`, `R2L` or `both` (two-way street, nobody is ever wrong-way).
@@ -201,7 +203,7 @@ companion-facing settings:
   "AnalysisBoxLeft": 10, "AnalysisBoxTop": 220, "AnalysisBoxWidth": 1269, "AnalysisBoxHeight": 190,
   "speedLineLeft": 350, "speedLineRight": 909,
   "obstruction": [251, 311],
-  "R2LStreetY": 122, "L2RStreetY": 158,
+  "R2LStreetY": 122, "L2RStreetY": 158, "R2LStreetYRight": 0, "L2RStreetYRight": 0, "streetEdge": [0, 0],
   "L2RDirection": "SW", "R2LDirection": "NE",
   "CalibrationFramesL2R": 35, "CalibrationFramesR2L": 40, "CalibrationSpeed": 25, "CalibrationFPS": 30,
   "legalDirection": "R2L",
@@ -229,6 +231,13 @@ line up with what the tracker sees.
 As in `VST.cfg`, `speedLineLeft`, `speedLineRight` and `obstruction` are x offsets from
 `AnalysisBoxLeft`; `R2LStreetY` and `L2RStreetY` are y offsets from `AnalysisBoxTop`. `obstruction`
 of `[0, 0]` means none.
+
+`R2LStreetY` and `L2RStreetY` are where each lane line meets the analysis box's left edge;
+`R2LStreetYRight` and `L2RStreetYRight` are where it meets the right edge, for a street that runs at an
+angle across the picture (0 = level, the same as the left end). `streetEdge` (`[left, right]`, the same
+way; `[0, 0]` = off) is an optional line along the curb: where it closes in on a lane line tells
+short-view timing how the street recedes, so it measures each car along the ground. See `VST.cfg`'s keys
+of the same names and `Perspective.h`.
 
 `GET` also returns, read-only, `obstruction_extent`, `SENSITIVITY_VALUE`, `BLUR_SIZE` and
 `largeVehicleArea` (the `VST.cfg` values) and `frameWidth`/`frameHeight` (always 1280 and 720).

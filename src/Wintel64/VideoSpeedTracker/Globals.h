@@ -36,6 +36,8 @@
 #define CVWhite 255,255,255
 #define CVBlack 0,0,0
 
+#include "Perspective.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -104,12 +106,40 @@ public:
 	int	SLOP = 15;					// Margin of error when testing for vehicle overlap... pixels.
 	int R2LStreetY = 122;			// Hubcap line for R2L vehicles on flat street.Orange. Locust Ave.  Relative to AnalysisBoxTop...pixels
 	int L2RStreetY = 158;			// Hubcap line for L2R vehicles on flat street.Purple. Locust Ave. Relative to AnalysisBoxTop...pixels
+	int R2LStreetYRight = 0;		// The R2L hubcap line's height at the analysis box's right edge, for a street that runs at an angle across the picture (Perspective.h).  0 = same as R2LStreetY (level).
+	int L2RStreetYRight = 0;		// The same for the L2R line.  0 = same as L2RStreetY.
+	int streetEdge[2] = { 0, 0 };	// Optional second line along the street (curb, lane stripe), at the box's left and right edges, relative to AnalysisBoxTop.  Where it
+									// converges with a lane line is the street's vanishing point, which short-view timing uses to measure along the ground (Perspective.h).  [0,0] = off.
 	int nextHeight = 85;			// Initial best guess for height of entering vehicles...pixels.
 	int minLoggedSpeed = 18;		// MPH.  Vehicles timed slower than this (walkers, cyclists, cars turning in) are counted in the run manifest's belowMinSpeed but not written to the csv.  0 = log every timed vehicle.  18 was hard-coded until v1.2.
 	static constexpr double kMaxLevelDegrees = 15;  // levelDegrees limit: past this, re-aim the camera instead
 	double levelDegrees = 0;		// Camera roll correction: every frame is turned this many degrees counter-clockwise about its centre (Level.h) before
 									// anything else sees it, so a camera that isn't mounted level still puts each lane on one row.  0 = off.
 	int subFrameTiming = 0;			// 1 for a short view (about 14-25 ft of street, a car filling most of the frame): time the front bumper to a fraction of a frame and scale the tracker's pixel margins (see margin()).  0 = whole frames, as before v1.3.
+
+	// The hubcap line for one direction (relative to AnalysisBoxTop) at x (relative to AnalysisBoxLeft); its left and right ends, and the lowest row it
+	// reaches, below which nothing is looked at for that direction.
+	perspective::Line lane(bool leftToRight) const {
+		int left = leftToRight ? L2RStreetY : R2LStreetY, right = leftToRight ? L2RStreetYRight : R2LStreetYRight;
+		return { double(left), double(right > 0 ? right : left), double(std::max(AnalysisBoxWidth, 1)) };
+	}
+	int laneBottom(bool leftToRight) const {
+		perspective::Line l = lane(leftToRight);
+		return int(std::ceil(std::max(l.yLeft, l.yRight)));
+	}
+	bool laneTilted(bool leftToRight) const { perspective::Line l = lane(leftToRight); return l.yLeft != l.yRight; }
+	bool hasStreetEdge() const { return streetEdge[0] > 0 && streetEdge[1] > 0; }
+	// The street's vanishing point as an x relative to AnalysisBoxLeft, from where streetEdge meets this direction's lane line; NaN when streetEdge is
+	// off or (nearly) parallel to the lane line, i.e. no receding to correct for.
+	double vanishingX(bool leftToRight) const {
+		if (!hasStreetEdge()) return std::numeric_limits<double>::quiet_NaN();
+		perspective::Line edge{ double(streetEdge[0]), double(streetEdge[1]), double(std::max(AnalysisBoxWidth, 1)) };
+		return perspective::crossingX(lane(leftToRight), edge);
+	}
+	// Distance along the street from the left speed line (0) to the right one (1) for a front bumper at x, measured on the ground (Perspective.h).
+	double zoneFraction(bool leftToRight, double x) const {
+		return perspective::zoneFraction(x, speedLineLeft, speedLineRight, vanishingX(leftToRight));
+	}
 
 	// A pixel margin tuned for the 2016 Locust Avenue view, where maxL2RDistOnEntry and maxR2LDistOnEntry are 75.  With
 	// subFrameTiming it grows in proportion to that direction's maxDistOnEntry, so a short view, where a car moves hundreds of

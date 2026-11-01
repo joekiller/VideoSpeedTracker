@@ -63,3 +63,10 @@ expect_run(sub_frame_no_margin "${sample}subFrameTiming = 1\nmaxR2LDistOnEntry =
 expect_run(level_ok "${sample}levelDegrees = -2.5\n" "Can't open video")
 expect_run(level_too_far "${sample}levelDegrees = 20\n" "levelDegrees must be between -15 and 15")
 expect_run(level_bad "${sample}levelDegrees = nan\n" "levelDegrees must be between|can't read a value for levelDegrees")
+# A lane line at an angle (its right end) and a street edge along the curb (Perspective.h).  The edge must stay off the
+# lane lines inside the box: [185,100] crosses the sample's L2R line (158) part way across.
+expect_run(lane_angle_ok "${sample}R2LStreetYRight = 100\nL2RStreetYRight = 140\n" "Can't open video")
+expect_run(lane_angle_off_box "${sample}R2LStreetYRight = 500\n" "R2LStreetYRight and L2RStreetYRight must be")
+expect_run(street_edge_ok "${sample}streetEdge = [185,175]\n" "Can't open video")
+expect_run(street_edge_crossing "${sample}streetEdge = [185,100]\n" "streetEdge and the L2R lane line meet inside the picture")
+expect_run(street_edge_bad "${sample}streetEdge = 185\n" "can't read a value for streetEdge")

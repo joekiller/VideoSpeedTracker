@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { esc, raw, html, band, passPills } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
-import { geometry, applyHandle } from '../js/overlay.js';
+import { geometry, applyHandle, laneYAt, laneHandleX } from '../js/overlay.js';
 import * as plan from '../js/plan.js';
 
 describe('ui.js esc', () => {
@@ -148,6 +148,32 @@ describe('overlay.js geometry', () => {
     assert.equal(after.sl, before.sl);
     assert.equal(after.r2l, before.r2l);
     assert.equal(after.box.x + after.box.w, before.box.x + before.box.w);
+  });
+  // A lane at an angle (R2LStreetYRight set in VST Studio) and the street edge draw and move without losing their slant.
+  const angled = { ...cfg, R2LStreetYRight: 100, streetEdge: [170, 150] };
+  it('gives level lines matching ends and angled lines their right end', () => {
+    const g = geometry(cfg);
+    assert.equal(g.r2lR, g.r2l);
+    assert.equal(g.edge, null);
+    const a = geometry(angled);
+    assert.equal(a.r2l, 342);
+    assert.equal(a.r2lR, 320);
+    assert.deepEqual(a.edge, [390, 370]);
+    assert.equal(laneYAt(a, a.r2l, a.r2lR, a.box.x + a.box.w / 2), 331);
+  });
+  it('moves a whole angled lane by its handle, keeping the angle, and a level lane stays level', () => {
+    const k = 2, g = geometry(angled);
+    const hy = laneYAt(g, g.r2l, g.r2lR, laneHandleX(g, 'R2L', k));
+    assert.deepEqual(applyHandle(angled, 'r2l', 0, hy + 10, k), { R2LStreetY: 132, R2LStreetYRight: 110 });
+    assert.deepEqual(applyHandle(cfg, 'l2r', 0, geometry(cfg).l2r - 8, k), { L2RStreetY: 150 });
+    // Clamped so neither end leaves the box.
+    assert.deepEqual(applyHandle(angled, 'r2l', 0, -500, k), { R2LStreetY: 23, R2LStreetYRight: 1 });
+  });
+  it('carries the right ends and street edge along when the box corner moves', () => {
+    const c = applyHandle(angled, 'tl', 110, 240);
+    const before = geometry(angled), after = geometry({ ...angled, ...c });
+    assert.equal(after.r2lR, before.r2lR);
+    assert.deepEqual(after.edge, before.edge);
   });
 });
 

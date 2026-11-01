@@ -198,6 +198,8 @@ json configJson(App& app) {
 		{ "speedLineLeft", g.speedLineLeft }, { "speedLineRight", g.speedLineRight },
 		{ "obstruction", { g.obstruction[0], g.obstruction[1] } }, { "obstruction_extent", g.obstruction_extent },
 		{ "R2LStreetY", g.R2LStreetY }, { "L2RStreetY", g.L2RStreetY },
+		{ "R2LStreetYRight", g.R2LStreetYRight }, { "L2RStreetYRight", g.L2RStreetYRight },
+		{ "streetEdge", { g.streetEdge[0], g.streetEdge[1] } },
 		{ "L2RDirection", g.L2RDirection }, { "R2LDirection", g.R2LDirection },
 		{ "legalDirection", lowerDir(g.LegalDirection) },
 		{ "CalibrationFramesL2R", g.CalibrationFramesL2R }, { "CalibrationFramesR2L", g.CalibrationFramesR2L },
@@ -238,7 +240,8 @@ json statusJson(App& app) {
 		{ "totalFrames", app.tracker.running() ? prog.totalFrames : in.frames }, { "procFps", prog.procFps },
 		{ "batch", { { "index", prog.job }, { "count", prog.jobs } } },
 		{ "counts", { { "vehicles", c.vehicles }, { "speeders", c.speeders }, { "egregious", c.egregious },
-			{ "wrongWay", c.wrongWay }, { "topSpeed", c.topSpeed }, { "avgSpeed", c.avgSpeed } } },
+			{ "wrongWay", c.wrongWay }, { "topSpeed", c.topSpeed }, { "avgSpeed", c.avgSpeed },
+			{ "tries", c.tries }, { "slow", c.slow }, { "untimed", c.untimed } } },
 		{ "speedLimit", app.prefs.speedLimit }, { "egregious", app.prefs.egregious },
 		{ "legalDirection", lowerDir(app.cfg.g.LegalDirection) },
 		{ "calibrationMarks", { { "L2R", { app.calibMarks[0][0], app.calibMarks[0][1] } }, { "R2L", { app.calibMarks[1][0], app.calibMarks[1][1] } } } },
@@ -276,19 +279,23 @@ std::vector<std::string> applyConfig(App& app, const json& in) {
 	setInt("AnalysisBoxWidth", g.AnalysisBoxWidth); setInt("AnalysisBoxHeight", g.AnalysisBoxHeight);
 	setInt("speedLineLeft", g.speedLineLeft); setInt("speedLineRight", g.speedLineRight);
 	setInt("obstruction_extent", g.obstruction_extent); setInt("R2LStreetY", g.R2LStreetY); setInt("L2RStreetY", g.L2RStreetY);
+	setInt("R2LStreetYRight", g.R2LStreetYRight); setInt("L2RStreetYRight", g.L2RStreetYRight);
 	setInt("CalibrationFramesL2R", g.CalibrationFramesL2R); setInt("CalibrationFramesR2L", g.CalibrationFramesR2L);
 	setDbl("CalibrationSpeed", g.CalibrationSpeed); setDbl("CalibrationFPS", g.CalibrationFPS);
 	setInt("SENSITIVITY_VALUE", g.SENSITIVITY_VALUE); setInt("BLUR_SIZE", g.BLUR_SIZE); setInt("largeVehicleArea", g.largeVehicleArea);
 	setInt("minLoggedSpeed", g.minLoggedSpeed); setInt("subFrameTiming", g.subFrameTiming); setDbl("levelDegrees", g.levelDegrees);
 	setInt("maxL2RDistOnEntry", g.maxL2RDistOnEntry); setInt("maxR2LDistOnEntry", g.maxR2LDistOnEntry); setInt("entryLookBack", g.entryLookBack);
 	setStr("L2RDirection", g.L2RDirection); setStr("R2LDirection", g.R2LDirection);
-	if (in.contains("obstruction")) {
-		if (in["obstruction"].is_array() && in["obstruction"].size() == 2 && in["obstruction"][0].is_number() && in["obstruction"][1].is_number()) {
-			g.obstruction[0] = in["obstruction"][0].get<int>();
-			g.obstruction[1] = in["obstruction"][1].get<int>();
+	auto setPair = [&](const char* k, int (&f)[2]) {
+		if (!in.contains(k)) return;
+		if (in[k].is_array() && in[k].size() == 2 && in[k][0].is_number() && in[k][1].is_number()) {
+			f[0] = in[k][0].get<int>();
+			f[1] = in[k][1].get<int>();
 		}
-		else problems.push_back("obstruction must be [left, right]");
-	}
+		else problems.push_back(std::string(k) + " must be [left, right]");
+	};
+	setPair("obstruction", g.obstruction);
+	setPair("streetEdge", g.streetEdge);
 	if (in.contains("legalDirection")) {
 		std::string d = in["legalDirection"].is_string() ? in["legalDirection"].get<std::string>() : "";
 		g.LegalDirection = d == "both" ? "Both" : d;
@@ -321,8 +328,14 @@ void drawOverlay(cv::Mat& f, const Globals& g, const cv::Rect& ab, const std::ve
 	if (g.obstruction[0] < g.obstruction[1])
 		for (int x : { g.obstruction[0], g.obstruction[1] })
 			cv::line(f, { box.x + x, box.y }, { box.x + x, box.y + box.height }, cv::Scalar(21, 204, 250), 2);
-	cv::line(f, { box.x, box.y + g.R2LStreetY }, { box.x + box.width, box.y + g.R2LStreetY }, cv::Scalar(61, 138, 255), 2);
-	cv::line(f, { box.x, box.y + g.L2RStreetY }, { box.x + box.width, box.y + g.L2RStreetY }, cv::Scalar(255, 108, 176), 2);
+	// Lane lines at their angle (Perspective.h), and the street edge thin, when it's set.
+	for (bool l2r : { false, true }) {
+		perspective::Line l = g.lane(l2r);
+		cv::line(f, { box.x, box.y + int(std::lround(l.yLeft)) }, { box.x + box.width, box.y + int(std::lround(l.yRight)) },
+			l2r ? cv::Scalar(255, 108, 176) : cv::Scalar(61, 138, 255), 2);
+	}
+	if (g.hasStreetEdge())
+		cv::line(f, { box.x, box.y + g.streetEdge[0] }, { box.x + box.width, box.y + g.streetEdge[1] }, cv::Scalar(238, 211, 34), 1);
 	for (const auto& t : boxes) {
 		cv::Rect r = t.box + ab.tl();
 		cv::Scalar col = g.isWrongWay(t.leftToRight) ? cv::Scalar(94, 63, 244) : cv::Scalar(94, 197, 34);

@@ -188,12 +188,36 @@ bool openSource(FrameSource& cap, const string& name){
 		return ok;
 	}
 	cap.pi.release();
-	if (isCameraIndex(name)) return cap.cap.open(stoi(name));
+	if (isCameraIndex(name)){
+		if (!cap.cap.open(stoi(name))) return false;
+		// A USB camera opens in its default mode, often 640x480 at 30 fps (upscaled to the 1280x720 canvas, and too few
+		// frames for a short view).  Ask for 1280x720 at 60 fps, compressed (MJPG), which is the only way most cameras
+		// manage it over USB 2, and cheaper to read than raw YUYV.  A camera without that mode picks its nearest one;
+		// readFrame() scales whatever arrives, and the run reports the fps it actually got.
+		cap.cap.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
+		cap.cap.set(CAP_PROP_FRAME_WIDTH, Globals::FrameWidth);
+		cap.cap.set(CAP_PROP_FRAME_HEIGHT, Globals::FrameHeight);
+		cap.cap.set(CAP_PROP_FPS, 60);
+		return true;
+	}
 #if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 6)
-	// FFmpeg waits 30 s by default on a camera that doesn't answer or a stream that stalls.  Shorter limits let a dropout be
-	// noticed and retried sooner (see readFramePair()), and keep Stop in VST Studio from hanging on a dead camera.
-	if (isStreamUrl(name) && videoio_registry::hasBackend(CAP_FFMPEG))
-		return cap.cap.open(name, CAP_FFMPEG, { CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, CAP_PROP_READ_TIMEOUT_MSEC, 10000 });
+	if (videoio_registry::hasBackend(CAP_FFMPEG)){
+		// Decoding is most of VST's work (about 55% of the CPU on the sample, against about 15% for the tracking itself), so
+		// let FFmpeg use the graphics chip's video decoder where there is one (Intel Quick Sync / VA-API, D3D11, ...).  ANY
+		// falls back to software decoding by itself, and H.264/HEVC decoding is bit-exact either way, so the speeds don't
+		// change.  VST_HW_DECODE=0 in the environment turns it off, to rule it out if a driver misbehaves.
+		vector<int> params;
+		const char* hw = getenv("VST_HW_DECODE");
+		if (!(hw && string(hw) == "0")) params = { CAP_PROP_HW_ACCELERATION, VIDEO_ACCELERATION_ANY };
+		// FFmpeg waits 30 s by default on a camera that doesn't answer or a stream that stalls.  Shorter limits let a dropout
+		// be noticed and retried sooner (see readFramePair()), and keep Stop in VST Studio from hanging on a dead camera.
+		if (isStreamUrl(name)){
+			params.insert(params.end(), { int(CAP_PROP_OPEN_TIMEOUT_MSEC), 5000, int(CAP_PROP_READ_TIMEOUT_MSEC), 10000 });
+			return cap.cap.open(name, CAP_FFMPEG, params);
+		}
+		if (cap.cap.open(name, CAP_FFMPEG, params)) return true;
+		// A file FFmpeg can't read: let OpenCV try its other backends, as before.
+	}
 #endif
 	return cap.cap.open(name);
 }
@@ -370,7 +394,7 @@ void setTimeBase(const string& source, bool fpsReported){
 //     "complete": <false while a live run is still going>, "frames": <frames analyzed>, "fps": <video fps>,
 //     "outages": [ { "from": <last frame before a dropout>, "to": <frames again> } ],
 //     "config": { CalibrationSpeed, CalibrationFPS, CalibrationFramesL2R/R2L, LegalDirection, L2RDirection, R2LDirection,
-//                 speedLineLeft, speedLineRight, minLoggedSpeed },
+//                 speedLineLeft, speedLineRight, minLoggedSpeed, subFrameTiming, levelDegrees, streetEdge },
 //     "counts": { "logged", "belowMinSpeed", "untimed" } }                        (see countVehicle())
 // It's rewritten whole each time, to a temp file that is then renamed over it, so a reader never sees half a file: at the end
 // of each video and of the run, and for a live source also when its first frames arrive, after each reconnect, and every
@@ -462,7 +486,7 @@ void writeManifest(bool complete){
 		<< ", \"R2LDirection\": " << jsonString(g.R2LDirection) << ",\n"
 		<< "    \"speedLineLeft\": " << g.speedLineLeft << ", \"speedLineRight\": " << g.speedLineRight << ",\n"
 		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << ", \"subFrameTiming\": " << g.subFrameTiming << ",\n"
-		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << "\n"
+		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << ", \"streetEdge\": [" << g.streetEdge[0] << ", " << g.streetEdge[1] << "]\n"
 		<< "  },\n"
 		<< "  \"counts\": { \"logged\": " << runLogged << ", \"belowMinSpeed\": " << runBelowMinSpeed << ", \"untimed\": " << runUntimed << " }\n"
 		<< "}\n";
@@ -647,8 +671,13 @@ void setup(){
 	cv::line(frame, Point(g.AnalysisBoxLeft + g.speedLineRight, 85 + g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.speedLineRight, 160 + g.AnalysisBoxTop), Scalar(CVWhite), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft + g.obstruction[0], 85 + g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.obstruction[0], 160 + g.AnalysisBoxTop), Scalar(CVYellow), 2);
 	cv::line(frame, Point(g.AnalysisBoxLeft + g.obstruction[1], 85 + g.AnalysisBoxTop), Point(g.AnalysisBoxLeft + g.obstruction[1], 160 + g.AnalysisBoxTop), Scalar(CVYellow), 2);
-	cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + g.R2LStreetY), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + g.R2LStreetY), Scalar(CVOrange), 2);
-	cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + g.L2RStreetY), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + g.L2RStreetY), Scalar(CVPurple), 2);
+	for (bool l2r : { false, true }) {  // hubcap lines, at their angle if they have one
+		perspective::Line l = g.lane(l2r);
+		cv::line(frame, Point(g.AnalysisBoxLeft + 10, g.AnalysisBoxTop + int(lround(l.at(10)))),
+			Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth - 20, g.AnalysisBoxTop + int(lround(l.at(g.AnalysisBoxWidth - 20)))), l2r ? Scalar(CVPurple) : Scalar(CVOrange), 2);
+	}
+	if (g.hasStreetEdge())
+		cv::line(frame, Point(g.AnalysisBoxLeft, g.AnalysisBoxTop + g.streetEdge[0]), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth, g.AnalysisBoxTop + g.streetEdge[1]), Scalar(CVCyan), 1);
 	double fps = capture.get(CAP_PROP_FPS);
 	capture.release();
 
@@ -1070,19 +1099,35 @@ int loggedVehicles = 0, speeders = 0, wrongWayVehicles = 0;
 // So logged + belowMinSpeed is the number of timed vehicles, the same whatever minLoggedSpeed is, and minLoggedSpeed = 0
 // logs every one of them.  With the default 18 this is exactly the pre-v1.2 rule (estSpeed >= 18 and isOK), since a
 // vehicle's estSpeed is -1 until it is timed.
-bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed){
+// An embedding host also hears about each belowMinSpeed and untimed vehicle (Hooks::onAttempt), so it can show how many cars
+// were tried against how many got a speed; a logged one reaches it through reportVehicle() instead.
+void reportAttempt(bool leftToRight, bool timed, int estSpeed){
+#ifdef VST_EMBEDDED
+	if (hooks && hooks->onAttempt) hooks->onAttempt({ leftToRight, timed, timed ? estSpeed : 0, frameNumber });
+#else
+	(void)leftToRight; (void)timed; (void)estSpeed;
+#endif
+}
+
+bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed, bool leftToRight){
 	if (isOK && v.getTrackEndPixel() > 0){
 		if (estSpeed >= g.minLoggedSpeed){ runLogged++; return true; }
 		runBelowMinSpeed++;
+		reportAttempt(leftToRight, true, estSpeed);
 	}
-	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()) runUntimed++;
+	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()){
+		runUntimed++;
+		reportAttempt(leftToRight, false, -1);
+		if (pleaseTrace) traceFile << "<" << frameNumber << ">   UNTIMED " << (leftToRight ? "L2R" : "R2L") << " vehicle: entered the zone at frame "
+			<< v.getTrackStartFrame() << ", pixel " << v.getTrackStartPixel() << ", and was lost before timing finished" << endl;
+	}
 	return false;
 }
 
 // Forgets every vehicle being tracked, counting each one that was in the speed zone as untimed (see countVehicle()).
 void dropTracks(){
-	for (auto& v : vehiclesGoingRight) countVehicle(false, v, -1);
-	for (auto& v : vehiclesGoingLeft) countVehicle(false, v, -1);
+	for (auto& v : vehiclesGoingRight) countVehicle(false, v, -1, true);
+	for (auto& v : vehiclesGoingLeft) countVehicle(false, v, -1, false);
 	vehiclesGoingRight.clear();
 	vehiclesGoingLeft.clear();
 }
@@ -1123,7 +1168,7 @@ void logL2Rstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
-	if (countVehicle(isOK, vehiclesGoingRight[index], estSpeed)){  // timed, clean track, and at least minLoggedSpeed
+	if (countVehicle(isOK, vehiclesGoingRight[index], estSpeed, true)){  // timed, clean track, and at least minLoggedSpeed
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "
@@ -1193,7 +1238,7 @@ void logR2Lstats(bool isOK, int index){
 		<< "             Est speed: " << estSpeed
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
-	if (countVehicle(isOK, vehiclesGoingLeft[index], estSpeed)){  // timed, clean track, and at least minLoggedSpeed
+	if (countVehicle(isOK, vehiclesGoingLeft[index], estSpeed, false)){  // timed, clean track, and at least minLoggedSpeed
 		double when = vehicleTime();
 		string timestamp = when >= 0 ? formatTime(when, false) : "";
 		statsFile << csvDateTime(when) << ", "
@@ -1299,6 +1344,21 @@ OverlapType doesR2LOverlapAnyL2R(int R2LIndex, vector<Projection> vehiclesR2L, v
 // based tracking, done elsewhere.
 //
 //  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  *  * 
+
+// The part of the motion image one direction's cars are looked for in: everything above that direction's hubcap line.  A
+// level line (the usual case) is just the top rows, a view with no copy.  A line at an angle (L2RStreetYRight /
+// R2LStreetYRight, Perspective.h) takes the rows down to its lower end and blacks out what lies below the slant, so the
+// sidewalk under the line's high end can't join a car the way it would under a level line drawn at the low end.
+static Mat laneView(const Mat& thresh, bool leftToRight){
+	int bottom = min(g.laneBottom(leftToRight), thresh.rows);
+	Mat view = thresh(Rect(0, 0, thresh.cols, bottom));
+	if (!g.laneTilted(leftToRight)) return view;
+	perspective::Line l = g.lane(leftToRight);
+	Mat masked = view.clone();
+	Point below[4] = { Point(0, int(lround(l.yLeft))), Point(thresh.cols, int(lround(l.at(thresh.cols)))), Point(thresh.cols, bottom), Point(0, bottom) };
+	fillConvexPoly(masked, below, 4, Scalar(0));
+	return masked;
+}
 
 bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 
@@ -1425,8 +1485,10 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 	vector< vector<Point> > contours; // for findContours output
 	vector<Vec4i> hierarchy;  // for findContours output
 
+	// Each direction looks only above its own hubcap line (see laneView()).
+	const Mat threshL2R = laneView(wholeScenethreshImage, true), threshR2L = laneView(wholeScenethreshImage, false);
 	int numOKSizeObjectsL2R = 0; // Used to count how many detected objects are in selected region of interest
-	Mat tempForL2R = wholeScenethreshImage(Rect(g.pixelLeft, 0, g.pixelRight, g.L2RStreetY)); // L2RStreetY is the lowest needed to go to see a rightbound vehicle
+	Mat tempForL2R = threshL2R(Rect(g.pixelLeft, 0, g.pixelRight, threshL2R.rows)); // L2RStreetY is the lowest needed to go to see a rightbound vehicle
 	Rect objectBoundingRectangleL2R[MAX_NUM_OBJECTS]; // bounding rectangles, from top of ROI to L2R lane, captured in a given frame
 
 	findContours(tempForL2R, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
@@ -1451,7 +1513,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 
 
 	int numOKSizeObjectsR2L = 0; // Used to count how many detected objects are in selected region of interest
-	Mat tempForR2L = wholeScenethreshImage(Rect(g.pixelLeft, 0, g.pixelRight, g.R2LStreetY)); // R2LStreetY is the lowest needed to go for leftbound vehicle
+	Mat tempForR2L = threshR2L(Rect(g.pixelLeft, 0, g.pixelRight, threshR2L.rows)); // R2LStreetY is the lowest needed to go for leftbound vehicle
 	Rect objectBoundingRectangleR2L[MAX_NUM_OBJECTS]; // bounding rectangles captured in a given frame
 
 	contours.erase(contours.begin(), contours.end()); // Clear contours vector
@@ -1607,7 +1669,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				hierarchy.erase(hierarchy.begin(), hierarchy.end());  // Clear hierarchy vector
 				int tempX = max(projectedL2R[index].getBox().x - g.margin(80, true), g.pixelLeft);  // look behind the predicted rear bumper
 				int tempWidth = min(projectedL2R[index].getBox().width + g.margin(100, true), g.pixelRight - tempX); // Look a little beyond the front bumper;
-				Mat ROIL2R = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.L2RStreetY));
+				Mat ROIL2R = threshL2R(Rect(tempX, 0, tempWidth, threshL2R.rows));
 				findContours(ROIL2R, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeL2RObjects = 0; // Used to count how many detected objects are in selected region of interest
 				// found some objects?
@@ -1676,7 +1738,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				hierarchy.erase(hierarchy.begin(), hierarchy.end());  // Clear hierarchy vector
 				int tempX = max(projectedR2L[index].getBox().x - g.margin(20, false), g.pixelLeft);  // look a little ahead of the predicted front bumper
 				int tempWidth = min(projectedR2L[index].getBox().width + g.margin(100, false), g.pixelRight - tempX); // Look behind the rear bumper;
-				Mat ROIR2L = wholeScenethreshImage(Rect(tempX, 0, tempWidth, g.R2LStreetY));
+				Mat ROIR2L = threshR2L(Rect(tempX, 0, tempWidth, threshR2L.rows));
 				findContours(ROIR2L, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);// retrieves external contours
 				int numOKSizeR2LObjects = 0; // Used to count how many detected objects are in selected region of interest
 				// found some objects?
@@ -1926,8 +1988,8 @@ int vstMain(int argc, char** argv){
 				runStarted = frameTime(frameNumber);
 				if (liveSource) writeManifest(false);
 			}
-			Mat ROIFr1 = frame1(AnalysisBox).clone();  			// Carve out the analysis box for motion detection
-			cv::cvtColor(ROIFr1, grayImage1, COLOR_BGR2GRAY);  //convert ROIFr1 to gray scale for frame differencing
+			// Only frame 1's analysis box in gray is needed: convert it straight from the frame (no copy).
+			cv::cvtColor(frame1(AnalysisBox), grayImage1, COLOR_BGR2GRAY);  //convert the box to gray scale for frame differencing
 			Mat ROIFr2 = frame2(AnalysisBox).clone();   		   // Carve out the analysis box for motion detection
 			cv::cvtColor(ROIFr2, grayImage2, COLOR_BGR2GRAY);   //convert ROIFr2 to gray scale for frame differencing
 			cv::absdiff(grayImage1, grayImage2, differenceImage);   			//perform frame differencing

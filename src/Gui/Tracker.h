@@ -42,9 +42,14 @@ struct Vehicle {
 	std::string clipPath;       // short mp4 of the analysis box, empty if none
 };
 
+// Session totals.  vehicles are the ones logged (timed, a clean track, at least minLoggedSpeed: a csv row each); the rest
+// of what the tracker tried to time is slow (timed but under minLoggedSpeed) and untimed (followed into the speed zone
+// but never given a usable speed).  tries = vehicles + slow + untimed, every car that crossed into the zone, so a
+// view where cars are seen but not timed shows as tries climbing while vehicles doesn't (vst::AttemptEvent).
 struct Counts {
 	int vehicles = 0, speeders = 0, egregious = 0, wrongWay = 0, topSpeed = 0;
 	double avgSpeed = 0;
+	int slow = 0, untimed = 0, tries = 0;
 };
 
 class Tracker {
@@ -112,6 +117,7 @@ private:
 	std::mutex mu_;
 	Live live_;
 	std::deque<Vehicle> vehicles_;
+	int slow_ = 0, untimed_ = 0;   // tried but not logged this session (Counts)
 	int nextId_ = 1;
 	std::vector<Job> jobs_;
 	Progress progress_;
