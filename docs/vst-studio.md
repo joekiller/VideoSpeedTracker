@@ -28,6 +28,12 @@ them, Connect the camera once a source is open, Mark your street once you've che
 nothing for the tracker to reject, and Calibrate once a calibration was applied to this `VST.cfg` (the bundled
 sample comes calibrated). A **Not calibrated** chip in the header opens step 5.
 
+Reopening VST Studio picks up where you left off: it opens on the page you were on and reconnects the source you
+last used, a USB or Pi camera included (in the background, so a missing camera never holds up the window). Steps 3
+and 4 keep their checks while the camera reconnects or is unplugged; the header names it ("Camera 0 · not
+connected") and a note says your setup and results are safe and how to reconnect it. **Disconnect** on Connect the
+camera is the way to make Studio forget a source.
+
 ### 1 What you need
 
 What each later step will need, one card per step in order: a window on the street (step 2), a camera held still
@@ -365,7 +371,10 @@ The **Unattended health** card on this page looks after a camera left running fo
 
 ### Results
 
-Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
+The menu next to the search box picks what the page shows: **This session** (vehicles measured since Studio opened,
+with snapshots and clips), **All saved runs** (every run in the data folder's `Stats/`, newest first), or one saved
+run. Results opens on all saved runs when this session hasn't measured anything yet, so earlier results are there
+the moment Studio reopens. Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
 time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows its snapshot, details and clip.
 **Open CSV** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
 time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
@@ -447,7 +456,7 @@ be open at once. The API is described in [companion-api.md](companion-api.md).
 | | |
 |---|---|
 | Settings (`VST.cfg`) | the file shown on the Connect the camera page; by default the per-user config (see the README) |
-| App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs and where they came from, recent sources, pairing token |
+| App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs and where they came from, the last source and page, recent sources, pairing token |
 | Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
 | Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, and street reports in `Reports/` |
 

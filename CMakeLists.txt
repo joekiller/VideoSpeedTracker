@@ -224,6 +224,12 @@ if(TARGET vst_report)
   target_link_libraries(plan_test PRIVATE vst_report)
   add_test(NAME site_planner COMMAND plan_test)
 
+  # Reopening VST Studio (src/Gui/Resume.cpp): the remembered camera comes back at launch, steps 3 and 4 keep their
+  # checks while it reconnects, and Results finds every saved run in <data>/Stats, newest first.
+  add_executable(resume_test tests/resume_test.cpp)
+  target_link_libraries(resume_test PRIVATE vst_report)
+  add_test(NAME reopen_studio COMMAND resume_test ${CMAKE_BINARY_DIR}/resume-test)
+
   # Calibrating from a Tesla dashcam clip (src/Gui/DashCam.cpp): reads per-frame speed from synthetic TeslaCam MP4s
   # and picks a pass's speed out of them.
   add_executable(dashcam_test tests/dashcam_test.cpp)
@@ -329,7 +335,7 @@ endif()
 
 if(VST_WERROR AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_engine vst_report VSTStudio level_test frame_input_test
-      perspective_test report_test health_test plan_test dashcam_test calibration_test engine_reconnect_test)
+      perspective_test report_test health_test plan_test resume_test dashcam_test calibration_test engine_reconnect_test)
     if(TARGET ${t})
       target_compile_options(${t} PRIVATE -Werror)
     endif()

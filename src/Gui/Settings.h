@@ -86,6 +86,9 @@ struct AppPrefs {
 	std::string zonesFor, calibratedFor;
 	std::string calibratedLines;   // speedLineLeft,speedLineRight,AnalysisBoxWidth when calibrated (App::speedLinesSig)
 	bool planConfirmed = false;    // Pick your spot has been saved at least once: step 2's check in the rail
+	// The page on screen when Studio last closed (App::pageKey: "guide2" for Pick your spot, "results", ...), so it
+	// reopens where the user left off.  "" = before this existed: What you need, or Connect the camera once past it.
+	std::string lastPage;
 
 	void load();
 	void save() const;
