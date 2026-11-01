@@ -188,12 +188,36 @@ bool openSource(FrameSource& cap, const string& name){
 		return ok;
 	}
 	cap.pi.release();
-	if (isCameraIndex(name)) return cap.cap.open(stoi(name));
+	if (isCameraIndex(name)){
+		if (!cap.cap.open(stoi(name))) return false;
+		// A USB camera opens in its default mode, often 640x480 at 30 fps (upscaled to the 1280x720 canvas, and too few
+		// frames for a short view).  Ask for 1280x720 at 60 fps, compressed (MJPG), which is the only way most cameras
+		// manage it over USB 2, and cheaper to read than raw YUYV.  A camera without that mode picks its nearest one;
+		// readFrame() scales whatever arrives, and the run reports the fps it actually got.
+		cap.cap.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
+		cap.cap.set(CAP_PROP_FRAME_WIDTH, Globals::FrameWidth);
+		cap.cap.set(CAP_PROP_FRAME_HEIGHT, Globals::FrameHeight);
+		cap.cap.set(CAP_PROP_FPS, 60);
+		return true;
+	}
 #if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 6)
-	// FFmpeg waits 30 s by default on a camera that doesn't answer or a stream that stalls.  Shorter limits let a dropout be
-	// noticed and retried sooner (see readFramePair()), and keep Stop in VST Studio from hanging on a dead camera.
-	if (isStreamUrl(name) && videoio_registry::hasBackend(CAP_FFMPEG))
-		return cap.cap.open(name, CAP_FFMPEG, { CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, CAP_PROP_READ_TIMEOUT_MSEC, 10000 });
+	if (videoio_registry::hasBackend(CAP_FFMPEG)){
+		// Decoding is most of VST's work (about 55% of the CPU on the sample, against about 15% for the tracking itself), so
+		// let FFmpeg use the graphics chip's video decoder where there is one (Intel Quick Sync / VA-API, D3D11, ...).  ANY
+		// falls back to software decoding by itself, and H.264/HEVC decoding is bit-exact either way, so the speeds don't
+		// change.  VST_HW_DECODE=0 in the environment turns it off, to rule it out if a driver misbehaves.
+		vector<int> params;
+		const char* hw = getenv("VST_HW_DECODE");
+		if (!(hw && string(hw) == "0")) params = { CAP_PROP_HW_ACCELERATION, VIDEO_ACCELERATION_ANY };
+		// FFmpeg waits 30 s by default on a camera that doesn't answer or a stream that stalls.  Shorter limits let a dropout
+		// be noticed and retried sooner (see readFramePair()), and keep Stop in VST Studio from hanging on a dead camera.
+		if (isStreamUrl(name)){
+			params.insert(params.end(), { int(CAP_PROP_OPEN_TIMEOUT_MSEC), 5000, int(CAP_PROP_READ_TIMEOUT_MSEC), 10000 });
+			return cap.cap.open(name, CAP_FFMPEG, params);
+		}
+		if (cap.cap.open(name, CAP_FFMPEG, params)) return true;
+		// A file FFmpeg can't read: let OpenCV try its other backends, as before.
+	}
 #endif
 	return cap.cap.open(name);
 }
@@ -1091,7 +1115,12 @@ bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed, bool leftToRight)
 		runBelowMinSpeed++;
 		reportAttempt(leftToRight, true, estSpeed);
 	}
-	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()){ runUntimed++; reportAttempt(leftToRight, false, -1); }
+	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()){
+		runUntimed++;
+		reportAttempt(leftToRight, false, -1);
+		if (pleaseTrace) traceFile << "<" << frameNumber << ">   UNTIMED " << (leftToRight ? "L2R" : "R2L") << " vehicle: entered the zone at frame "
+			<< v.getTrackStartFrame() << ", pixel " << v.getTrackStartPixel() << ", and was lost before timing finished" << endl;
+	}
 	return false;
 }
 
@@ -1959,8 +1988,8 @@ int vstMain(int argc, char** argv){
 				runStarted = frameTime(frameNumber);
 				if (liveSource) writeManifest(false);
 			}
-			Mat ROIFr1 = frame1(AnalysisBox).clone();  			// Carve out the analysis box for motion detection
-			cv::cvtColor(ROIFr1, grayImage1, COLOR_BGR2GRAY);  //convert ROIFr1 to gray scale for frame differencing
+			// Only frame 1's analysis box in gray is needed: convert it straight from the frame (no copy).
+			cv::cvtColor(frame1(AnalysisBox), grayImage1, COLOR_BGR2GRAY);  //convert the box to gray scale for frame differencing
 			Mat ROIFr2 = frame2(AnalysisBox).clone();   		   // Carve out the analysis box for motion detection
 			cv::cvtColor(ROIFr2, grayImage2, COLOR_BGR2GRAY);   //convert ROIFr2 to gray scale for frame differencing
 			cv::absdiff(grayImage1, grayImage2, differenceImage);   			//perform frame differencing

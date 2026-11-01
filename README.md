@@ -415,6 +415,11 @@ A Pi camera is live like a USB camera: times come from the Pi's clock (keep it o
 stops VST reconnects as described above. `VST_RPICAM_VID` names a different program to run instead of `rpicam-vid`;
 the tests use it to stand in a recording for the camera.
 
+A USB camera (`--input 0`) is asked for 1280x720 at 60 fps in MJPG, the mode most webcams need for 60 fps over USB 2;
+one without it uses its nearest mode. Video files and stream URLs are decoded on the graphics chip when it has a video
+decoder (Intel Quick Sync, VA-API, D3D11), which takes most of the work off the CPU; without one VST decodes in software
+as before. Set `VST_HW_DECODE=0` to turn hardware decoding off.
+
 ## Troubleshooting
 
 These come from the [issues filed against the original project](docs/upstream-issues.md).
