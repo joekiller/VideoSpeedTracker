@@ -8,9 +8,12 @@
 # assets are uploaded to it, replacing any with the same name.
 #
 # Main pushes that touch the build run everything except the publish step, so a broken platform shows up
-# before the tag does (main's run also keeps the OpenCV caches warm). Pull requests don't run this matrix:
-# they get build.yml's single Linux job, and contributors run .githooks/pre-commit locally. To try the full
-# matrix on a branch before merging, start this workflow by hand (Actions > release > Run workflow, or
+# before the tag does (main's run also keeps the OpenCV caches warm). Pull requests don't run the Linux .deb matrix
+# (build.yml's single Linux job covers Linux), but they do run this workflow's own windows and macos jobs:
+# platform-windows.yml and platform-macos.yml call it (workflow_call) with linux: false and the other platform off,
+# each only when the PR touches files that platform builds. Same steps as a release, so a PR's Windows or Mac result
+# is the release's, without signing (no tag, no secrets passed) and without publishing (no tag). To run the full
+# matrix on a branch anyway, start this workflow by hand (Actions > release > Run workflow, or
 # `gh workflow run release.yml --ref <branch>`); a manual run on a tag also publishes.
 #
 # Every package holds VideoSpeedTracker, ProcessHiLites and the VST Studio desktop app (VSTStudio) plus
@@ -58,13 +61,27 @@ on:
       - src/**
       - tests/**
   workflow_dispatch:
+  # Pull requests' Windows and Mac checks (platform-windows.yml, platform-macos.yml). Each input turns one platform's
+  # build job off; push and manual runs have no inputs, so `inputs.<platform> != false` is true and everything runs.
+  workflow_call:
+    inputs:
+      linux:
+        type: boolean
+        default: true
+      windows:
+        type: boolean
+        default: true
+      macos:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
-# A newer push to the same branch supersedes its running build; tag builds always finish.
+# A newer push to the same branch supersedes its running build; tag builds always finish. github.workflow is the
+# caller's name when called, so a PR's Windows and Mac runs (same ref) don't cancel each other.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
@@ -100,6 +117,7 @@ jobs:
 
   linux:
     needs: meta
+    if: inputs.linux != false
     name: linux ${{ matrix.distro }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.image }}
@@ -176,6 +194,7 @@ jobs:
 
   windows:
     needs: meta
+    if: inputs.windows != false
     runs-on: windows-2022
     # Tag builds run in the `release` environment, so their OIDC subject is
     # repo:<owner>/<repo>:environment:release, the one subject Azure's federated credential has to match
@@ -344,6 +363,7 @@ jobs:
   # .deb dependencies and MSVC toolset are tied to the image.
   macos:
     needs: meta
+    if: inputs.macos != false
     runs-on: macos-latest
     # The Apple secrets live in the `release` environment, which only tag builds enter (same rule as windows);
     # without it secrets.* resolve empty and SIGN_MACOS is false even on a tag.
