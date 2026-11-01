@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <random>
 
 namespace fs = std::filesystem;
@@ -344,6 +345,7 @@ void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
 		+ (std::fabs(mph - g.CalibrationSpeed) < .05 ? stored : "your " + std::string(mphText) + " mph pass of " + std::to_string(frames)
 			+ " frames, stored as " + stored), c::ok, ICON_CHECK_CIRCLE);
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+	restartAfterCalibration();
 }
 
 CalCheck App::checkCalibration(bool l2r, double mph, int frames, double fps) {
@@ -402,6 +404,7 @@ void App::averageCalibration(const CalCheck& check) {
 	toast(std::string("Averaged ") + (check.l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
 		+ std::to_string(int(g.CalibrationSpeed)) + " mph. Check it once more.", c::ok, ICON_CHECK_CIRCLE);
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+	restartAfterCalibration();
 }
 
 // The camera as the Lane card's ghost car describes it: step 2's distance (stored in metres) and lens, with the height
@@ -440,6 +443,7 @@ void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const 
 	toast(std::string("Calibrated from ") + from + ": " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
 		+ " mph. Check it with one drive past.", c::ok, ICON_CHECK_CIRCLE);
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+	restartAfterCalibration();
 }
 
 // Appends a calibration event to calibration-history.csv and to the in-memory copy the page reads.  The
@@ -451,6 +455,127 @@ void App::recordCalibration(CalEvent e) {
 	calHistory_.push_back(e);
 	std::string err;
 	if (!screenshotMode && !calib::append(e, err)) toast(err, c::bad, ICON_WARN);
+}
+
+// ---- the user's own calibration drives, and runs measured before the latest calibration ----------------------
+
+void App::markCalibrationPass(const Vehicle& v, bool check, double mph) {
+	CalPass p;
+	p.time = v.passed();
+	p.stats = fs::path(v.statsPath).filename().string();
+	p.frame = v.ev.frame;
+	p.check = check;
+	p.l2r = v.ev.leftToRight;
+	p.drivenMph = mph;
+	calibrationPass("", 0);   // load the file before adding to the cache
+	calPasses_[report::passKey(p.stats, p.frame)] = p;
+	std::string err;
+	if (!screenshotMode && !calib::appendPass(p, err)) toast(err, c::bad, ICON_WARN);
+	// Results shows the mark straight away, keeping the selection.
+	for (ResultRow& r : rows)
+		if (r.frame == p.frame && !r.statsPath.empty() && fs::path(r.statsPath).filename() == p.stats) { r.calKind = check ? 2 : 1; r.drivenMph = mph; }
+}
+
+const CalPass* App::calibrationPass(const std::string& statsPath, int frame) {
+	if (!calPassesLoaded_) {
+		calPassesLoaded_ = true;
+		if (!screenshotMode)
+			for (const CalPass& p : calib::loadPasses()) calPasses_[report::passKey(p.stats, p.frame)] = p;   // a later use of a pass wins
+	}
+	if (statsPath.empty()) return nullptr;
+	auto it = calPasses_.find(report::passKey(fs::path(statsPath).filename().string(), frame));
+	return it == calPasses_.end() ? nullptr : &it->second;
+}
+
+void App::restartAfterCalibration() {
+	if (!tracker.running()) return;
+	if (tracker.progress().live && batch.empty()) restartPending_ = true;   // pumpTracker() does it on the next frame
+	else toast("This video keeps the calibration it started with. Run it again to measure it with the new one.", c::accent2, ICON_INFO);
+}
+
+// Whether a run was measured with other calibration values than VST.cfg has now.  Compared as what each direction's
+// calibration means (CalibrationFrames × CalibrationSpeed / CalibrationFPS: the frames a car takes, scaled to mph),
+// so re-expressing the same calibration against another CalibrationSpeed isn't a change.  A run with no manifest
+// (before VST 1.2) can't be told, and isn't counted.
+bool App::measuredBefore(const std::string& csvPath) {
+	const Globals& g = cfg.g;
+	report::RunConfig rc;
+	if (!report::runConfigOf(csvPath, rc)) return false;
+	auto scale = [](double frames, double speed, double fps) { return fps > 0 ? frames * speed / fps : 0; };
+	auto differs = [](double a, double b) { return std::fabs(a - b) > 0.005 * std::max(std::fabs(b), 1e-9); };
+	return differs(scale(rc.framesL2R, rc.calSpeed, rc.calFps), scale(g.CalibrationFramesL2R, g.CalibrationSpeed, g.CalibrationFPS))
+		|| differs(scale(rc.framesR2L, rc.calSpeed, rc.calFps), scale(g.CalibrationFramesR2L, g.CalibrationSpeed, g.CalibrationFPS));
+}
+
+const App::EarlierRuns& App::runsBeforeCalibration(bool fresh) {
+	double now = ImGui::GetTime();
+	if (!fresh && earlierAt_ >= 0 && now - earlierAt_ < 3) return earlier_;
+	earlierAt_ = now;
+	earlier_ = EarlierRuns();
+	if (screenshotMode) return earlier_;
+	std::string running = tracker.runningStatsPath();
+	std::error_code ec;
+	for (fs::directory_iterator it(fs::path(dataDir()) / "Stats", ec), end; !ec && it != end; it.increment(ec)) {
+		if (!it->is_regular_file(ec) || it->path().extension() != ".csv") continue;
+		std::string csv = it->path().string();
+		if ((!running.empty() && fs::equivalent(csv, running, ec)) || !measuredBefore(csv)) continue;
+		earlier_.csvs.push_back(csv);
+		// Its rows: every line but the header.
+		std::ifstream f(csv, std::ios::binary);
+		int lines = 0;
+		for (std::string line; std::getline(f, line);) lines += !line.empty() && line != "\r";
+		earlier_.vehicles += std::max(0, lines - 1);
+	}
+	std::sort(earlier_.csvs.begin(), earlier_.csvs.end());
+	return earlier_;
+}
+
+// "Set them aside": each earlier run's csv and manifest move to Stats/Before calibration, where Results' Open CSV can
+// still read them but the street report (which reads Stats/ only) and the phone's totals don't.  Nothing is deleted,
+// and putBackRuns() moves them back.  This session's vehicles from those runs leave Results too.
+void App::setAsideEarlierRuns() {
+	const EarlierRuns& e = runsBeforeCalibration(true);
+	fs::path dir = fs::path(dataDir()) / "Stats" / "Before calibration";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	setAside_.clear();
+	int runs = 0, failed = 0;
+	for (const std::string& csv : e.csvs) {
+		bool moved = false;
+		for (const std::string& from : { csv, vst::manifestPathFor(csv) }) {
+			if (!fs::exists(from, ec)) continue;
+			fs::path to = dir / fs::path(from).filename();
+			fs::rename(from, to, ec);
+			if (ec) { failed++; ec.clear(); continue; }
+			setAside_.push_back({ from, to.string() });
+			moved |= from == csv;
+		}
+		if (moved) { runs++; tracker.forgetRun(csv); }
+	}
+	runsBeforeCalibration(true);
+	if (rowsFrom.empty()) showSessionResults();
+	else if (!fs::exists(rowsFrom, ec)) showSessionResults();
+	if (failed) toast("Some files couldn't be moved (open in another program?)", c::warn, ICON_WARN);
+	else toast("Set aside " + std::to_string(runs) + (runs == 1 ? " run" : " runs") + " in Stats/Before calibration", c::ok, ICON_FOLDER_OPEN);
+}
+
+void App::putBackRuns() {
+	std::error_code ec;
+	int back = 0;
+	for (const auto& m : setAside_) {
+		if (fs::exists(m.first, ec)) continue;   // a new file took its place: leave the set-aside copy where it is
+		fs::rename(m.second, m.first, ec);
+		if (ec) ec.clear();
+		else back += fs::path(m.first).extension() == ".csv";
+	}
+	std::string oneCsv;
+	for (const auto& m : setAside_)
+		if (fs::path(m.first).extension() == ".csv" && fs::exists(m.first, ec)) oneCsv = back == 1 ? m.first : "";
+	setAside_.clear();
+	runsBeforeCalibration(true);
+	// This session's vehicles from them were let go when they were set aside: show the csv instead, when it's one run.
+	if (!oneCsv.empty()) loadResultsCsv(oneCsv);
+	toast("Put back " + std::to_string(back) + (back == 1 ? " run" : " runs") + (oneCsv.empty() ? ". Open CSV shows their vehicles." : "."), c::ok, ICON_CHECK);
 }
 
 const std::vector<CalEvent>& App::calibrationHistory() {
@@ -497,6 +622,7 @@ void App::loadResultsCsv(const std::string& path) {
 	if (!readStatsCsv(path, stats, err, &skipped)) { toast(err, c::bad, ICON_WARN); return; }
 	rows.clear();
 	const Globals& g = cfg.g;
+	const bool before = measuredBefore(path);
 	for (const StatsRow& s : stats) {
 		ResultRow r;
 		r.source = fs::path(path).filename().string();
@@ -514,6 +640,9 @@ void App::loadResultsCsv(const std::string& path) {
 		// The Timestamp column says when this vehicle passed; drop its UTC offset to match session rows ("yyyy-mm-ddThh:mm:ss").
 		// Older csvs only have Date/Time, which for Foscam recordings is when the recording started.
 		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
+		r.statsPath = path;
+		r.beforeCal = before;
+		if (const CalPass* p = calibrationPass(path, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
 		rows.push_back(r);
 	}
 	rowsFrom = path;
@@ -523,6 +652,7 @@ void App::loadResultsCsv(const std::string& path) {
 
 void App::showSessionResults() {
 	rows.clear();
+	const EarlierRuns& earlier = runsBeforeCalibration();
 	for (const Vehicle& v : tracker.vehiclesSince(0)) {
 		ResultRow r;
 		r.vehicleId = v.id;
@@ -537,6 +667,9 @@ void App::showSessionResults() {
 		r.large = v.large;
 		r.fps = v.fps;
 		r.time = v.passed();   // empty for recordings without a start time
+		r.statsPath = v.statsPath;
+		r.beforeCal = std::find(earlier.csvs.begin(), earlier.csvs.end(), v.statsPath) != earlier.csvs.end();
+		if (const CalPass* p = calibrationPass(v.statsPath, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
 		rows.push_back(r);
 	}
 	rowsFrom.clear();
@@ -603,6 +736,20 @@ void App::pumpTracker() {
 		if (v.ev.wrongWay) toast("Wrong-way driver, " + std::to_string(v.ev.speed) + " mph", c::wrong, ICON_WARN);
 		else if (v.egregious) toast(std::to_string(v.ev.speed) + " mph " + (v.ev.leftToRight ? "→" : "←") + "  well over the limit", c::bad, ICON_BOLT);
 		if (rowsFrom.empty()) showSessionResults();
+	}
+	if (restartPending_) {
+		// A calibration was applied during a live run: stop it (its csv keeps the old calibration and is now one of
+		// runsBeforeCalibration()) and start a fresh one with the new value, staying on the page the user is on.
+		restartPending_ = false;
+		if (tracker.running() && tracker.progress().live) {
+			Page was = page;
+			stopTracking();
+			wasRunning_ = false;
+			startTracking();
+			page = was;
+			toast("Tracking restarted so the cars from now on are measured with the new calibration", c::ok, ICON_PLAY);
+			return;
+		}
 	}
 	if (wasRunning_ && !tracker.running()) {
 		wasRunning_ = false;
@@ -2306,7 +2453,10 @@ void App::pageCalibrate() {
 		if (calibChecking_) {
 			const char* why = have ? whyNoCheck(picked.ev.leftToRight, picked.id) : nullptr;
 			ImGui::BeginDisabled(!have || why);
-			if (primaryButton(ICON_BULLSEYE "  Check this pass", ImVec2(-FLT_MIN, 0))) checkCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
+			if (primaryButton(ICON_BULLSEYE "  Check this pass", ImVec2(-FLT_MIN, 0))) {
+				checkCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
+				markCalibrationPass(picked, true, drivenMph(picked.id));
+			}
 			ImGui::EndDisabled();
 			if (why) { ImGui::PushTextWrapPos(0); dimText("%s", why); ImGui::PopTextWrapPos(); }
 		}
@@ -2314,6 +2464,7 @@ void App::pageCalibrate() {
 			ImGui::BeginDisabled(!have);
 			if (primaryButton(ICON_CHECK "  Use this pass", ImVec2(-FLT_MIN, 0))) {
 				applyCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
+				markCalibrationPass(picked, false, drivenMph(picked.id));
 				calibAppliedId_ = picked.id;
 			}
 			ImGui::EndDisabled();
@@ -3057,13 +3208,49 @@ void App::pageResults() {
 		if (!search.empty() && minSpeed == 0 && r.source.find(search) == std::string::npos) continue;
 		shown.push_back(&r);
 	}
-	dimText("%s  ·  %zu of %zu vehicles", rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string().c_str(), shown.size(), rows.size());
+	int ownDrives = int(std::count_if(rows.begin(), rows.end(), [](const ResultRow& r) { return r.calKind != 0; }));
+	dimText("%s  ·  %zu of %zu vehicles%s", rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string().c_str(), shown.size(), rows.size(),
+		!ownDrives ? "" : ownDrives == 1 ? "  ·  1 is your own calibration drive, left out of the totals" : ("  ·  " + std::to_string(ownDrives)
+			+ " are your own calibration drives, left out of the totals").c_str());
+	// Runs measured with an earlier calibration: say how many, and offer to move them out of the way (undoable).
+	{
+		const EarlierRuns& e = runsBeforeCalibration();
+		// A calibration applied while these rows are on screen moves their run into this list: keep the marks current.
+		if (rowsFrom.empty())
+			for (ResultRow& r : rows) r.beforeCal = !r.statsPath.empty() && std::find(e.csvs.begin(), e.csvs.end(), r.statsPath) != e.csvs.end();
+		if (!e.csvs.empty()) {
+			ImGui::AlignTextToFramePadding();
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+			ImGui::TextUnformatted(ICON_CLOCK);
+			ImGui::PopStyleColor();
+			ImGui::SameLine();
+			ImGui::Text("%d %s (%d %s) measured before your latest calibration.", int(e.csvs.size()), e.csvs.size() == 1 ? "run" : "runs",
+				e.vehicles, e.vehicles == 1 ? "vehicle" : "vehicles");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Their speeds came from the old calibration, so they'd mix two scales in the totals and the street report.\n"
+					"Setting them aside moves their files to Stats/Before calibration. Nothing is deleted, and you can put them back.");
+			ImGui::SameLine();
+			if (ghostButton(ICON_FOLDER_OPEN "  Set them aside")) setAsideEarlierRuns();
+		}
+		else if (!setAside_.empty()) {
+			ImGui::AlignTextToFramePadding();
+			dimText(ICON_CHECK "  Runs from before your latest calibration are in Stats/Before calibration.");
+			ImGui::SameLine();
+			if (ghostButton(ICON_UNDO "  Put them back")) putBackRuns();
+		}
+	}
 
 	if (rows.empty()) {
 		ImGui::Dummy(ImVec2(0, px(40)));
-		beginCard("noresults", ICON_CHART, "Nothing here yet", ImVec2(avail, 0));
-		dimText("Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
-			"Or use Open CSV to look at the results of an earlier run.");
+		if (!setAside_.empty()) {
+			beginCard("noresults", ICON_CHECK_CIRCLE, "A fresh start with your new calibration", ImVec2(avail, 0));
+			dimText("The runs measured before it are set aside, so from here on every speed is on the new scale. Start tracking to fill this page again.");
+		}
+		else {
+			beginCard("noresults", ICON_CHART, "Nothing here yet", ImVec2(avail, 0));
+			dimText("Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
+				"Or use Open CSV to look at the results of an earlier run.");
+		}
 		if (source.empty() && batch.empty()) { if (primaryButton(ICON_VIDEO "  Choose a source")) page = Page::Source; }
 		else if (primaryButton(ICON_PLAY "  Start tracking")) startTracking();
 		endCard();
@@ -3074,7 +3261,10 @@ void App::pageResults() {
 	int over = 0, way = 0, wrong = 0, top = 0;
 	double sum = 0;
 	std::vector<int> speeds;
+	int traffic = 0;   // every row but the user's own calibration and check drives
 	for (const ResultRow& r : rows) {
+		if (r.calKind) continue;
+		traffic++;
 		over += r.speed > prefs.speedLimit;
 		way += r.speed >= prefs.egregious;
 		wrong += r.wrongWay;
@@ -3086,9 +3276,10 @@ void App::pageResults() {
 	int p85 = report::percentile(speeds, 85);   // nearest rank, the same definition as the street report and the phone
 	float tw = (avail - px(48)) / 5, th = px(100);
 	char sub[64];
-	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
+	const int perc = std::max(traffic, 1);
+	statTile(ICON_CAR, "Vehicles", std::to_string(traffic), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / rows.size()), prefs.speedLimit);
+	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / perc), prefs.speedLimit);
 	statTile(ICON_GAUGE, "Speeding", std::to_string(over), sub, c::warn, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
 	snprintf(sub, sizeof sub, "%d mph or more", prefs.egregious);
@@ -3096,7 +3287,7 @@ void App::pageResults() {
 	ImGui::SameLine(0, px(12));
 	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), cfg.g.LegalDirection == "Both" ? "one-way? set it in step 4" : "against the one-way", c::wrong, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / rows.size(), top);
+	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / perc, top);
 	statTile(ICON_CHART, "85th percentile", std::to_string(p85) + " mph", sub, c::accent2, ImVec2(tw, th));
 
 	ImGui::Dummy(ImVec2(0, px(2)));
@@ -3104,7 +3295,10 @@ void App::pageResults() {
 	float leftW = avail - detailW - px(20);
 	float chartsH = px(210);
 	ImGui::BeginGroup();
-	resultsCharts(shown, leftW);
+	std::vector<const ResultRow*> charted;   // the charts are the street's traffic: not the user's own drives
+	for (const ResultRow* r : shown)
+		if (!r->calKind) charted.push_back(r);
+	resultsCharts(charted, leftW);
 	ImGui::Dummy(ImVec2(0, px(2)));
 
 	float tableH = ImGui::GetContentRegionAvail().y;
@@ -3113,7 +3307,7 @@ void App::pageResults() {
 		ImGui::TableSetupScrollFreeze(0, 1);
 		ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, px(46));
 		ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, px(110));
-		ImGui::TableSetupColumn("Direction", 0, 1.3f);
+		ImGui::TableSetupColumn("Direction", 0, 1.5f);
 		ImGui::TableSetupColumn("When", 0, 1.2f);
 		ImGui::TableSetupColumn("Frames", ImGuiTableColumnFlags_WidthFixed, px(70));
 		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(70));
@@ -3160,7 +3354,14 @@ void App::pageResults() {
 				ImGui::PushStyleColor(ImGuiCol_Text, v4(r.l2r ? c::l2r : c::r2l));
 				ImGui::Text("%s %s", r.l2r ? "→" : "←", r.compass.c_str());
 				ImGui::PopStyleColor();
-				if (r.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
+				if (r.calKind) {
+					ImGui::SameLine();
+					linePill(r.calKind == 1 ? ICON_RULER " calibration" : ICON_BULLSEYE " check", c::bg0, c::accent2);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Your own %s drive at %g mph: left out of the totals, the charts and the street report",
+							r.calKind == 1 ? "calibration" : "check", std::round(r.drivenMph * 10) / 10);
+				}
+				else if (r.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				if (!r.time.empty()) ImGui::TextUnformatted(r.time.size() > 11 ? r.time.substr(11).c_str() : r.time.c_str());
@@ -3173,6 +3374,14 @@ void App::pageResults() {
 				if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
 				else ImGui::Text("%d", r.area);
 				ImGui::TableNextColumn();
+				// First in the cell, as a long file name is clipped at the column's edge.
+				if (r.beforeCal) {
+					float y = ImGui::GetCursorPosY();   // linePill moves down to centre itself; the text after starts from the row's top again
+					linePill(ICON_CLOCK " old calibration", c::text, c::bg3);
+					if (ImGui::IsItemHovered()) ImGui::SetTooltip("Measured before your latest calibration, so on the old scale");
+					ImGui::SameLine();
+					ImGui::SetCursorPosY(y);
+				}
 				ImGui::AlignTextToFramePadding();
 				ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
 				ImGui::TextUnformatted(r.source.c_str());
@@ -3211,7 +3420,13 @@ void App::pageResults() {
 		ImGui::SameLine();
 		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + px(26));
 		dimText("mph");
-		if (r.wrongWay) pill(ICON_WARN "  WRONG WAY", c::rgb(0xFFFFFF), c::wrong, fonts.strong);
+		if (r.calKind) {
+			char what[96];
+			snprintf(what, sizeof what, "%s  YOU, %s AT %g MPH", r.calKind == 1 ? ICON_RULER : ICON_BULLSEYE, r.calKind == 1 ? "CALIBRATING" : "CHECKING",
+				std::round(r.drivenMph * 10) / 10);
+			pill(what, c::bg0, c::accent2, fonts.strong);
+		}
+		else if (r.wrongWay) pill(ICON_WARN "  WRONG WAY", c::rgb(0xFFFFFF), c::wrong, fonts.strong);
 		else if (r.speed >= prefs.egregious) pill(ICON_BOLT "  WAY OVER THE LIMIT", c::bg0, c::bad, fonts.strong);
 		else if (r.speed > prefs.speedLimit) pill(ICON_GAUGE "  SPEEDING", c::bg0, c::warn, fonts.strong);
 		else pill(ICON_CHECK "  WITHIN THE LIMIT", c::bg0, c::ok, fonts.strong);
@@ -3229,6 +3444,16 @@ void App::pageResults() {
 		kv("Frame", std::to_string(r.frame));
 		if (!r.time.empty()) { std::string t = r.time; if (t.size() > 10 && t[10] == 'T') t[10] = ' '; kv("Passed at", t); }
 		kv("Source", r.source);
+		if (r.calKind) {
+			ImGui::PushTextWrapPos(0);
+			dimText("Your own %s drive: left out of the totals, the charts and the street report.", r.calKind == 1 ? "calibration" : "check");
+			ImGui::PopTextWrapPos();
+		}
+		if (r.beforeCal) {
+			ImGui::PushTextWrapPos(0);
+			dimText("Measured with the calibration you had before the latest one, so its speed is on the old scale.");
+			ImGui::PopTextWrapPos();
+		}
 		ImGui::Dummy(ImVec2(0, px(4)));
 		Vehicle v;
 		if (r.vehicleId && tracker.vehicle(r.vehicleId, v) && !v.clipPath.empty())
@@ -3344,6 +3569,8 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 	in.current.calSpeed = g.CalibrationSpeed;
 	in.current.calFps = g.CalibrationFPS;
 	in.current.minLoggedSpeed = g.minLoggedSpeed;
+	calibrationPass("", 0);   // load calibration-passes.csv
+	for (const auto& kv : calPasses_) in.calibrationPasses.insert(kv.first);
 	if (!snapshots) return in;
 	// Example frames exist only for this session's vehicles (kept in memory).  Take the six fastest in the date range,
 	// each made safe by blurForReport before it ever reaches the report.
@@ -3353,6 +3580,7 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 		if (in.snapshots.size() >= 6) break;
 		std::string when = v.passed();
 		std::string day = when.substr(0, 10);
+		if (calibrationPass(v.statsPath, v.ev.frame)) continue;   // the user's own drive isn't an example of the street's traffic
 		if (v.snapshot.empty() || (!from.empty() && (day.empty() || day < from)) || (!to.empty() && (day.empty() || day > to))) continue;
 		std::string jpeg = report::blurForReport(v.snapshot);
 		if (!jpeg.empty()) in.snapshots.push_back({ jpeg, v.ev.speed, v.ev.leftToRight, when });

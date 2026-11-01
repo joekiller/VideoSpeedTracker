@@ -750,7 +750,10 @@ void Server::routes() {
 			else if (vid) {
 				Vehicle v;
 				if (!app.tracker.vehicle(vid, v)) err = "no vehicle " + std::to_string(vid);
-				else app.applyCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+				else {
+					app.applyCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+					app.markCalibrationPass(v, false, speed);   // Results marks it, the street report leaves it out
+				}
 			}
 			else {
 				int dir = in.value("dir", "L2R") == "R2L" ? 1 : 0;
@@ -817,7 +820,10 @@ void Server::routes() {
 			else if (vid) {
 				Vehicle v;
 				if (!app.tracker.vehicle(vid, v)) err = "no vehicle " + std::to_string(vid);
-				else k = app.checkCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+				else {
+					k = app.checkCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+					app.markCalibrationPass(v, true, speed);
+				}
 			}
 			else {
 				int dir = in.value("dir", "L2R") == "R2L" ? 1 : 0;

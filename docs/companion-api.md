@@ -362,6 +362,11 @@ speed. Three ways to record it:
   picture, `feet` not positive, an unknown `dir`, spots less than 40 px apart across the picture, or
   speed lines not set. The calibration shows as Not checked until a check pass (below).
 
+A pass applied or checked by `vehicleId` is also recorded as the user's own drive (`calibration-passes.csv` in the
+config folder): Studio's Results tags it, and the street report leaves it out. An apply while a camera or stream is
+being tracked restarts tracking on the next frame, so passes from then on use the new calibration; the run so far
+keeps its csv (and the old calibration) and Results offers to set it aside. A video run isn't restarted.
+
 Every way of applying returns `{"ok": true, "problems": [], "config": { … }}`, or `200`
 `{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked, `speed` isn't
 positive, or (for the spots) one of the refusals above. A body that isn't a JSON object is a `400`.

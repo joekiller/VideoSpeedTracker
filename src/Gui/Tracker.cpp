@@ -111,6 +111,7 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 		std::string stem = jobStem(job.input);
 		job.statsPath = (data / "Stats" / ("stats_" + stem + ".csv")).string();
 		job.manifestPath = vst::manifestPathFor(job.statsPath);
+		currentStats_ = job.statsPath;
 		std::vector<std::string> args = {
 			"--input", job.input, "--config", opt.configPath, "--stats", job.statsPath,
 			"--speed-limit", std::to_string(opt.speedLimit), "--egregious", std::to_string(opt.egregious),
@@ -225,6 +226,7 @@ Vehicle Tracker::passFor(const vst::VehicleEvent& e) {
 	v.time = nowIso();
 	v.video = displayName(currentInput_);
 	v.videoPath = currentInput_;
+	v.statsPath = currentStats_;
 	v.fps = fps_;
 	v.live = liveSource_;
 	v.ev = e;
@@ -407,6 +409,23 @@ void Tracker::clearVehicles() {
 	vehicles_.clear();
 	slowPasses_.clear();
 	slow_ = untimed_ = 0;
+}
+
+int Tracker::forgetRun(const std::string& statsPath) {
+	std::lock_guard<std::mutex> l(mu_);
+	auto from = [&](std::deque<Vehicle>& q) {
+		size_t before = q.size();
+		q.erase(std::remove_if(q.begin(), q.end(), [&](const Vehicle& v) { return v.statsPath == statsPath; }), q.end());
+		return int(before - q.size());
+	};
+	int gone = from(vehicles_);
+	slow_ = std::max(0, slow_ - from(slowPasses_));
+	return gone;
+}
+
+std::string Tracker::runningStatsPath() {
+	std::lock_guard<std::mutex> l(mu_);
+	return running_ ? lastStats_ : std::string();
 }
 
 std::vector<std::string> Tracker::logTail(size_t n) {

@@ -82,6 +82,46 @@ static std::string trim(const std::string& s) {
 	return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
 
+std::string passesPath() { return (userpaths::configDir() / "calibration-passes.csv").string(); }
+
+bool appendPass(const CalPass& p, std::string& err) {
+	std::string path = passesPath();
+	std::error_code ec;
+	fs::create_directories(fs::path(path).parent_path(), ec);
+	bool fresh = !fs::exists(path, ec) || fs::file_size(path, ec) == 0;
+	std::ofstream f(path, std::ios::app | std::ios::binary);
+	if (!f) { err = "Can't write " + path; return false; }
+	if (fresh) f << "PassTime, Stats, Frame, Kind, Direction, DrivenMph\n";
+	f << p.time.substr(0, 19) << ", " << p.stats << ", " << p.frame << ", " << (p.check ? "check" : "apply") << ", " << (p.l2r ? "L2R" : "R2L")
+	  << ", " << num(p.drivenMph) << "\n";
+	f.flush();
+	if (!f) { err = "Can't write " + path; return false; }
+	return true;
+}
+
+std::vector<CalPass> loadPasses() {
+	std::vector<CalPass> out;
+	std::ifstream f(passesPath(), std::ios::binary);
+	for (std::string line; std::getline(f, line);) {
+		std::vector<std::string> raw, parts;
+		std::stringstream ss(line);
+		for (std::string p; std::getline(ss, p, ',');) { raw.push_back(p); parts.push_back(trim(p)); }
+		// Counted from both ends: a video's name (in Stats) may itself hold commas.
+		size_t n = parts.size();
+		if (n < 6 || (parts[n - 3] != "apply" && parts[n - 3] != "check")) continue;   // the header, or junk
+		CalPass p;
+		p.time = parts[0];
+		for (size_t i = 1; i + 4 < n; i++) p.stats += (i > 1 ? "," : "") + raw[i];
+		p.stats = trim(p.stats);
+		p.check = parts[n - 3] == "check";
+		p.l2r = parts[n - 2] == "L2R";
+		try { p.frame = std::stoi(parts[n - 4]); p.drivenMph = std::stod(parts[n - 1]); }
+		catch (...) { continue; }
+		out.push_back(p);
+	}
+	return out;
+}
+
 std::vector<CalEvent> load(const std::string& configPath) {
 	std::vector<CalEvent> out;
 	std::ifstream f(historyPath(), std::ios::binary);

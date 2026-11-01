@@ -31,6 +31,7 @@ struct Vehicle {
 	std::string time;           // ISO 8601, local wall clock when logged
 	std::string video;          // display name of the source
 	std::string videoPath;
+	std::string statsPath;      // the run's stats csv (Job::statsPath): with ev.frame, which csv row it is
 	double fps = 30;
 	bool live = false;          // from a camera or stream (time is when it passed) rather than a recording
 	std::string recorded;       // ISO time it passed in a recording, when the engine knows when the recording started
@@ -113,6 +114,10 @@ public:
 	int lastPassId();                        // newest id of either kind
 	Counts counts();
 	void clearVehicles();
+	// Drops this session's vehicles and slow passes from one run (its stats csv), e.g. when Results sets runs measured
+	// before the latest calibration aside.  Returns how many logged vehicles went.
+	int forgetRun(const std::string& statsPath);
+	std::string runningStatsPath();          // the csv the engine is writing now, "" when not running
 	std::vector<std::string> logTail(size_t n);
 	std::string lastStatsPath();
 
@@ -143,7 +148,7 @@ private:
 	struct RingEntry { int frame; cv::Mat roi; std::vector<vst::TrackBox> boxes; };
 	std::deque<RingEntry> ring_;
 	Options opt_;
-	std::string currentInput_, clipsDir_;
+	std::string currentInput_, currentStats_, clipsDir_;
 	double fps_ = 30;
 	bool liveSource_ = false;
 	std::chrono::steady_clock::time_point paceStart_, lastCopy_, rateStart_;

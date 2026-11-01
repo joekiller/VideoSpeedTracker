@@ -380,6 +380,20 @@ time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows
 time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
 recordings (`manual_yyyymmddhhmmss`) is when the recording started.
 
+**Your own drives are marked.** A pass you used to calibrate or check (Calibrate's *Use this pass* or *Check this
+pass*, or the phone's *That was me*) shows a **calibration** or **check** tag, and its details say the speed you drove.
+It stays in the table but is left out of the tiles, the charts and the street report, since the person setting up
+isn't traffic. The marks are kept in `calibration-passes.csv` in the config folder (the pass's stats csv and frame),
+so they survive a restart.
+
+**Runs from before your latest calibration.** Each run's manifest records the calibration it was measured with. When
+that differs from the current one, its rows get an **old calibration** tag, and a line under the toolbar counts them:
+*2 runs (65 vehicles) measured before your latest calibration*. **Set them aside** moves those csvs and manifests to
+`Stats/Before calibration`. Nothing is deleted, and Open CSV still reads them. They drop out of Results and the street
+report, which reads only `Stats/`. **Put them back** undoes it. Calibrating during a live run
+(camera or stream) restarts tracking, so the cars from then on are measured with the new value in a new csv. A video
+keeps the calibration it started with until you run it again.
+
 ![Results](images/studio/06-results.jpg)
 
 The 85th percentile here, in the street report and on the phone all use the nearest-rank definition (see below).
