@@ -186,6 +186,7 @@ int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
 	// expressed in zone widths, so with no streetEdge it is exactly the old pixel test.
 	if (sqrt(sumSq / frames.size()) * zonePx > g.margin(4, l2r)) return -1;
 	double zoneFrames = 1 / abs(slope);
+	zoneSeconds = g.videoFPS > 0 ? zoneFrames / g.videoFPS : 0;
 	double calibrationFrames = (dir == L2R ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) * g.videoFPS / g.CalibrationFPS;
 	return int(calibrationFrames / zoneFrames * g.CalibrationSpeed + 0.5);
 }
@@ -288,11 +289,13 @@ int VehicleDynamics::computeFinalSpeed(Globals& g, direction dir, int trackStart
 		// fine tune final frame marker used for estimating speed
 		if ((trackStartPixel - g.speedLineLeft) > halfSpeed && (trackEndPixel - g.speedLineRight) < halfSpeed)  trackEndFrame++;  // went over start late, and left early
 		else if ((trackStartPixel - g.speedLineLeft) < halfSpeed && (trackEndPixel - g.speedLineRight) > halfSpeed)  trackEndFrame--; // went over start early, and left late
+		zoneSeconds = g.videoFPS > 0 ? double(trackEndFrame - trackStartFrame) / g.videoFPS : 0;
 		return int(((double(g.CalibrationFramesL2R) * fpsScale / double(trackEndFrame - trackStartFrame)) * g.CalibrationSpeed) + 0.4999);
 	case R2L:
 		// fine tune final frame markers used for estimating speed
 		if ((g.speedLineRight - trackStartPixel) > halfSpeed && (g.speedLineLeft - trackEndPixel) < halfSpeed)  trackEndFrame++;  // went over start as late as possible and stayed late
 		else if ((g.speedLineRight - trackStartPixel) < halfSpeed && (g.speedLineLeft - trackEndPixel) > halfSpeed)  trackEndFrame--; // went over start early, and left late
+		zoneSeconds = g.videoFPS > 0 ? double(trackEndFrame - trackStartFrame) / g.videoFPS : 0;
 		return int(((double(g.CalibrationFramesR2L) * fpsScale / double(trackEndFrame - trackStartFrame)) * g.CalibrationSpeed) + 0.4999);
 	case UNK:
 		return -1;

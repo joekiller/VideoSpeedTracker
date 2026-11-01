@@ -68,6 +68,7 @@
 #include <thread>
 #include <ctime>
 #include <cmath>
+#include <iomanip>
 #include <sstream>
 #include <locale>
 #include <opencv2/videoio/registry.hpp>
@@ -155,9 +156,21 @@ struct EngineExit { int code; };  // thrown by quit() so an embedded run unwinds
 // up), Trend (decelerating, steady, accelerating or rapid) and MphIn20ft, the speed projected 20 ft past the exit line.
 // All five are empty when the trend can't be told.  LengthPx (v1.10+) is the vehicle's side-on length in analysis-box
 // pixels (VehicleDynamics::getLengthPx), which VST Studio turns into feet with the calibration, so sizes survive a
-// reopen, Open and an archive.  Readers of the older 15 columns ignore them all.
+// reopen, Open and an archive.  ZoneSeconds (v1.10+) is the time the front bumper took between the speed lines, to 0.1 ms:
+// estSpeed is the zone length over this, rounded, so a later calibration of the same view re-times the car exactly
+// (VST Studio's calibration sets, src/Gui/CalSets.h) instead of rescaling a whole-mph value.  Readers of the older 15
+// columns ignore them all.
 const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, "
-	"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx";
+	"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx, ZoneSeconds";
+
+// The ZoneSeconds cell: 4 decimals with a '.' whatever the locale, empty when the car wasn't timed.
+string zoneSecondsCell(double s){
+	if (!(s > 0)) return "";
+	ostringstream o;
+	o.imbue(locale::classic());
+	o << fixed << setprecision(4) << s;
+	return o.str();
+}
 
 // The five speed-trend cells of a stats row (see statsHeader), "" in each when unknown.
 string trendCells(const vst::SpeedTrend& t){
@@ -440,7 +453,9 @@ void writeManifest(bool complete){
 		<< ", \"R2LDirection\": " << jsonString(g.R2LDirection) << ",\n"
 		<< "    \"speedLineLeft\": " << g.speedLineLeft << ", \"speedLineRight\": " << g.speedLineRight << ",\n"
 		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << ", \"subFrameTiming\": " << g.subFrameTiming << ",\n"
-		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << ", \"streetEdge\": [" << g.streetEdge[0] << ", " << g.streetEdge[1] << "]\n"
+		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << ", \"streetEdge\": [" << g.streetEdge[0] << ", " << g.streetEdge[1] << "],\n"
+		// The view, with the speed lines and streetEdge above: runs that share all of it are one calibration set (CalSets.h).
+		<< "    \"analysisBox\": [" << g.AnalysisBoxLeft << ", " << g.AnalysisBoxTop << ", " << g.AnalysisBoxWidth << ", " << g.AnalysisBoxHeight << "]\n"
 		<< "  },\n"
 		<< "  \"counts\": { \"logged\": " << runLogged << ", \"belowMinSpeed\": " << runBelowMinSpeed << ", \"untimed\": " << runUntimed << " }\n"
 		<< "}\n";
@@ -1111,7 +1126,7 @@ void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed, const str
 #ifdef VST_EMBEDDED
 	if (hooks && hooks->onVehicle)
 		hooks->onVehicle({ leftToRight, wrongWay, compass, estSpeed, frameNumber, v.getTrackStartFrame(), v.getTrackEndFrame(),
-			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp, v.getLengthPx(g), v.getSpeedTrend() });
+			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp, v.getLengthPx(g), v.getSpeedTrend(), v.getZoneSeconds() });
 #else
 	(void)v;
 	(void)timestamp;
@@ -1156,7 +1171,8 @@ void logL2Rstats(bool isOK, int index){
 			<< vehiclesGoingRight[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << ", " << trendCells(vehiclesGoingRight[index].getSpeedTrend()) << ", " << vehiclesGoingRight[index].getLengthPx(g) << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingRight[index].getSpeedTrend()) << ", " << vehiclesGoingRight[index].getLengthPx(g)
+			<< ", " << zoneSecondsCell(vehiclesGoingRight[index].getZoneSeconds()) << endl;
 		reportVehicle(true, vehiclesGoingRight[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingRight[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
@@ -1227,7 +1243,8 @@ void logR2Lstats(bool isOK, int index){
 			<< vehiclesGoingLeft[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << ", " << trendCells(vehiclesGoingLeft[index].getSpeedTrend()) << ", " << vehiclesGoingLeft[index].getLengthPx(g) << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingLeft[index].getSpeedTrend()) << ", " << vehiclesGoingLeft[index].getLengthPx(g)
+			<< ", " << zoneSecondsCell(vehiclesGoingLeft[index].getZoneSeconds()) << endl;
 		reportVehicle(false, vehiclesGoingLeft[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingLeft[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());

@@ -532,7 +532,9 @@ void App::applyCombinedCalibration() {
 	// running csv on the current calibration, so it isn't split into a new run for nothing.
 	if (changed || !any) {
 		restartAfterCalibration();
-		if (!reviewing()) sizeRows();   // Results' feet follow the new scale at once, not on its next refresh
+		// Results' speeds and feet follow the new scale at once, not on its next refresh: the open set on this view
+		// takes the new calibration (CalSets.h) and its rows are re-timed.
+		if (!reviewing()) { syncSets(true); applySets(); }
 	}
 }
 
@@ -634,105 +636,6 @@ void App::restartAfterCalibration() {
 	else toast("This video keeps the calibration it started with. Run it again to measure it with the new one.", c::accent2, ICON_INFO);
 }
 
-// Whether a run was measured with other calibration values than VST.cfg has now.  Compared as what each direction's
-// calibration means (CalibrationFrames × CalibrationSpeed / CalibrationFPS: the frames a car takes, scaled to mph),
-// so re-expressing the same calibration against another CalibrationSpeed isn't a change.  A run with no manifest
-// (before VST 1.2) can't be told, and isn't counted.
-bool App::measuredBefore(const std::string& csvPath) {
-	const Globals& g = cfg.g;
-	report::RunConfig rc;
-	if (!report::runConfigOf(csvPath, rc)) return false;
-	auto scale = [](double frames, double speed, double fps) { return fps > 0 ? frames * speed / fps : 0; };
-	auto differs = [](double a, double b) { return std::fabs(a - b) > 0.005 * std::max(std::fabs(b), 1e-9); };
-	return differs(scale(rc.framesL2R, rc.calSpeed, rc.calFps), scale(g.CalibrationFramesL2R, g.CalibrationSpeed, g.CalibrationFPS))
-		|| differs(scale(rc.framesR2L, rc.calSpeed, rc.calFps), scale(g.CalibrationFramesR2L, g.CalibrationSpeed, g.CalibrationFPS));
-}
-
-const App::EarlierRuns& App::runsBeforeCalibration(bool fresh) {
-	double now = ImGui::GetTime();
-	if (!fresh && earlierAt_ >= 0 && now - earlierAt_ < 3) return earlier_;
-	earlierAt_ = now;
-	earlier_ = EarlierRuns();
-	if (screenshotMode) return earlier_;
-	std::string running = tracker.runningStatsPath();
-	std::error_code ec;
-	for (fs::directory_iterator it(fs::path(dataDir()) / "Stats", ec), end; !ec && it != end; it.increment(ec)) {
-		if (!it->is_regular_file(ec) || it->path().extension() != ".csv") continue;
-		std::string csv = it->path().string();
-		if ((!running.empty() && fs::equivalent(csv, running, ec)) || !measuredBefore(csv)) continue;
-		earlier_.csvs.push_back(csv);
-		// Its rows: every line but the header.
-		std::ifstream f(csv, std::ios::binary);
-		int lines = 0;
-		for (std::string line; std::getline(f, line);) lines += !line.empty() && line != "\r";
-		earlier_.vehicles += std::max(0, lines - 1);
-	}
-	std::sort(earlier_.csvs.begin(), earlier_.csvs.end());
-	// What an earlier launch set aside is still on disk: pick it up once, so Results says where those runs are and
-	// "Put them back" works after a restart instead of the runs looking lost (setAside_ alone lives in memory).
-	if (!setAsideScanned_) {
-		setAsideScanned_ = true;
-		if (setAside_.empty()) {
-			fs::path stats = fs::path(dataDir()) / "Stats", dir = stats / "Before calibration";
-			for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
-				if (it->is_regular_file(ec)) setAside_.push_back({ (stats / it->path().filename()).string(), it->path().string() });
-			ec.clear();
-		}
-	}
-	return earlier_;
-}
-
-// "Set them aside": each earlier run's csv and manifest move to Stats/Before calibration, where Results' Open > A stats csv can
-// still read them but the street report (which reads Stats/ only) and the phone's totals don't.  Nothing is deleted,
-// and putBackRuns() moves them back.  This session's vehicles from those runs leave Results too.
-void App::setAsideEarlierRuns() {
-	const EarlierRuns& e = runsBeforeCalibration(true);
-	fs::path dir = fs::path(dataDir()) / "Stats" / "Before calibration";
-	std::error_code ec;
-	fs::create_directories(dir, ec);
-	setAside_.clear();
-	int runs = 0, failed = 0;
-	for (const std::string& csv : e.csvs) {
-		bool moved = false;
-		for (const std::string& from : { csv, vst::manifestPathFor(csv) }) {
-			if (!fs::exists(from, ec)) continue;
-			fs::path to = dir / fs::path(from).filename();
-			fs::rename(from, to, ec);
-			if (ec) { failed++; ec.clear(); continue; }
-			setAside_.push_back({ from, to.string() });
-			moved |= from == csv;
-		}
-		if (moved) { runs++; tracker.forgetRun(csv); }
-	}
-	runsBeforeCalibration(true);
-	// Refresh whatever Results shows: the session lets go of those runs' vehicles, All saved runs re-reads Stats/, and
-	// a single csv that just moved falls back to the session.
-	if (rowsScope == ResultsScope::Saved) showSavedRuns();
-	else if (rowsScope == ResultsScope::Session || !fs::exists(rowsFrom, ec)) showSessionResults();
-	if (failed) toast("Some files couldn't be moved (open in another program?)", c::warn, ICON_WARN);
-	else toast("Set aside " + std::to_string(runs) + (runs == 1 ? " run" : " runs") + " in Stats/Before calibration", c::ok, ICON_FOLDER_OPEN);
-}
-
-void App::putBackRuns() {
-	std::error_code ec;
-	int back = 0;
-	for (const auto& m : setAside_) {
-		if (fs::exists(m.first, ec)) continue;   // a new file took its place: leave the set-aside copy where it is
-		fs::rename(m.second, m.first, ec);
-		if (ec) ec.clear();
-		else back += fs::path(m.first).extension() == ".csv";
-	}
-	std::string oneCsv;
-	for (const auto& m : setAside_)
-		if (fs::path(m.first).extension() == ".csv" && fs::exists(m.first, ec)) oneCsv = back == 1 ? m.first : "";
-	setAside_.clear();
-	runsBeforeCalibration(true);
-	// This session's vehicles from them were let go when they were set aside: show the csv instead, when it's one run.
-	if (rowsScope == ResultsScope::Saved) showSavedRuns();   // All saved runs simply includes them again
-	else if (!oneCsv.empty()) loadResultsCsv(oneCsv);
-	toast("Put back " + std::to_string(back) + (back == 1 ? " run" : " runs") + (oneCsv.empty() ? ". Open > A stats csv shows their vehicles." : "."), c::ok, ICON_CHECK);
-}
-
 const std::vector<CalEvent>& App::calibrationHistory() {
 	// Read once per config: only this process appends to the file, and it adds each row to the cache as it goes.
 	if (!calHistoryLoaded_ || calHistoryFor_ != cfg.path()) {
@@ -784,7 +687,7 @@ bool App::appendStatsRows(const std::string& path, const std::string& label, int
 	std::string err;
 	if (!readStatsCsv(path, stats, err, skipped)) { toast(err, c::bad, ICON_WARN); return false; }
 	const Globals& g = cfg.g;
-	const bool before = measuredBefore(path);
+	const calsets::RunInfo run = calsets::readRun(path);   // the zone feet this run was measured with
 	for (const StatsRow& s : stats) {
 		ResultRow r;
 		r.source = label;
@@ -803,13 +706,14 @@ bool App::appendStatsRows(const std::string& path, const std::string& label, int
 		// Older csvs only have Date/Time, which for Foscam recordings is when the recording started.
 		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
 		r.statsPath = path;
-		r.beforeCal = before;
 		if (const CalPass* p = calibrationPass(path, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
 		r.trend = s.trend;
 		r.entryMph = s.entryMph;
 		r.exitMph = s.exitMph;
 		r.accel = s.accel;
 		r.mphIn20ft = s.mphIn20ft;
+		r.measured = { s.speed, s.zoneSeconds, !s.trend.empty(), s.entryMph, s.exitMph, s.mphIn20ft, s.accel };
+		r.thenFt = run.known ? run.scale.of(r.l2r) : 0;
 		r.widthPx = s.lengthPx;
 		rows.push_back(r);
 	}
@@ -823,8 +727,9 @@ void App::loadResultsCsv(const std::string& path) {
 	if (!appendStatsRows(path, fs::path(path).filename().string(), &skipped)) { rows.swap(was); return; }
 	rowsScope = ResultsScope::File;
 	archive_ = archive::Info();
-	sizeRows();
+	dataset_ = dataset::Info();
 	rowsFrom = path;
+	applySets();
 	rowsRuns = 1;
 	selectedRow_ = -1;
 	if (skipped) toast(std::to_string(skipped) + " rows in that file weren't in VST's format and were skipped", c::warn, ICON_WARN);
@@ -846,7 +751,8 @@ void App::showSavedRuns() {
 	rowsScope = ResultsScope::Saved;
 	rowsFrom.clear();
 	archive_ = archive::Info();
-	sizeRows();
+	dataset_ = dataset::Info();
+	applySets();
 	selectedRow_ = -1;
 	if (skipped) toast(std::to_string(skipped) + " rows in the saved runs weren't in VST's format and were skipped", c::warn, ICON_WARN);
 }
@@ -867,7 +773,7 @@ static TrendLook trendLook(const std::string& trend) {
 
 void App::showSessionResults() {
 	rows.clear();
-	const EarlierRuns& earlier = runsBeforeCalibration();
+	std::map<std::string, calsets::RunInfo> runs;   // each run's manifest, read once
 	for (const Vehicle& v : tracker.vehiclesSince(0)) {
 		ResultRow r;
 		r.vehicleId = v.id;
@@ -884,7 +790,6 @@ void App::showSessionResults() {
 		r.time = v.passed();   // empty for recordings without a start time
 		r.widthPx = v.ev.width;
 		r.statsPath = v.statsPath;
-		r.beforeCal = std::find(earlier.csvs.begin(), earlier.csvs.end(), v.statsPath) != earlier.csvs.end();
 		if (const CalPass* p = calibrationPass(v.statsPath, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
 		const vst::SpeedTrend& t = v.ev.trend;
 		if (t.known()) {
@@ -895,23 +800,44 @@ void App::showSessionResults() {
 			r.accel = std::round(t.accelMphPerSec * 10) / 10;
 			r.mphIn20ft = int(t.projectedMph + 0.5);
 		}
+		r.measured = { r.speed, v.ev.zoneSeconds, t.known(), r.entryMph, r.exitMph, r.mphIn20ft, r.accel };
+		// A run still being written has no manifest yet (a video's is written at the end): shown as measured until then.
+		if (!v.statsPath.empty()) {
+			auto it = runs.find(v.statsPath);
+			if (it == runs.end()) it = runs.emplace(v.statsPath, calsets::readRun(v.statsPath)).first;
+			r.thenFt = it->second.known ? it->second.scale.of(r.l2r) : 0;
+		}
 		r.clipPath = v.clipPath;
 		rows.push_back(r);
 	}
 	rowsScope = ResultsScope::Session;
 	rowsFrom.clear();
 	rowsRuns = 0;
-	sizeRows();
 	archive_ = archive::Info();
+	dataset_ = dataset::Info();
+	applySets();
 }
 
 // Each vehicle's length in feet when the calibration gives the scale (session rows, and csv rows from v1.10's LengthPx), and
 // truck-or-bus by that real size: about 24 ft long or more.  A csv row keeps the area test, against the threshold
 // retuneLargeVehicles() set from the same calibration.
+// A row from a calibration set is sized at that set's scale, the same one its speed is re-timed to, so a run measured
+// before a recalibration (or from another view) never shows old-scale speeds beside new-scale sizes: pixels per foot
+// scale with the zone's pixels and inversely with its feet.
 void App::sizeRows() {
 	double ppf = pxPerFtAtLane();
+	const calsets::View now = currentView();
+	const calsets::Scale nowFt = currentScale();
+	const int nowPx = now.lineRight - now.lineLeft;
 	for (ResultRow& r : rows) {
-		r.lengthFt = ppf > 0 && r.widthPx > 0 ? r.widthPx / ppf : 0;
+		double k = 1;
+		if (const calsets::Set* set = setOfRow(r)) {
+			calsets::Scale shown = calsets::shownScale(*set, now, nowFt);
+			int setPx = set->view.lineRight - set->view.lineLeft;
+			if (set->known && shown.valid() && nowFt.valid() && setPx > 0 && nowPx > 0)
+				k = double(setPx) / nowPx * nowFt.of(r.l2r) / shown.of(r.l2r);
+		}
+		r.lengthFt = ppf > 0 && r.widthPx > 0 ? r.widthPx / (ppf * k) : 0;
 		if (r.lengthFt > 0) r.large = r.lengthFt >= kLargeVehicleFt;
 	}
 }
@@ -963,6 +889,11 @@ bool App::openArchive(const std::string& dir) {
 		rows.push_back(r);
 	}
 	archive_ = a;
+	// A published dataset is an archive folder with dataset.json beside archive.json: its badge and layers go on top.
+	dataset_ = dataset::Info();
+	if (dataset::isDataset(a.dir) && !dataset::read(a.dir, dataset_, err)) { toast(err, c::warn, ICON_WARN); dataset_ = dataset::Info(); }
+	setFilter_ = 0;
+	selectedSet_ = 0;
 	rowsScope = ResultsScope::File;   // one dataset; reviewing() tells it apart from a csv
 	rowsFrom = a.dir;
 	rowsRuns = 0;
@@ -990,7 +921,7 @@ Texture* App::fileTexture(const std::string& path) {
 // What "Archive" takes from what Results shows: the stats csvs behind the rows (with their manifests and highlights),
 // every row with this session's snapshot and clip when it has them, the config and calibration history, and the
 // limits and calibration in force, so the archive can be judged and reported on the same way later.
-archive::Request App::archiveRequest(const std::string& name, bool move) {
+archive::Request App::archiveRequest(const std::string& name, bool move, const std::vector<ResultRow>* from) {
 	const Globals& g = cfg.g;
 	archive::Request req;
 	req.dataDir = dataDir();
@@ -1015,7 +946,7 @@ archive::Request App::archiveRequest(const std::string& name, bool move) {
 	req.configFile = cfg.path();
 	if (!cfg.path().empty()) req.historyFiles.push_back((fs::path(cfg.path()).parent_path() / "calibration-history.csv").string());
 	req.historyFiles.push_back((userpaths::configDir() / "calibration-history.csv").string());
-	for (const ResultRow& r : rows) {
+	for (const ResultRow& r : from ? *from : rows) {
 		if (!r.statsPath.empty() && std::find(req.statsCsvs.begin(), req.statsCsvs.end(), r.statsPath) == req.statsCsvs.end())
 			req.statsCsvs.push_back(r.statsPath);
 		archive::Source s;
@@ -1043,6 +974,24 @@ archive::Request App::archiveRequest(const std::string& name, bool move) {
 		Vehicle tv;
 		if (r.vehicleId && tracker.vehicle(r.vehicleId, tv)) { s.snapshot = tv.snapshot; s.clipPath = tv.clipPath; }
 		req.vehicles.push_back(std::move(s));
+	}
+	// The calibration sets of those runs, frozen at the speeds they are archived with: the street report made from the
+	// archive re-times its csvs to these, so it agrees with the archived rows (archiveReportInput).
+	if (!reviewing()) {
+		syncSets();
+		calsets::Store frozen;
+		for (const calsets::Set& set : sets_.sets) {
+			calsets::Set f = set;
+			f.runs.clear();
+			for (const std::string& csv : req.statsCsvs)
+				if (set.has(fs::path(csv).filename().string())) f.runs.push_back(fs::path(csv).filename().string());
+			if (f.runs.empty()) continue;
+			f.scale = calsets::shownScale(set, currentView(), currentScale());
+			if (!f.locked()) { f.state = calsets::State::Locked; f.lockReason = "archived"; f.lockedAt = i.created; }
+			frozen.sets.push_back(f);
+			frozen.nextId = std::max(frozen.nextId, f.id + 1);
+		}
+		if (!frozen.sets.empty()) req.extra.push_back({ "Stats/calibration-sets.json", calsets::dump(frozen) });
 	}
 	return req;
 }
@@ -1117,15 +1066,33 @@ void App::openMenu() {
 		ImGui::PopStyleColor();
 		ImGui::PopID();
 	}
+	// Published datasets (Dataset.h): the badge's words beside each, so a tainted one is seen before it is opened.
+	sectionLabel("PUBLISHED");
+	if (publishedList_.empty()) dimText("None yet. Publish, in the calibration set bar, freezes a locked set for others to check.");
+	for (size_t i = 0; i < publishedList_.size(); i++) {
+		const dataset::Info& d = publishedList_[i];
+		ImGui::PushID(int(1000 + i));
+		std::string label = std::string(ICON_CHECK_CIRCLE "  ") + (d.name.empty() ? d.id : d.name);
+		if (ImGui::Selectable(label.c_str(), dataset_.dir == d.dir)) { openArchive(d.dir); ImGui::CloseCurrentPopup(); }
+		ImGui::SameLine(0, px(16));
+		dataset::Verdict v = d.status();
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(v == dataset::Verdict::Tainted ? c::bad : v == dataset::Verdict::Review ? c::warn
+			: v == dataset::Verdict::Accurate ? c::ok : c::dim));
+		std::string detail = std::to_string(d.summary.cars) + " vehicles · published " + d.published.substr(0, std::min<size_t>(10, d.published.size()))
+			+ " · " + dataset::verdictLabel(v);
+		ImGui::TextUnformatted(detail.c_str());
+		ImGui::PopStyleColor();
+		ImGui::PopID();
+	}
 	ImGui::Separator();
 	if (ImGui::Selectable(ICON_FILE_CSV "  A stats csv…")) {
 		ImGui::CloseCurrentPopup();
 		auto r = pfd::open_file("Open stats csv", (fs::path(dataDir()) / "Stats").string(), { "Stats csv", "*.csv", "All files", "*" }).result();
 		if (!r.empty()) loadResultsCsv(r[0]);
 	}
-	if (ImGui::Selectable(ICON_FOLDER_OPEN "  An archive folder somewhere else…")) {
+	if (ImGui::Selectable(ICON_FOLDER_OPEN "  An archive or published folder somewhere else…")) {
 		ImGui::CloseCurrentPopup();
-		std::string r = pfd::select_folder("Open an archive folder", (fs::path(dataDir()) / "Archive").string()).result();
+		std::string r = pfd::select_folder("Open an archive or published dataset folder", (fs::path(dataDir()) / "Archive").string()).result();
 		if (!r.empty()) openArchive(r);
 	}
 	ImGui::EndPopup();
@@ -1134,8 +1101,10 @@ void App::openMenu() {
 // Over an open archive: what it is, that it's read-only, and the two things to do with it besides looking.
 void App::reviewBanner(float width) {
 	const archive::Info& a = archive_;
-	beginCard("review", ICON_ARCHIVE, a.name.empty() ? "Archive" : a.name.c_str(), ImVec2(width, 0));
-	std::string what = "Read-only · archived " + a.created.substr(0, std::min<size_t>(10, a.created.size())) + " from "
+	// A published dataset (dataset.json beside archive.json) says "published", with its own icon; the rest is shared.
+	const bool isPub = !dataset_.dir.empty();
+	beginCard("review", isPub ? ICON_PUBLISH : ICON_ARCHIVE, a.name.empty() ? (isPub ? "Published dataset" : "Archive") : a.name.c_str(), ImVec2(width, 0));
+	std::string what = std::string(isPub ? "Read-only · published " : "Read-only · archived ") + a.created.substr(0, std::min<size_t>(10, a.created.size())) + " from "
 		+ (a.from == "This session" ? std::string("this session") : a.from) + " · judged at " + std::to_string(a.speedLimit) + " mph";
 	if (!a.siteName.empty() && a.siteName != report::Settings().siteName) what = a.siteName + " · " + what;
 	if (a.moved) what += " · moved out of your data";
@@ -1143,8 +1112,28 @@ void App::reviewBanner(float width) {
 	if (a.moved) {
 		if (ghostButton(ICON_UNDO "  Put back into my data")) {
 			std::string msg;
+			syncSets(true);   // sets_ as they stand before the runs come back
 			if (archive::restore(a.dir, dataDir(), msg)) {
 				archive_.moved = false;
+				// Its runs come back in the calibration sets they were archived in, locked at the speeds they had, rather
+				// than being filed afresh (which could re-time them to today's calibration).
+				for (calsets::Set set : calsets::load((fs::path(a.dir) / "Stats").string()).sets) {
+					bool filed = false;
+					for (const std::string& r : set.runs) filed |= sets_.ofRun(r) != nullptr;
+					if (filed || set.runs.empty()) continue;
+					// Its old number when that is free (numbers are never reused, so it is this set coming home, and the
+					// archive named "Set 2, ..." puts back Set 2); otherwise a new one.
+					if (set.id <= 0 || sets_.find(set.id)) set.id = sets_.nextId;
+					sets_.nextId = std::max(sets_.nextId, set.id + 1);
+					set.state = calsets::State::Locked;
+					set.published.clear();
+					sets_.sets.push_back(set);
+				}
+				std::sort(sets_.sets.begin(), sets_.sets.end(), [](const calsets::Set& x, const calsets::Set& y) { return x.id < y.id; });
+				std::string err;
+				calsets::save(setsFor_, sets_, err);
+				syncSets(true);
+				applySetsDue_ = true;
 				toast("Put back: the street report and Open count these runs again. The archive stays as it was.", c::ok, ICON_UNDO);
 				if (!msg.empty()) toast(msg, c::warn, ICON_WARN);
 			}
@@ -1156,7 +1145,7 @@ void App::reviewBanner(float width) {
 	if (ghostButton(ICON_EXTERNAL "  Open in browser")) openWithSystem((fs::path(a.dir) / "review.html").string());
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("review.html: the same table, snapshots and clips in any web browser, no install needed.");
 	ImGui::SameLine();
-	if (ghostButton(ICON_XMARK "  Close archive")) showSessionResults();
+	if (ghostButton(dataset_.dir.empty() ? ICON_XMARK "  Close archive" : ICON_XMARK "  Close")) showSessionResults();
 	endCard();
 }
 
@@ -1210,8 +1199,8 @@ void App::pumpTracker() {
 		if (rowsScope == ResultsScope::Session) showSessionResults();
 	}
 	if (restartPending_) {
-		// A calibration was applied during a live run: stop it (its csv keeps the old calibration and is now one of
-		// runsBeforeCalibration()) and start a fresh one with the new value, staying on the page the user is on.
+		// A calibration was applied during a live run: stop it (its csv keeps the calibration it was measured with, which
+		// its calibration set re-times, CalSets.h) and start a fresh one with the new value, staying on the page the user is on.
 		restartPending_ = false;
 		if (tracker.running() && tracker.progress().live) {
 			Page was = page;
@@ -4265,7 +4254,7 @@ void App::pageResults() {
 	ImGui::SetNextItemWidth(px(180));
 	ImGui::InputTextWithHint("##search", ICON_SEARCH "  min speed or source", searchBuf_, sizeof searchBuf_);
 	ImGui::SameLine(0, px(16));
-	if (ghostButton(ICON_FOLDER_OPEN " Open")) { archives_ = archive::list(dataDir()); ImGui::OpenPopup("openmenu"); }
+	if (ghostButton(ICON_FOLDER_OPEN " Open")) { archives_ = archive::list(dataDir()); publishedList_ = dataset::list(dataDir()); ImGui::OpenPopup("openmenu"); }
 	openMenu();
 	ImGui::SameLine();
 	// Archive what's on screen.  Not an archive (it is one already), not nothing, and not while a run is still writing
@@ -4304,6 +4293,7 @@ void App::pageResults() {
 	if (primaryButton(ICON_REPORT "  Make report")) { reportForm_.saved.clear(); reportForm_.error.clear(); ImGui::OpenPopup("Street report"); }
 	reportDialog();
 	if (reviewing()) reviewBanner(avail);
+	if (!dataset_.dir.empty()) datasetCover(avail);
 	const int limit = resultsLimit(), wayOver = resultsWayOver();
 
 	// Filtered view.
@@ -4317,11 +4307,12 @@ void App::pageResults() {
 		if (resultsFilter_ == 3 && !r.wrongWay) continue;
 		if (minSpeed > 0 && r.speed < minSpeed) continue;
 		if (!search.empty() && minSpeed == 0 && r.source.find(search) == std::string::npos) continue;
+		if (setFilter_ && r.setId != setFilter_) continue;   // the set bar's "Only this set"
 		shown.push_back(&r);
 	}
 	int ownDrives = int(std::count_if(rows.begin(), rows.end(), [](const ResultRow& r) { return r.calKind != 0; }));
 	// The menu beside it names the source, so the line just counts.
-	std::string from = reviewing() ? std::string("Archived") : rowsScope == ResultsScope::Saved ? std::to_string(rowsRuns) + (rowsRuns == 1 ? " run" : " runs")
+	std::string from = reviewing() ? std::string(dataset_.dir.empty() ? "Archived" : "Published") : rowsScope == ResultsScope::Saved ? std::to_string(rowsRuns) + (rowsRuns == 1 ? " run" : " runs")
 		: rowsScope == ResultsScope::File ? std::string("1 run") : std::string("Measured since Studio opened");
 	// Where the rows come from, on the line under the toolbar (the toolbar has no room for it at 1366-1480 px with
 	// Open and Archive): this session, all saved runs, or one saved run (the newest dozen, by name and time).  The menu
@@ -4351,36 +4342,11 @@ void App::pageResults() {
 	dimText("%s  ·  %zu of %zu vehicles%s", from.c_str(), shown.size(), rows.size(),
 		!ownDrives ? "" : ownDrives == 1 ? "  ·  1 is your own calibration drive, left out of the totals" : ("  ·  " + std::to_string(ownDrives)
 			+ " are your own calibration drives, left out of the totals").c_str());
-	// Runs measured with an earlier calibration: say how many, and offer to move them out of the way (undoable).
-	{
-		// Not while reviewing an archive: its runs are judged by the calibration they were archived with.
-		static const EarlierRuns none;
-		const EarlierRuns& e = reviewing() ? none : runsBeforeCalibration();
-		// A calibration applied while these rows are on screen moves their run into this list: keep the marks current.
-		if (rowsScope != ResultsScope::File)
-			for (ResultRow& r : rows) r.beforeCal = !r.statsPath.empty() && std::find(e.csvs.begin(), e.csvs.end(), r.statsPath) != e.csvs.end();
-		if (!e.csvs.empty()) {
-			ImGui::AlignTextToFramePadding();
-			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
-			ImGui::TextUnformatted(ICON_CLOCK);
-			ImGui::PopStyleColor();
-			ImGui::SameLine();
-			ImGui::Text("%d %s (%d %s) measured before your latest calibration.", int(e.csvs.size()), e.csvs.size() == 1 ? "run" : "runs",
-				e.vehicles, e.vehicles == 1 ? "vehicle" : "vehicles");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Their speeds came from the old calibration, so they'd mix two scales in the totals and the street report.\n"
-					"Setting them aside moves their files to Stats/Before calibration. Nothing is deleted, and you can put them back.");
-			ImGui::SameLine();
-			if (ghostButton(ICON_FOLDER_OPEN "  Set them aside")) setAsideEarlierRuns();
-		}
-		else if (!setAside_.empty() && !reviewing()) {
-			ImGui::AlignTextToFramePadding();
-			dimText(ICON_CHECK "  Runs from before your latest calibration are in Stats/Before calibration.");
-			ImGui::SameLine();
-			if (ghostButton(ICON_UNDO "  Put them back")) putBackRuns();
-		}
-	}
-
+	// Calibration sets: which runs share a calibration, each set's state, and what can be done with it (Sets.cpp).
+	setsBar(avail);
+	publishDialog();
+	removeDialog();
+	recheckDialog();
 
 	if (rows.empty() && reviewing()) {
 		ImGui::Dummy(ImVec2(0, px(20)));
@@ -4391,13 +4357,7 @@ void App::pageResults() {
 		ImGui::Dummy(ImVec2(0, px(40)));
 		// This session is empty but earlier runs are saved: say so first, so it never reads as lost data.
 		size_t saved = rowsScope == ResultsScope::Saved || screenshotMode ? 0 : resume::savedRuns(dataDir()).size();
-		const bool freshStart = !setAside_.empty() && !saved && !reviewing();
-		if (freshStart) {
-			beginCard("noresults", ICON_CHECK_CIRCLE, "A fresh start with your new calibration", ImVec2(avail, 0));
-			dimText("The runs measured before it are set aside in Stats/Before calibration (Put them back, above, undoes it), so from here "
-				"on every speed is on the new scale. Start tracking to fill this page again.");
-		}
-		else beginCard("noresults", ICON_CHART, saved ? "Nothing measured this session yet" : "Nothing here yet", ImVec2(avail, 0));
+		beginCard("noresults", ICON_CHART, saved ? "Nothing measured this session yet" : "Nothing here yet", ImVec2(avail, 0));
 		if (saved) {
 			dimText("Your earlier results are safe: %zu saved %s in the data folder. Every run is kept from one launch to the next.",
 				saved, saved == 1 ? "run" : "runs");
@@ -4405,7 +4365,7 @@ void App::pageResults() {
 			if (primaryButton(show.c_str())) showSavedRuns();
 			ImGui::SameLine();
 		}
-		else if (!freshStart)
+		else
 			dimText(rowsScope == ResultsScope::Saved
 				? "No saved runs yet. Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction "
 				  "and a snapshot, and stays here the next time you open VST Studio."
@@ -4508,17 +4468,32 @@ void App::pageResults() {
 				int idx = int(&r - rows.data());
 				ImGui::TableNextRow(0, px(30));
 				ImGui::TableNextColumn();
+				setStripe(r, px(30));
 				ImGui::PushID(idx);
 				char num[16];
 				snprintf(num, sizeof num, "%d", idx + 1);
 				ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, .5f));
-				if (ImGui::Selectable(num, selectedRow_ == idx, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, lineH))) selectedRow_ = idx;
+				if (ImGui::Selectable(num, selectedRow_ == idx, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, lineH))) {
+					selectedRow_ = idx;
+					if (r.setId) selectedSet_ = r.setId;   // the set bar follows the picked car
+				}
 				ImGui::PopStyleVar();
 				ImGui::PopID();
 				ImGui::TableNextColumn();
 				std::string s = std::to_string(r.speed) + " mph";
 				ImU32 col = speedColor(r.speed, limit, wayOver);
 				linePill(s.c_str(), c::bg0, col, fonts.strong);
+				if (r.adjusted) {
+					// Re-timed to its set's newer calibration: a small mark, the measured value on hover.
+					// Drawn beside the pill, centred on it, without adding a layout item: any item here makes the row taller
+					// than its neighbours and breaks the set stripe down the left edge.
+					ImVec2 pmin = ImGui::GetItemRectMin(), pmax = ImGui::GetItemRectMax();
+					ImVec2 sz = ImGui::CalcTextSize(ICON_RULER);
+					ImVec2 at(pmax.x + px(4), (pmin.y + pmax.y - sz.y) / 2);
+					ImGui::GetWindowDrawList()->AddText(at, c::dim, ICON_RULER);
+					if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(at, at + sz))
+						ImGui::SetTooltip("Adjusted to your newer calibration: measured %d mph with the one it was recorded with", r.measured.speed);
+				}
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				ImGui::PushStyleColor(ImGuiCol_Text, v4(r.l2r ? c::l2r : c::r2l));
@@ -4560,14 +4535,6 @@ void App::pageResults() {
 				else if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
 				else ImGui::Text("%d", r.area);
 				ImGui::TableNextColumn();
-				// First in the cell, as a long file name is clipped at the column's edge.
-				if (r.beforeCal) {
-					float y = ImGui::GetCursorPosY();   // linePill moves down to centre itself; the text after starts from the row's top again
-					linePill(ICON_CLOCK " old calibration", c::text, c::bg3);
-					if (ImGui::IsItemHovered()) ImGui::SetTooltip("Measured before your latest calibration, so on the old scale");
-					ImGui::SameLine();
-					ImGui::SetCursorPosY(y);
-				}
 				ImGui::AlignTextToFramePadding();
 				ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
 				ImGui::TextUnformatted(r.source.c_str());
@@ -4658,9 +4625,14 @@ void App::pageResults() {
 			dimText("Your own %s drive: left out of the totals, the charts and the street report.", r.calKind == 1 ? "calibration" : "check");
 			ImGui::PopTextWrapPos();
 		}
-		if (r.beforeCal) {
+		if (const calsets::Set* set = setOfRow(r)) {
+			// Which calibration this speed is at, in words; the stripe's colour ties it to the set bar above the table.
 			ImGui::PushTextWrapPos(0);
-			dimText("Measured with the calibration you had before the latest one, so its speed is on the old scale.");
+			if (!set->known) dimText("From before VST kept each run's calibration, so this speed is shown as it was measured.");
+			else if (r.adjusted)
+				dimText("Measured %d mph with the calibration it was recorded with; %d mph with %s.", r.measured.speed, r.speed,
+					set->locked() ? "the calibration its set is locked to" : "your latest calibration");
+			else dimText("Set %d%s.", set->id, set->locked() ? ", locked to the calibration it was measured with" : ", at your latest calibration");
 			ImGui::PopTextWrapPos();
 		}
 		ImGui::Dummy(ImVec2(0, px(4)));
@@ -4705,11 +4677,13 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		int maxC = std::max(1, *std::max_element(counts.begin(), counts.end()));
 		float bw = sz.x / bins;
 		int hoverBin = -1;
+		// Only when nothing covers the card: IsMouseHoveringRect alone also fires under an open dialog.
+		const bool canHover = ImGui::IsWindowHovered();
 		for (int i = 0; i < bins; i++) {
 			int mph = lo + i * 2;
 			float bh = (sz.y - px(4)) * counts[i] / maxC;
 			ImVec2 a(p.x + i * bw + 1, p.y + sz.y - bh), b(p.x + (i + 1) * bw - 1, p.y + sz.y);
-			bool hov = ImGui::IsMouseHoveringRect(ImVec2(a.x, p.y), b);
+			bool hov = canHover && ImGui::IsMouseHoveringRect(ImVec2(a.x, p.y), b);
 			if (hov) hoverBin = i;
 			if (counts[i]) dl->AddRectFilled(a, b, alpha(speedColor(mph, limit, wayOver), hov ? 1.f : .8f), px(3), ImDrawFlags_RoundCornersTop);
 		}
@@ -4782,6 +4756,12 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 	in.current.minLoggedSpeed = g.minLoggedSpeed;
 	calibrationPass("", 0);   // load calibration-passes.csv
 	for (const auto& kv : calPasses_) in.calibrationPasses.insert(kv.first);
+	// Each run at its calibration set's zone feet, the same speeds Results shows (CalSets.h).
+	syncSets(true);
+	for (const calsets::Set& s : sets_.sets) {
+		calsets::Scale ft = calsets::shownScale(s, currentView(), currentScale());
+		if (s.known && ft.valid()) for (const std::string& r : s.runs) in.zoneFt[r] = { ft.l2r, ft.r2l };
+	}
 	if (!snapshots) return in;
 	// Example frames exist only for this session's vehicles (kept in memory).  Take the six fastest in the date range,
 	// each made safe by blurForReport before it ever reaches the report.
@@ -4807,6 +4787,10 @@ report::Input App::archiveReportInput(bool snapshots, const std::string& from, c
 	in.dataDir = a.dir;
 	in.configPath = a.configPath;   // history rows are keyed on the original path
 	in.historyFiles.push_back((fs::path(a.dir) / "calibration-history.csv").string());
+	// The calibration sets it was archived with (Stats/calibration-sets.json), so the report re-times its runs the way
+	// Results showed them when they were archived.
+	for (const calsets::Set& s : calsets::load((fs::path(a.dir) / "Stats").string()).sets)
+		if (s.known && s.scale.valid()) for (const std::string& r : s.runs) in.zoneFt[r] = { s.scale.l2r, s.scale.r2l };
 	in.current.l2rCompass = a.cal.l2rCompass;
 	in.current.r2lCompass = a.cal.r2lCompass;
 	in.current.legal = a.cal.legal;
