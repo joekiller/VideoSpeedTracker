@@ -17,7 +17,7 @@
 
 static int failures = 0, checks = 0;
 #define CHECK(cond) do { checks++; if (!(cond)) { failures++; std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); } } while (0)
-#define NEAR(a, b, tol) CHECK(std::fabs((a) - (b)) <= (tol))
+#define CHECK_NEAR(a, b, tol) CHECK(std::fabs((a) - (b)) <= (tol))
 
 static const double kPi = 3.14159265358979323846;
 
@@ -86,7 +86,7 @@ static void cameraModelTests() {
 		double xV = vanishingFrameX(c, 1280);
 		Pixel horizon = projectPoint(c, 1280, 720, yaw > 0 ? 1e11 : -1e11, 12 - 1.1, 30);   // converges as 1/X
 		CHECK(horizon.ok);
-		NEAR(horizon.u, xV, 1e-3);
+		CHECK_NEAR(horizon.u, xV, 1e-3);
 		CHECK(yaw > 0 ? xV > 640 : xV < 640);
 		// The same point as where two street-parallel lines cross in the picture (the street edge's job).
 		auto lineOf = [&](double Y, double Z) {
@@ -94,7 +94,7 @@ static void cameraModelTests() {
 			double slope = (b.v - a.v) / (b.u - a.u);
 			return Line{ a.v - slope * a.u, a.v + slope * (1280 - a.u), 1280 };
 		};
-		NEAR(crossingX(lineOf(10.9, 30), lineOf(12, 27)), xV, 1e-6 * std::fabs(xV) + 1e-6);
+		CHECK_NEAR(crossingX(lineOf(10.9, 30), lineOf(12, 27)), xV, 1e-6 * std::fabs(xV) + 1e-6);
 	}
 
 	// projectPoint: the lane straight down the camera's axis lands at the centre; the test's own projector agrees
@@ -104,8 +104,8 @@ static void cameraModelTests() {
 		double X = 30 * std::tan(yaw * kPi / 180);
 		Pixel p = projectPoint(c, 1280, 720, X, 12, 30);
 		CHECK(p.ok);
-		NEAR(p.u, 640, 1e-9);
-		NEAR(p.v, 360, 1e-9);
+		CHECK_NEAR(p.u, 640, 1e-9);
+		CHECK_NEAR(p.v, 360, 1e-9);
 		Cam ref;
 		ref.f = 640 / std::tan(35 * kPi / 180);
 		ref.yaw = yaw * kPi / 180;
@@ -114,8 +114,8 @@ static void cameraModelTests() {
 		double u, v;
 		ref.project(7, 10.9, u, v);
 		Pixel q = projectPoint(c, 1280, 720, 7, 10.9, 30);
-		NEAR(q.u, u, 1e-9);
-		NEAR(q.v, v, 1e-9);
+		CHECK_NEAR(q.u, u, 1e-9);
+		CHECK_NEAR(q.v, v, 1e-9);
 	}
 	CHECK(!projectPoint({ 30, 12, 60, 70 }, 1280, 720, -200, 12, 30).ok);   // turned right, a point far to the left
 	CHECK(!projectPoint({ 0, 12, 20, 70 }, 1280, 720, 0, 12, 30).ok);
@@ -129,13 +129,13 @@ static void cameraModelTests() {
 		for (double X : { -20.0, -3.0, 0.0, 9.0, 25.0 }) {
 			Pixel p = projectPoint(c, 1280, 720, X, 10.9, 27);
 			if (!p.ok) continue;
-			NEAR(streetXAt(c, 1280, 720, p.u, 10.9, 27), X, 1e-7);
+			CHECK_NEAR(streetXAt(c, 1280, 720, p.u, 10.9, 27), X, 1e-7);
 		}
 	}
 	{
 		CameraSetup c{ 30, 12, 20, 70 };
 		double u = 900, X = streetXAt(c, 1280, 720, u, 10.9, 27);
-		NEAR(X, bisectX(c, u, 10.9, 27, -100, 200), 1e-6);
+		CHECK_NEAR(X, bisectX(c, u, 10.9, 27, -100, 200), 1e-6);
 		double xV = vanishingFrameX(c, 1280);
 		CHECK(std::isnan(streetXAt(c, 1280, 720, xV, 10.9, 30)));        // the vanishing point: no single X
 		CHECK(std::isnan(streetXAt(c, 1280, 720, xV + 50, 10.9, 30)));   // past it: only points behind the camera
@@ -150,14 +150,14 @@ static void cameraModelTests() {
 		CameraSetup c{ 30, 12, 0, 70 };
 		double Y, Z;
 		CHECK(hubcapLine(c, car, Y, Z));
-		NEAR(Y, 12 - 1.1, 1e-12);
-		NEAR(Z, 27, 1e-12);
+		CHECK_NEAR(Y, 12 - 1.1, 1e-12);
+		CHECK_NEAR(Z, 27, 1e-12);
 		double pitch = std::atan(12.0 / 30), f = 640 / std::tan(35 * kPi / 180);
 		double depth = std::sin(pitch) * Y + std::cos(pitch) * Z;
-		NEAR(zoneFeet(c, 1280, 720, 350, 909), 559 * depth / f, 1e-9);
-		NEAR(zoneFeet(c, 1280, 720, 909, 350), 559 * depth / f, 1e-9);   // either order
+		CHECK_NEAR(zoneFeet(c, 1280, 720, 350, 909), 559 * depth / f, 1e-9);
+		CHECK_NEAR(zoneFeet(c, 1280, 720, 909, 350), 559 * depth / f, 1e-9);   // either order
 		CameraSetup a{ 30, 12, 25, 70 };
-		NEAR(zoneFeet(a, 1280, 720, 350, 909), bisectX(a, 909, Y, Z, -100, 300) - bisectX(a, 350, Y, Z, -100, 300), 1e-6);
+		CHECK_NEAR(zoneFeet(a, 1280, 720, 350, 909), bisectX(a, 909, Y, Z, -100, 300) - bisectX(a, 350, Y, Z, -100, 300), 1e-6);
 		CHECK(!hubcapLine({ 3.5, 12, 0, 70 }, car, Y, Z));                   // near side half a foot from the wall
 		CHECK(std::isnan(zoneFeet({ 3.5, 12, 0, 70 }, 1280, 720, 350, 909)));
 		CHECK(std::isnan(zoneFeet(a, 1280, 720, 350, vanishingFrameX(a, 1280) + 10)));
@@ -176,14 +176,14 @@ static void cameraModelTests() {
 		// is the same point lowered by the hubcap height, with the same shift.
 		double front = streetXAt(c, 1280, 720, 600, 10.9, 27);
 		Pixel hub = projectPoint(c, 1280, 720, front, 10.9, 27), bottom = projectPoint(c, 1280, 720, front, 12, 27);
-		NEAR(hub.u, 600, 1e-9);
-		NEAR(g.corner[4].u, bottom.u, 1e-9);
-		NEAR(g.corner[4].v, bottom.v + (400 - hub.v), 1e-9);
+		CHECK_NEAR(hub.u, 600, 1e-9);
+		CHECK_NEAR(g.corner[4].u, bottom.u, 1e-9);
+		CHECK_NEAR(g.corner[4].v, bottom.v + (400 - hub.v), 1e-9);
 		CHECK(g.corner[4].v > 400);
 		CHECK(g.corner[0].u < g.corner[4].u);                  // driving right: the back is to the left
 		double pitch = std::atan(12.0 / 30), f = 640 / std::tan(35 * kPi / 180);
 		double depth = std::sin(pitch) * 12 + std::cos(pitch) * 27;   // near bottom edge
-		NEAR(g.corner[4].u - g.corner[0].u, f * 15.5 / depth, 1e-9);
+		CHECK_NEAR(g.corner[4].u - g.corner[0].u, f * 15.5 / depth, 1e-9);
 		CHECK(g.corner[1].v < g.corner[0].v);                  // the roof is above the wheels
 		CHECK(g.corner[2].v < g.corner[0].v);                  // the far side is higher up the picture (farther away)
 		Ghost left = ghostCar(c, 1280, 720, 600, 400, false);
@@ -203,7 +203,7 @@ static void cameraModelTests() {
 			double s0 = (g.corner[4].v - g.corner[0].v) / (g.corner[4].u - g.corner[0].u);
 			base.yLeft = g.corner[0].v - s0 * g.corner[0].u;
 			base.yRight = base.yLeft + s0 * 1280;
-			if (k) NEAR(crossingX(edge, base), xV, 1e-6 * std::fabs(xV));
+			if (k) CHECK_NEAR(crossingX(edge, base), xV, 1e-6 * std::fabs(xV));
 		}
 	}
 	CHECK(!ghostCar({ 3.5, 12, 0, 70 }, 1280, 720, 640, 400, true).ok);                                    // lane too close
@@ -225,30 +225,30 @@ static void cameraModelTests() {
 		Line lane{ 100, 80, 1000 };
 		EdgeResult e = edgeThrough(lane, 2500, 40, 200);
 		CHECK(e.ok);
-		NEAR(e.yLeft, 140, 1e-12);
-		NEAR(crossingX(lane, { e.yLeft, e.yRight, 1000 }), 2500, 1e-6);
+		CHECK_NEAR(e.yLeft, 140, 1e-12);
+		CHECK_NEAR(crossingX(lane, { e.yLeft, e.yRight, 1000 }), 2500, 1e-6);
 		e = edgeThrough(lane, -1800, 40, 200);                     // vanishing to the left of the box
 		CHECK(e.ok);
-		NEAR(crossingX(lane, { e.yLeft, e.yRight, 1000 }), -1800, 1e-6);
+		CHECK_NEAR(crossingX(lane, { e.yLeft, e.yRight, 1000 }), -1800, 1e-6);
 		e = edgeThrough(lane, nan, 40, 200);                       // square camera: parallel, 40 below
 		CHECK(e.ok);
-		NEAR(e.yLeft, 140, 1e-12);
-		NEAR(e.yRight, 120, 1e-12);
+		CHECK_NEAR(e.yLeft, 140, 1e-12);
+		CHECK_NEAR(e.yRight, 120, 1e-12);
 		e = edgeThrough({ 180, 170, 1000 }, nan, 40, 200);         // too near the bottom: above
 		CHECK(e.ok);
-		NEAR(e.yLeft, 140, 1e-12);
+		CHECK_NEAR(e.yLeft, 140, 1e-12);
 		e = edgeThrough({ 25, 25, 1000 }, nan, 40, 50);            // neither fits at 40: 20 below
 		CHECK(e.ok);
-		NEAR(e.yLeft, 45, 1e-12);
+		CHECK_NEAR(e.yLeft, 45, 1e-12);
 		e = edgeThrough({ 25, 25, 1000 }, nan, -40, 50);           // the sign of offset doesn't matter
 		CHECK(e.ok);
-		NEAR(e.yLeft, 45, 1e-12);
+		CHECK_NEAR(e.yLeft, 45, 1e-12);
 		e = edgeThrough({ 180, 5, 1000 }, nan, 40, 200);           // below: left end off the box; above: right end
 		CHECK(e.ok);                                               // off the top; so 20 below
-		NEAR(e.yLeft, 200, 1e-12);
+		CHECK_NEAR(e.yLeft, 200, 1e-12);
 		e = edgeThrough({ 5, 180, 1000 }, nan, 40, 200);           // below: right end off the bottom; above: left end
 		CHECK(e.ok);                                               // off the top; 20 below
-		NEAR(e.yRight, 200, 1e-12);
+		CHECK_NEAR(e.yRight, 200, 1e-12);
 		CHECK(!edgeThrough({ 1, 1, 1000 }, nan, 40, 1).ok);        // a one-row box: nothing fits
 		CHECK(!edgeThrough(lane, .5, 40, 200).ok);                 // on the box's left edge
 		CHECK(!edgeThrough(lane, -.5, 40, 200).ok);
@@ -260,12 +260,12 @@ int main() {
 	using namespace perspective;
 
 	// No vanishing point: the old linear map.
-	NEAR(zoneFraction(350, 350, 909, NAN), 0, 1e-12);
-	NEAR(zoneFraction(909, 350, 909, NAN), 1, 1e-12);
-	NEAR(zoneFraction(629.5, 350, 909, NAN), .5, 1e-12);
-	NEAR(depthRatio(350, 909, NAN), 1, 1e-12);
+	CHECK_NEAR(zoneFraction(350, 350, 909, NAN), 0, 1e-12);
+	CHECK_NEAR(zoneFraction(909, 350, 909, NAN), 1, 1e-12);
+	CHECK_NEAR(zoneFraction(629.5, 350, 909, NAN), .5, 1e-12);
+	CHECK_NEAR(depthRatio(350, 909, NAN), 1, 1e-12);
 	CHECK(std::isnan(crossingX({ 100, 120, 1000 }, { 150, 170, 1000 })));  // parallel
-	NEAR(crossingX({ 100, 100, 1000 }, { 200, 150, 1000 }), 2000, 1e-9);     // close in 50 px per 1000: meet at 2000
+	CHECK_NEAR(crossingX({ 100, 100, 1000 }, { 200, 150, 1000 }), 2000, 1e-9);     // close in 50 px per 1000: meet at 2000
 
 	// A street seen at an angle: equal ground steps must give equal zoneFraction steps, and depthRatio must be the true
 	// ratio of distances along the camera axis at the two speed lines.
@@ -317,24 +317,24 @@ int main() {
 			return sp * (camH - 2) + cp * z1;
 		};
 		double dLeft = depth(leftToRight ? -8 : 8), dRight = depth(leftToRight ? 8 : -8);
-		NEAR(depthRatio(xL, xR, xV), dRight / dLeft, 1e-4);
+		CHECK_NEAR(depthRatio(xL, xR, xV), dRight / dLeft, 1e-4);
 	}
 
 	// Globals: a level lane line is what it always was.
 	Globals g;
 	CHECK(!g.laneTilted(true) && !g.laneTilted(false));
 	CHECK(g.laneBottom(false) == g.R2LStreetY);
-	NEAR(g.lane(true).at(500), g.L2RStreetY, 1e-12);
+	CHECK_NEAR(g.lane(true).at(500), g.L2RStreetY, 1e-12);
 	CHECK(std::isnan(g.vanishingX(true)));
-	NEAR(g.zoneFraction(true, g.speedLineLeft), 0, 1e-12);
-	NEAR(g.zoneFraction(true, g.speedLineRight), 1, 1e-12);
+	CHECK_NEAR(g.zoneFraction(true, g.speedLineLeft), 0, 1e-12);
+	CHECK_NEAR(g.zoneFraction(true, g.speedLineRight), 1, 1e-12);
 	CHECK(g.problems().empty());
 
 	// Angled: R2L from 122 at the left edge to 100 at the right.
 	g.R2LStreetYRight = 100;
 	CHECK(g.laneTilted(false) && !g.laneTilted(true));
 	CHECK(g.laneBottom(false) == 122);
-	NEAR(g.lane(false).at(g.AnalysisBoxWidth / 2.0), 111, 1e-9);
+	CHECK_NEAR(g.lane(false).at(g.AnalysisBoxWidth / 2.0), 111, 1e-9);
 	CHECK(g.problems().empty());
 	g.R2LStreetYRight = g.AnalysisBoxHeight + 1;
 	CHECK(!g.problems().empty());
