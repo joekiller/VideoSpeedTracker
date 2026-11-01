@@ -44,7 +44,6 @@ struct Vehicle {
 	const std::string& passed() const { return live ? time : recorded; }
 	cv::Mat snapshot;           // BGR crop around the vehicle at the end speed line
 	std::string clipPath;       // short mp4 of the analysis box, empty if none
-	std::string statsPath;      // the stats csv this vehicle's row went to
 };
 
 // Session totals.  vehicles are the ones logged (timed, a clean track, at least minLoggedSpeed: a csv row each); the rest
@@ -72,7 +71,6 @@ public:
 	};
 	~Tracker();
 	void start(const std::vector<Job>& jobs, const Options& opt);
-	static std::string statsPathFor(const std::string& dataDir, const std::string& input);
 	void stop();
 	void setPaused(bool p) { paused_ = p; }
 	bool paused() const { return paused_; }
@@ -108,8 +106,6 @@ public:
 	int lastVehicleId();
 	Counts counts();
 	void clearVehicles();
-	// Drops these vehicles from the session (Results' "remove the passes before the calibration").
-	void removeVehicles(const std::vector<int>& ids);
 	std::vector<std::string> logTail(size_t n);
 	std::string lastStatsPath();
 

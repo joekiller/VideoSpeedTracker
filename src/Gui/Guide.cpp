@@ -507,6 +507,7 @@ void App::syncPlanFromCalibration(bool announce) {
 	prefs.planCalSig = sig;
 	planSync();   // pick up a draft kept over a restart before the saved plan moves under it
 	retuneLargeVehicles();
+	sizeRows();
 	double wasFt = plan::coverAt(prefs.planDist, prefs.planHfov) * plan::kFt;
 	plan::Inputs in = planInputs();
 	// A calibration measures how wide the picture is at the lane.  That is distance and lens together (cover = 2 d
@@ -561,7 +562,7 @@ void App::setMeasuredDistance(double distM, const char* why) {
 // A truck or bus is told apart by its size on the picture (largeVehicleArea, in the engine's units: box pixels / 300 in
 // the 1280-wide frame).  That only means something at one distance, so once a calibration says how many pixels a foot is
 // at the lane, the threshold is set to a real size: a side-on box of about 190 sq ft (a box truck is about 25 x 10 ft,
-// a bus 40 x 10; a big pickup with its shadow is about 20 x 8).  Results shows sizes in square feet the same way.
+// a bus 40 x 10; a big pickup with its shadow is about 20 x 8).  Results shows each vehicle's length in feet the same way (sizeRows).
 double App::pxPerFtAtLane() {
 	plan::Measured m;
 	std::string how;

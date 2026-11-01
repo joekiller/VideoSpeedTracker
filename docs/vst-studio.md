@@ -72,9 +72,9 @@ the picture. The search and the map pictures come from OpenStreetMap's servers; 
   length, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
   measures the whole picture. Step 2 updates by itself after each new calibration (a toast says so), and a number
   typed afterwards stays until the next one. On a one-way street the legal direction's lane is used; on a two-way
-  street, the mean of the two. When the distance to the lane came from you (typed, the map, or **To the lane** on the ghost car in
-  step 4), a calibration keeps it and works out your lens's field of view from the measured picture instead, and
-  measured numbers always replace an unsaved preview's guesses. Going back to this page never resets them: presets
+  street, the mean of the two. When the distance to the lane came from you (typed, the map, or **To the lane** on
+  the ghost car in step 4), a calibration keeps it and works out your lens's field of view from the measured picture
+  instead, and measured numbers always replace an unsaved preview's guesses. Going back to this page never resets them: presets
   and edits here are only a preview until **Save changes**.
 
 With a camera connected, **Plan with your camera** copies its real size and frame rate into the plan. A camera
@@ -373,13 +373,6 @@ time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows
 **Open CSV** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
 time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
 recordings (`manual_yyyymmddhhmmss`) is when the recording started.
-
-**The calibration and the passes before it.** The pass a calibration came from (**This was me: calibrate from it**,
-or the phone's) has a **calibration** tag. Passes analysed before the calibration in force were timed with the old one:
-they are tagged **before calibration**, and a banner counts them with **Hide them** (on by default; the tiles and
-charts count only what is shown) and **Remove them**, which takes them out of this session and out of their stats
-csvs, keeping each csv as it was beside it as `<name>.before-cleanup.csv`. "Before" goes by when a pass was analysed,
-not when it was filmed: analysing a recording again starts its csv afresh, timed with today's calibration.
 
 **Size.** With a calibration, each vehicle's length is shown in feet (a car is about 15 ft, a pickup or van 19-23, a
 truck or bus 24 or more, which gets the truck icon). It is measured from the tracked boxes while the vehicle is wholly

@@ -266,7 +266,7 @@ void AppPrefs::load() {
 	str("config", configPath); str("source", lastSource); str("site", siteName); str("remoteToken", remoteToken);
 	str("remoteAddress", remoteAddress);
 	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor); str("calibratedLines", calibratedLines);
-	str("calPass", calPass); str("calCuts", calCuts); b("hideBeforeCal", hideBeforeCal); b("planDistMeasured", planDistMeasured);
+	b("planDistMeasured", planDistMeasured);
 	str("planNote", planNote); str("planCalSig", planCalSig); i("planSource", planSource); d("planCarLengths", planCarLengths);
 	i("speedLimit", speedLimit); i("egregious", egregious); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
 	i("remotePort", remotePort); i("keepVideoGB", keepVideoGB); i("planPreset", planPreset);
@@ -308,7 +308,7 @@ std::string AppPrefs::render() const {
 		<< "\nplanCamLat = " << planCamLat << "\nplanCamLon = " << planCamLon << std::setprecision(6)
 		<< "\nplanStreet = " << planStreet << "\nplanAutosave = " << planAutosave << "\nplanDraft = " << planDraft
 		<< "\ncalibratedFor = " << calibratedFor << "\ncalibratedLines = " << calibratedLines << "\nplanConfirmed = " << planConfirmed
-		<< "\ncalPass = " << calPass << "\ncalCuts = " << calCuts << "\nhideBeforeCal = " << hideBeforeCal << "\nplanDistMeasured = " << planDistMeasured << "\n";
+		<< "\nplanDistMeasured = " << planDistMeasured << "\n";
 	for (auto& r : recent) out << "recent = " << r << "\n";
 	return out.str();
 }

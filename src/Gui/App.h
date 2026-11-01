@@ -73,12 +73,8 @@ struct ResultRow {
 	bool flagged = false;
 	double fps = 30;
 	std::string time;
-	std::string statsPath;      // the csv the row lives in (session rows: the run's; csv rows: the file opened)
 	int widthPx = 0;            // session rows: the vehicle's length side-on in pixels (VehicleEvent::width), 0 when unknown
-	int csvIndex = -1;          // csv rows: its place among the file's rows (session rows: -1)
-	double lengthFt = 0;        // that width in feet at the lane, from the calibration (0 = no calibration or no width)
-	bool calPass = false;       // the pass the calibration in force came from
-	bool beforeCal = false;     // logged before the calibration in force, so timed with an older one
+	double lengthFt = 0;        // that length in feet at the lane, from the calibration (0 = no calibration or no width)
 };
 
 class App {
@@ -197,21 +193,13 @@ public:
 	void openMap();
 	bool planFromCalibration(plan::Measured& m, std::string& how);
 	void syncPlanFromCalibration(bool announce = true);
-	// Results and the calibration: which pass it came from, which rows came before it, and taking those out.
-	void rememberCalibrationPass(const Vehicle& v);
-	std::string lastCalibrationTime();       // "yyyy-mm-ddThh:mm:ss" of the latest apply for this VST.cfg, "" if none
-	void annotateRows();
-	void removeRowsBeforeCalibration();
-	void forgetCalibrationCut(const std::string& csv);  // a run starts that csv afresh
-	void markCalibrationCuts();              // a new calibration: note each stats csv's row count (prefs.calCuts)
-	std::map<std::string, int> csvRestartedAt_;  // stats csv -> the last vehicle id before a run started it afresh
-	int calWatermark_ = 0;                   // the session's last vehicle id when the calibration was applied
 	// The user's own camera-to-lane distance from outside Pick your spot; saved at once and kept by later calibrations.
 	void setMeasuredDistance(double distM, const char* why);
 	// Pixels per foot at the lane in the 1280-wide frame, from the calibration in force (0 = none for this camera).
 	double pxPerFtAtLane();
 	// Sets largeVehicleArea to a real size (kLargeVehicleSqFt) from the calibration; every apply reaches it.
 	void retuneLargeVehicles();
+	void sizeRows();   // Results rows' length in feet, and truck-or-bus by that length, from the calibration in force
 	static constexpr double kLargeVehicleSqFt = 190;
 	static constexpr double kLargeVehicleFt = 24;   // a box truck, bus or a pickup towing something
 	// "Cars across the picture" needs a picture of the user's own street: an open camera, stream, video or photo that

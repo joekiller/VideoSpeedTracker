@@ -738,7 +738,7 @@ void Server::routes() {
 			else if (vid) {
 				Vehicle v;
 				if (!app.tracker.vehicle(vid, v)) err = "no vehicle " + std::to_string(vid);
-				else { app.applyCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps); app.rememberCalibrationPass(v); }
+				else app.applyCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
 			}
 			else {
 				int dir = in.value("dir", "L2R") == "R2L" ? 1 : 0;
