@@ -48,6 +48,7 @@ struct Vehicle {
 	const std::string& passed() const { return live ? time : recorded; }
 	cv::Mat snapshot;           // BGR crop around the vehicle at the end speed line
 	std::string clipPath;       // short mp4 of the analysis box, empty if none
+	std::string statsPath;      // the stats csv of the run that logged it (Job::statsPath), so Results can archive that run
 };
 
 // Session totals.  vehicles are the ones logged (timed, a clean track, at least minLoggedSpeed: a csv row each); the rest

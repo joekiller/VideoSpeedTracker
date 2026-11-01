@@ -78,3 +78,4 @@
 #define ICON_TREND_DOWN     "\xee\x82\x97"
 #define ICON_MINUS          "\xef\x81\xa8"
 #define ICON_ANGLES_UP      "\xef\x84\x82"
+#define ICON_ARCHIVE        "\xef\x86\x87"

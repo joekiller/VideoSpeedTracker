@@ -466,8 +466,8 @@ The **In → out** column shows each car's speed at the first and second speed l
 slowing down (green), steady, speeding up (amber) or rapidly speeding up (red); sort it to find the cars that floored
 it. The detail card adds the acceleration and the speed 20 ft further on. How it's measured, and why a 14 ft view at
 30 fps sometimes says "can't tell": [speed-trend.md](speed-trend.md).
-**Open CSV** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
-time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
+**Open** lists your archives (below) and also loads any stats csv from an earlier run or from the command line,
+showing each vehicle at the time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
 recordings (`manual_yyyymmddhhmmss`) is when the recording started.
 
 **Size.** With a calibration, each vehicle's length is shown in feet (a car is about 15 ft, a pickup or van 19-23, a
@@ -494,6 +494,48 @@ keeps the calibration it started with until you run it again.
 ![Results](images/studio/06-results.jpg)
 
 The 85th percentile here, in the street report and on the phone all use the nearest-rank definition (see below).
+
+#### Archive a dataset and review it later
+
+**Archive** puts what Results is showing away in a folder of its own, under a name you choose ("First week, before
+the new signs"). It takes the stats csvs behind the rows with their run manifests and highlights videos, every
+vehicle's snapshot and clip (this session's vehicles have them; a csv opened from disk doesn't), the `VST.cfg` and
+calibration history they were measured with, and the speed limit they were judged by.
+
+- **Move them into the archive** (the default) takes those files out of the data folder, so This session, Open and
+  the street report start fresh. **Put back into my data** on the archive copies them back at any time; the archive
+  keeps its own copy.
+- **Keep them here too** archives a copy and leaves the data folder alone.
+
+Archive is off while tracking runs (the run is still writing its csv) and while you're looking at an archive.
+
+**Open** in Results lists every archive, newest first. An archive opens read-only, with a banner saying so: the
+table, charts and tiles work as usual, judged at the limits it was archived with; the detail card shows the archived
+snapshot and **Play clip**; **Make report** reports on the archive alone; **Highlights** and **Folder** open the
+archive's own. **Close archive** goes back to this session. For an archive kept somewhere else (a USB stick, a
+neighbour's copy), use **Open > An archive folder somewhere else**, or start Studio with
+`VSTStudio --review <folder>`.
+
+You don't need Studio to look at one: each archive has a `review.html` that opens in any web browser (**Open in
+browser** on the banner, or double-click it), with the same table, filters, snapshots and clips. Its snapshots are
+not blurred, so share the folder only with people you'd show the street to.
+
+An archive is a folder `<data folder>/Archive/<YYYY-MM-DD>_<name>/` laid out like the data folder:
+
+| | |
+|---|---|
+| `archive.json` | name, dates, site, limits, the calibration in force, whether the files were moved, and every vehicle |
+| `vehicles.csv` | the vehicles as a spreadsheet: time, speed, direction, wrong way, size, snapshot and clip |
+| `review.html` | the browser viewer |
+| `VST.cfg`, `calibration-history.csv` | the setup and calibration record as they were |
+| `Stats/`, `HiLites/` | the stats csvs, run manifests and highlights videos |
+| `Snapshots/`, `Clips/` | each vehicle's picture (`vehicle_<row>.jpg`) and clip |
+
+It is written under a `.partial` name and renamed only when every file is in, and the originals are removed only
+after that, so a full disk never leaves half an archive or loses a file. The disk budget under **Keep up to** never prunes
+an archive's clips or highlights.
+
+![Archived dataset in Results](images/studio/10b-archive-review.jpg)
 
 ### Street report
 
@@ -569,7 +611,7 @@ be open at once. The API is described in [companion-api.md](companion-api.md).
 | Settings (`VST.cfg`) | the file shown on the Connect the camera page; by default the per-user config (see the README) |
 | App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs and where they came from, the last source and page, recent sources, pairing token |
 | Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
-| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, and street reports in `Reports/` |
+| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, street reports in `Reports/`, and archived datasets in `Archive/` |
 
 ## For developers
 

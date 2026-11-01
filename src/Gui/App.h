@@ -13,10 +13,12 @@
 //   5 Calibrate                      drive-through calibration or counting frames by hand
 // Then the pages used once it's set up:
 //   Live                     tracking with overlays, live counts and a feed of logged vehicles
-//   Results                  speeders and wrong-way drivers, charts, snapshots, csv and highlights
+//   Results                  speeders and wrong-way drivers, charts, snapshots, csv and highlights; archives a
+//                            dataset away and reviews an archived one read-only (Archive.h)
 //   Companion                pairing a phone with the local API (QR code)
 #pragma once
 #include "CalEvidence.h"
+#include "Archive.h"
 #include "Calibration.h"
 #include "ParkingLane.h"
 #include "DashCam.h"
@@ -85,6 +87,8 @@ struct ResultRow {
 	std::string trend;
 	int entryMph = 0, exitMph = 0, mphIn20ft = 0;
 	double accel = 0;           // mph/s
+	std::string snapshotPath;   // an archived row's snapshot / clip on disk ("" = none); session rows use vehicleId
+	std::string clipPath;
 };
 
 // Where the Results page's rows come from.  Session: vehicles measured since Studio opened (with snapshots).  Saved:
@@ -177,11 +181,18 @@ public:
 	void loadResultsCsv(const std::string& path);
 	void showSessionResults();
 	void showSavedRuns();               // every saved run (ResultsScope::Saved), re-read from <data>/Stats
+	// Opens an archived dataset (archive::read) in Results, read-only, and goes to Results.  false + toast on failure.
+	bool openArchive(const std::string& dir);
+	bool reviewing() const { return !archive_.dir.empty(); }
+	// The limits Results judges rows by: the archive's own while reviewing one, else the Live page's.
+	int resultsLimit() const { return reviewing() ? archive_.speedLimit : prefs.speedLimit; }
+	int resultsWayOver() const { return reviewing() ? archive_.wayOver : prefs.egregious; }
 	// The street report (Report.h): what it reads (data folder, config, calibration history, and blurred snapshots of
 	// this session's fastest vehicles when asked) and the user's choices.  GUI thread only; the API copies them and
 	// builds the report on its own thread.
 	report::Input reportInput(bool snapshots, const std::string& from, const std::string& to);
 	report::Settings reportSettings();
+	report::Input archiveReportInput(bool snapshots, const std::string& from, const std::string& to);   // the open archive's
 	void toast(const std::string& text, unsigned color, const char* icon = nullptr);
 	void setPage(Page p) { page = p; }
 	void setRemote(bool on);
@@ -356,6 +367,13 @@ private:
 	void resultsCharts(const std::vector<const ResultRow*>& shown, float width);
 	void reportDialog();
 	Texture* snapshotTexture(int vehicleId);
+	// Archiving (Results): the "Archive these results" dialog, the "Open" menu (archives, a csv, a folder), the
+	// read-only banner over an open archive, and the request for what Results shows now.
+	void archiveDialog();
+	void openMenu();
+	void reviewBanner(float width);
+	archive::Request archiveRequest(const std::string& name, bool move);
+	Texture* fileTexture(const std::string& path);   // an archived snapshot, loaded once and cached by path
 	void pumpTracker();
 	// While tracking, the setup pages show the tracker's own frames through player.feed(), never a second capture
 	// (App.cpp, pumpTracker).  sharedFeedBadge() marks such a picture as Live tracking's and says edits apply on the
@@ -402,6 +420,14 @@ private:
 	long liveTexSerial_ = -1, fedSerial_ = -1;
 	double runLevel_ = 0;               // cfg.g.levelDegrees when the run started: the angle its frames already carry
 	std::map<int, std::unique_ptr<Texture>> snapTex_;
+	std::map<std::string, std::unique_ptr<Texture>> fileTex_;
+	archive::Info archive_;             // the archive Results is reviewing (dir empty = none)
+	std::vector<archive::Info> archives_;   // the Open menu's list, read when the menu opens
+	struct ArchiveForm {
+		char name[96] = "";
+		bool move = true;                // "archive away" (the default) or keep a copy
+		std::string error;
+	} archiveForm_;
 	int seenVehicleId_ = 0;
 	bool wasRunning_ = false;
 	bool restartPending_ = false;       // restartAfterCalibration(): restart the live run on the next frame
@@ -413,6 +439,7 @@ private:
 	bool resultsOpened_ = false;
 	// Appends one stats csv's rows (labelled `label` in the Source column) to `rows`; false with a toast if unreadable.
 	bool appendStatsRows(const std::string& path, const std::string& label, int* skipped);
+	bool openArchiveDialog_ = false;    // open "Archive these results" on the next Results frame (the --shots tour)
 	int selectedRow_ = -1;
 	int calibMode_ = 0;
 	int calibDir_ = 0;

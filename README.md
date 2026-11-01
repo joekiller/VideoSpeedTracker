@@ -320,7 +320,7 @@ Where the time comes from depends on the source, and VST says which in its log w
   is left blank.
 
 Earlier versions wrote the Flag column only when it was set, had no Timestamp column, and (before v1.10) ended at
-Timestamp; VST Studio's **Open CSV** and the street report read every version. Spreadsheets that read columns by
+Timestamp; VST Studio's **Open** and the street report read every version. Spreadsheets that read columns by
 position are unaffected: the first 15 are unchanged.
 
 Only vehicles timed at `minLoggedSpeed` or faster get a row. This optional `VST.cfg` key is in MPH; the default is 18,
