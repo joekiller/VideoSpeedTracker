@@ -5,6 +5,7 @@
 #include <opencv2/videoio.hpp>
 #include <cstdint>
 #include <memory>
+#include "FrameInput.h"   // the frame input port: every frame the preview shows comes in through it
 #include "PiCamera.h"
 #include <string>
 
@@ -50,7 +51,10 @@ std::string shortSourceName(const std::string& path, size_t max = 44);
 bool isVideoPath(const std::string& path);
 bool isImagePath(const std::string& path);
 
-// Frames are delivered at VST's 1280x720 working size so overlays use config coordinates directly.
+// Frames are delivered at VST's 1280x720 working size so overlays use config coordinates directly.  Every frame comes in
+// through the frame input port (FrameInput.h): frameio::open() picks the adapter for a file, camera, stream or photo with
+// the same opening policy the tracker uses (so the preview shows a camera in the mode the run will get), and feed()
+// pushes Live tracking's frames through a frameio::FeedSource.
 //
 // Nothing that can be slow runs on the GUI thread.  A camera can take seconds to open (or never answer), each read
 // waits for the camera's next frame, and OpenCV serialises some backend work, so a file opened while a camera is
@@ -107,21 +111,23 @@ private:
 	void show(const cv::Mat& working);   // keeps `working` (1280x720, unturned) as raw_, levels it into frame_, uploads it
 	std::shared_ptr<LiveReader> live_;   // the reader thread's shared state, while opening and for cameras and streams
 	std::uint64_t liveSeq_ = 0;          // the newest live frame already taken
-	std::unique_ptr<FrameSource> cap_;   // files, once the reader has opened them (FrameSource: VideoCapture or a Pi camera)
+	// The port the GUI thread reads: a file once the reader has opened it, or the FeedSource while fed.  Cameras and
+	// streams are read on the reader thread, through the same port.
+	std::unique_ptr<frameio::FrameSource> cap_;
 	SourceInfo info_;
 	bool opened_ = false;
 	cv::Mat raw_;                        // the current frame before levelling, so a new angle needn't wait for a new frame
 	cv::Mat frame_;
 	double level_ = 0;
-	bool fed_ = false;                   // showing frames handed in by feed(), not read by this Player
+	bool fed_ = false;                   // cap_ is a frameio::FeedSource: frames handed in by feed(), not read from a device
 	double fedLevel_ = 0;                // the angle the fed frames already carry; show() turns by level_ - fedLevel_
 	Texture tex_;
 	int pos_ = -1;
 	double lastTick_ = 0, carry_ = 0;
 };
 
-// Resizes to 1280x720 like the tracker's readFrame().
-void toWorkingSize(cv::Mat& frame);
+// Resizes to 1280x720 like the tracker's readFrame() (frameio::toWorking).
+inline void toWorkingSize(cv::Mat& frame) { frameio::toWorking(frame); }
 
 // Opens a file or folder with the platform's default handler (Explorer/Finder/xdg-open).
 void openWithSystem(const std::string& path);

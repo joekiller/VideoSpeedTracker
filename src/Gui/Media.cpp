@@ -67,31 +67,24 @@ bool isVideoPath(const std::string& path) {
 	return std::any_of(std::begin(exts), std::end(exts), [&](const char* x) { return e == x; });
 }
 
-bool isImagePath(const std::string& path) {
-	std::string e = lowerExt(path);
-	return e == ".jpg" || e == ".jpeg" || e == ".png" || e == ".bmp";
-}
+bool isImagePath(const std::string& path) { return frameio::isImagePath(path); }
 
+// The UI's four kinds, from the port's classification (frameio::classify, shared with the engine).
 SourceInfo::Kind classifySource(const std::string& path) {
-	if (path.empty()) return SourceInfo::None;
-	if (picam::isName(path)) return SourceInfo::Camera;
-	if (path.size() < 4 && std::all_of(path.begin(), path.end(), [](char c) { return isdigit((unsigned char)c) != 0; }))
-		return SourceInfo::Camera;
-	if (path.find("://") != std::string::npos) return SourceInfo::Stream;
-	if (isImagePath(path)) return SourceInfo::Image;
-	return SourceInfo::File;
+	switch (frameio::classify(path)) {
+	case frameio::Kind::None: return SourceInfo::None;
+	case frameio::Kind::Camera:
+	case frameio::Kind::PiCamera: return SourceInfo::Camera;
+	case frameio::Kind::Stream: return SourceInfo::Stream;
+	case frameio::Kind::Image: return SourceInfo::Image;
+	default: return SourceInfo::File;
+	}
 }
 
 std::string displayName(const std::string& path) {
 	switch (classifySource(path)) {
 	case SourceInfo::Camera: return picam::isName(path) ? picam::label(path) : "Camera " + path;
-	case SourceInfo::Stream: {
-		// Hide credentials in rtsp://user:pass@host/... when showing a URL.
-		std::string s = path;
-		size_t scheme = s.find("://"), at = s.find('@');
-		if (at != std::string::npos && at > scheme) s = s.substr(0, scheme + 3) + s.substr(at + 1);
-		return s;
-	}
+	case SourceInfo::Stream: return frameio::safeName(path);   // no user:pass@, and no ?pwd= either (the log's rule)
 	default: return fs::path(path).filename().string();
 	}
 }
@@ -110,11 +103,6 @@ std::string shortSourceName(const std::string& path, size_t max) {
 	return s.substr(0, cut(head)) + "…" + s.substr(cut(s.size() - tail));
 }
 
-void toWorkingSize(cv::Mat& frame) {
-	if (!frame.empty() && (frame.cols != 1280 || frame.rows != 720))
-		cv::resize(frame, frame, cv::Size(1280, 720), 0, 0, cv::INTER_AREA);
-}
-
 // The background opener and reader (see Player in Media.h).  The thread holds its own reference, so one the Player
 // has let go of finishes on its own: it notices `stop` after its current open or read returns, and releases the
 // device itself.  For a file it only opens, reads the first frame and hands the capture over (`handoff`); for a camera
@@ -129,18 +117,18 @@ struct Player::LiveReader {
 	cv::Mat latest;                // the newest frame at working size
 	std::uint64_t seq = 0;         // counts frames, so the GUI can tell a new one
 	double startedAt = 0;          // glfwGetTime() when the open began
-	std::unique_ptr<FrameSource> handoff;        // files: the opened capture, for the GUI thread to step through
+	std::unique_ptr<frameio::FrameSource> handoff;   // files: the opened source, for the GUI thread to step through
 	std::string path;              // what it opens, so reconnecting the same device can wait for the old reader
 };
 
 namespace {
 
-constexpr int kStreamTimeoutMs = 5000;    // FFmpeg's open and read timeouts for network streams (its opens share one lock, so keep it short)
 constexpr double kFirstFrameS = 15;       // an opened camera that sends nothing for this long is reported, not waited on
 constexpr int kLostAfterFailures = 50;    // consecutive failed reads (about 5 s) before a live picture counts as lost
 
-std::string openError(const SourceInfo& in, const FrameSource& cap) {
-	if (picam::isName(in.path)) return cap.pi.error();
+// Why an open failed, for the UI: the adapter's own reason where it has one (a Pi camera's), else advice by kind.
+std::string openError(const SourceInfo& in, const frameio::FrameSource& src) {
+	if (!src.error().empty()) return src.error();
 	switch (in.kind) {
 	case SourceInfo::Camera:
 		return "Can't open " + in.label + " yet. Check it's plugged in (for a phone, that its webcam app is running) and that no other app, like a video call, is using it. Or try another number.";
@@ -151,38 +139,23 @@ std::string openError(const SourceInfo& in, const FrameSource& cap) {
 	}
 }
 
-// Opens a camera index, a stream URL or a file.  Streams get FFmpeg timeouts so a dead address fails in seconds; a
-// camera open can't be timed out, which is one reason this never runs on the GUI thread.  (The other: OpenCV
-// serialises some backend work, so a file opened on the GUI thread while a camera is still opening waits for it.)
-// A Raspberry Pi camera (PiCamera.h) goes through rpicam-vid, which takes a couple of seconds to list the cameras and
-// time a second of frames.
-bool openCapture(FrameSource& cap, const SourceInfo& in) {
-	if (picam::isName(in.path)) return cap.openPiCamera(in.path);
-	if (in.kind == SourceInfo::Camera) return cap.cap.open(std::stoi(in.path));
-	if (in.kind == SourceInfo::Stream)
-		return cap.cap.open(in.path, cv::CAP_ANY, { cv::CAP_PROP_OPEN_TIMEOUT_MSEC, kStreamTimeoutMs, cv::CAP_PROP_READ_TIMEOUT_MSEC, kStreamTimeoutMs });
-	return cap.cap.open(in.path);
-}
-
-// Width, height, fps, codec and (files) frame count, as the capture reports them.
-void describe(const FrameSource& cap, SourceInfo& in) {
-	in.width = int(cap.get(cv::CAP_PROP_FRAME_WIDTH));
-	in.height = int(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
-	in.fps = cap.get(cv::CAP_PROP_FPS);
-	if (!(in.fps > 0 && in.fps < 1000)) in.fps = 0;
-	if (in.kind == SourceInfo::File) in.frames = std::max(0, int(cap.get(cv::CAP_PROP_FRAME_COUNT)));
-	int fourcc = int(cap.get(cv::CAP_PROP_FOURCC));
-	if (fourcc > 0)
-		for (int i = 0; i < 4; i++) {
-			char ch = char((fourcc >> (8 * i)) & 255);
-			if (isprint((unsigned char)ch)) in.codec += ch;
-		}
+// SourceInfo from the port's facts (the label stays the caller's).
+void describe(const frameio::FrameSource& src, SourceInfo& in) {
+	frameio::Facts f = src.facts();
+	in.width = f.width;
+	in.height = f.height;
+	in.fps = f.fps;
+	in.frames = in.kind == SourceInfo::File ? f.frames : 0;
+	in.codec = f.codec;
 }
 
 }  // namespace
 
-// The thread: open, report the source's facts with the first frame, then (cameras and streams) keep only the newest
-// frame until told to stop.  Everything slow (open, read, resize) happens here; the GUI only copies a finished Mat.
+// The thread: open through the port, report the source's facts with the first frame, then (cameras and streams) keep
+// only the newest frame until told to stop.  Everything slow (open, read, resize) happens here; the GUI only copies a
+// finished Mat.  A camera can't be given an open timeout, which is one reason this never runs on the GUI thread.  (The
+// other: OpenCV serialises some backend work, so a file opened on the GUI thread while a camera is still opening would
+// wait for it.)
 static void runReader(std::shared_ptr<Player::LiveReader> r, SourceInfo in, std::shared_ptr<Player::LiveReader> prev) {
 	struct Done { Player::LiveReader& r; ~Done() { r.finished = true; } } done{ *r };
 	// Reconnecting the same camera: give the previous reader up to 3 s to release it, or the open would find it busy.
@@ -191,11 +164,11 @@ static void runReader(std::shared_ptr<Player::LiveReader> r, SourceInfo in, std:
 	for (int i = 0; prev && !prev->finished && i < 300 && !r->stop; i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	prev.reset();
 	auto fail = [&](const std::string& why) { std::lock_guard<std::mutex> l(r->mu); if (r->error.empty()) r->error = why; };
-	auto cap = std::make_unique<FrameSource>();
+	std::unique_ptr<frameio::FrameSource> cap;
 	bool ok = false;
-	try { ok = openCapture(*cap, in) && cap->isOpened(); } catch (const std::exception&) { ok = false; }
+	try { cap = frameio::open(in.path); ok = cap->isOpened(); } catch (const std::exception&) { ok = false; }
 	if (r->stop) return;
-	if (!ok) { fail(openError(in, *cap)); return; }
+	if (!ok) { fail(cap ? openError(in, *cap) : "Can't open " + in.label + "."); return; }
 	describe(*cap, in);
 	auto since = std::chrono::steady_clock::now();
 	int failures = 0;
@@ -215,7 +188,7 @@ static void runReader(std::shared_ptr<Player::LiveReader> r, SourceInfo in, std:
 		}
 		failures = 0;
 		if (in.width <= 0 || in.height <= 0) { in.width = f.cols; in.height = f.rows; }
-		toWorkingSize(f);
+		frameio::toWorking(f);
 		std::lock_guard<std::mutex> l(r->mu);
 		r->latest = f;
 		r->seq++;
@@ -249,12 +222,14 @@ bool Player::open(const std::string& path) {
 	info_.path = path;
 	info_.label = friendlySourceName(path);
 	if (info_.kind == SourceInfo::Image) {
-		// A still photo of the view is enough to plan zones before any camera is installed.
-		cv::Mat photo = cv::imread(path);
-		if (photo.empty()) { error = "Can't read image " + path; return false; }
+		// A still photo of the view is enough to plan zones before any camera is installed.  Its adapter loads it at
+		// once (a photo is quick), on this thread.
+		std::unique_ptr<frameio::FrameSource> src = frameio::open(path);
+		cv::Mat photo;
+		if (!src->read(photo)) { error = src->error().empty() ? "Can't read image " + path : src->error(); return false; }
 		info_.width = photo.cols;
 		info_.height = photo.rows;
-		toWorkingSize(photo);
+		frameio::toWorking(photo);
 		show(photo);
 		opened_ = true;
 		pos_ = 0;
@@ -290,25 +265,30 @@ void Player::show(const cv::Mat& working) {
 	tex_.update(frame_);
 }
 
-// No reader, no device: the frame is the tracker's copy.  It is cloned because the caller's Mat (App::live_) is
-// refilled in place by Tracker::latest(), and frame() must stay the picture the texture shows (the cone timer and the
-// companion's snapshot read it).  One 1280x720 copy and one texture upload per shown frame, at most ~40 a second.
+// No reader, no device: the frame is the tracker's copy, pushed through a frameio::FeedSource so it comes in by the same
+// port and the same readInto() as a file's frames.  It is cloned because the caller's Mat (App::live_) is refilled in
+// place by Tracker::latest(), and frame() must stay the picture the texture shows (the cone timer and the companion's
+// snapshot read it).  One 1280x720 copy and one texture upload per shown frame, at most ~40 a second.
 void Player::feed(const cv::Mat& working, double turnedBy, const SourceInfo& about, int frameNumber) {
 	if (working.empty()) return;
-	if (live_ || cap_ || !fed_) {
+	if (!fed_) {
 		// Anything this Player still had open (a preview reader App::startTracking abandoned) lets go now.
 		SourceInfo keep = info_;
 		close();
 		info_ = keep;
 		error.clear();
+		cap_ = std::make_unique<frameio::FeedSource>();
+		fed_ = true;
+		opened_ = true;
 	}
 	if (about.path != info_.path) info_ = about;
-	fed_ = true;
-	opened_ = true;
+	auto& feedIn = static_cast<frameio::FeedSource&>(*cap_);
+	feedIn.describe({ info_.width, info_.height, info_.fps, info_.frames, info_.codec });
+	feedIn.push(working.clone());
 	playing = false;
 	fedLevel_ = turnedBy;
-	pos_ = frameNumber;
-	show(working.clone());
+	pos_ = frameNumber - 1;   // readInto() counts it
+	readInto();
 }
 
 void Player::setLevel(double degrees) {
@@ -352,7 +332,7 @@ bool Player::tickLive() {
 bool Player::readInto() {
 	cv::Mat f;
 	if (!cap_ || !cap_->read(f) || f.empty()) { playing = false; return false; }
-	toWorkingSize(f);
+	frameio::toWorking(f);
 	show(f);
 	pos_++;
 	return true;

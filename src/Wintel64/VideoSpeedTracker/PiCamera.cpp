@@ -498,14 +498,3 @@ bool Reader::open(const std::string& name) {
 #endif
 
 }  // namespace picam
-
-double FrameSource::get(int prop) const {
-	if (!pi.isOpened()) return cap.get(prop);
-	switch (prop) {
-	case cv::CAP_PROP_FRAME_WIDTH: return pi.width();
-	case cv::CAP_PROP_FRAME_HEIGHT: return pi.height();
-	case cv::CAP_PROP_FPS: return pi.fps();
-	case cv::CAP_PROP_FOURCC: return cv::VideoWriter::fourcc('I', '4', '2', '0');
-	default: return 0;   // CAP_PROP_FRAME_COUNT and the rest: a live camera has no length or position
-	}
-}

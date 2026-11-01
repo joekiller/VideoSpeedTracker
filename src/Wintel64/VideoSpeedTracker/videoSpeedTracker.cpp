@@ -77,6 +77,7 @@
 #include "UserPaths.h"
 #include "Engine.h"
 #include "PiCamera.h"
+#include "FrameInput.h"
 #include "Level.h"
 
 #ifndef VST_VERSION
@@ -104,7 +105,7 @@ bool bailing = false;
 // ........................................................ Globals shared between setup() and main() ................................................
 ofstream traceFile;
 ofstream statsFile;
-FrameSource capture;  // video capture object: a cv::VideoCapture, or a Raspberry Pi camera (PiCamera.h)
+unique_ptr<frameio::FrameSource> capture = frameio::closed();  // the source being read: never null (FrameInput.h port; frameio::open picks the adapter)
 vector<string> filesToDo;  // Full paths of the videos main() processes, in order.  One entry unless "*" was chosen in interactive mode.
 string fileName;  // Name (no directory) of the video currently being processed.  Foscam names "manual_yyyymmddhhmmss.avi" supply the csv Date/Time columns (see setTimeBase()).
 int objDelay = 50;  // ms per frame pair while a vehicle is on screen (about real time).  "s" slows it to 250 then 1250 ms for close inspection, "f" speeds it up.  Was 1250; 50 is from piki's 2017 fork.
@@ -154,109 +155,47 @@ const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, 
 
 // Reads the next frame and scales it to the 1280x720 canvas every config coordinate refers to, so cameras that record
 // 1080p, 4K or 640x480 work with the same VST.cfg geometry, then levels it (levelDegrees).  Returns false at end of video or on a read error.
-bool readFrame(FrameSource& cap, Mat& frame){
-	if (!cap.read(frame) || frame.empty()) return false;
-	if (frame.cols != Globals::FrameWidth || frame.rows != Globals::FrameHeight)
-		cv::resize(frame, frame, Size(Globals::FrameWidth, Globals::FrameHeight), 0, 0, INTER_AREA);
-	levelFrame(frame, g.levelDegrees);  // a camera mounted off level: turn the picture so the lanes run straight across
-	return true;
+// The working frame is made by the frame input port (FrameInput.h), the same way VST Studio's preview makes it.
+static_assert(Globals::FrameWidth == frameio::kWorkingWidth && Globals::FrameHeight == frameio::kWorkingHeight, "the frame port's working size is VST.cfg's canvas");
+bool readFrame(frameio::FrameSource& cap, Mat& frame){
+	return frameio::readWorking(cap, frame, g.levelDegrees);
 }
 
-// An all-digit name like "0" means that local camera.
-bool isCameraIndex(const string& name){
-	return !name.empty() && name.size() < 4 && all_of(name.begin(), name.end(), [](char c){ return isdigit((unsigned char)c) != 0; });
-}
-
-// "picam", "picam:1", "picam:0?fps=60&shutter=1000": a Raspberry Pi ribbon camera, read through rpicam-vid (PiCamera.h).
-bool isPiCamera(const string& name){ return picam::isName(name); }
+// What kind of source a name is: frameio::classify() decides for the engine and VST Studio alike.  An all-digit name like
+// "0" is that local camera; "picam", "picam:1", "picam:0?fps=60&shutter=1000" a Raspberry Pi ribbon camera (PiCamera.h).
+bool isCameraIndex(const string& name){ return frameio::classify(name) == frameio::Kind::Camera; }
+bool isPiCamera(const string& name){ return frameio::classify(name) == frameio::Kind::PiCamera; }
 
 // A camera of either kind: always live, and named "camera" in the run manifest.
-bool isLiveCamera(const string& name){ return isCameraIndex(name) || isPiCamera(name); }
+bool isLiveCamera(const string& name){ return frameio::isCamera(frameio::classify(name)); }
 
-bool isStreamUrl(const string& name){ return name.find("://") != string::npos; }
+bool isStreamUrl(const string& name){ return frameio::classify(name) == frameio::Kind::Stream; }
 
 // Opens a video file, a stream URL (rtsp://, http://, anything FFmpeg reads), for an all-digit name like "0" that local
-// camera, or for "picam..." a Raspberry Pi camera.  A Pi camera that can't start says why on stderr (once per distinct
-// reason, so a reconnect loop doesn't repeat it every attempt), and once it starts, its settings go in the log.
+// camera, or for "picam..." a Raspberry Pi camera, through the frame input port: frameio::open() picks the adapter and
+// applies the opening policy (hardware decoding, USB cameras at 1280x720 MJPG 60 fps, stream timeouts; see FrameInput.h).
+// A Pi camera that can't start says why on stderr (once per distinct reason, so a reconnect loop doesn't repeat it every
+// attempt), and once it starts, its settings go in the log.
 string lastPiError;  // cleared before each video's first open, so every run reports its own reason
-bool openSource(FrameSource& cap, const string& name){
+bool openSource(unique_ptr<frameio::FrameSource>& cap, const string& name){
+	cap->release();  // one reader per camera: let go of the old one before the new one asks for it
+	cap = frameio::open(name);
+	bool ok = cap->isOpened();
 	if (isPiCamera(name)){
-		bool ok = cap.openPiCamera(name);
-		if (!ok && cap.pi.error() != lastPiError) cerr << cap.pi.error() << endl;
-		lastPiError = ok ? "" : cap.pi.error();
-		if (ok) for (const string& note : cap.pi.notes()) cout << note << endl;
-		return ok;
+		if (!ok && cap->error() != lastPiError) cerr << cap->error() << endl;
+		lastPiError = ok ? "" : cap->error();
 	}
-	cap.pi.release();
-	if (isCameraIndex(name)){
-		if (!cap.cap.open(stoi(name))) return false;
-		// A USB camera opens in its default mode, often 640x480 at 30 fps (upscaled to the 1280x720 canvas, and too few
-		// frames for a short view).  Ask for 1280x720 at 60 fps, compressed (MJPG), which is the only way most cameras
-		// manage it over USB 2, and cheaper to read than raw YUYV.  A camera without that mode picks its nearest one;
-		// readFrame() scales whatever arrives, and the run reports the fps it actually got.
-		cap.cap.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
-		cap.cap.set(CAP_PROP_FRAME_WIDTH, Globals::FrameWidth);
-		cap.cap.set(CAP_PROP_FRAME_HEIGHT, Globals::FrameHeight);
-		cap.cap.set(CAP_PROP_FPS, 60);
-		return true;
-	}
-#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 6)
-	if (videoio_registry::hasBackend(CAP_FFMPEG)){
-		// Decoding is most of VST's work (about 55% of the CPU on the sample, against about 15% for the tracking itself), so
-		// let FFmpeg use the graphics chip's video decoder where there is one (Intel Quick Sync / VA-API, D3D11, ...).  ANY
-		// falls back to software decoding by itself, and H.264/HEVC decoding is bit-exact either way, so the speeds don't
-		// change.  VST_HW_DECODE=0 in the environment turns it off, to rule it out if a driver misbehaves.
-		vector<int> params;
-		const char* hw = getenv("VST_HW_DECODE");
-		if (!(hw && string(hw) == "0")) params = { CAP_PROP_HW_ACCELERATION, VIDEO_ACCELERATION_ANY };
-		// FFmpeg waits 30 s by default on a camera that doesn't answer or a stream that stalls.  Shorter limits let a dropout
-		// be noticed and retried sooner (see readFramePair()), and keep Stop in VST Studio from hanging on a dead camera.
-		if (isStreamUrl(name)){
-			params.insert(params.end(), { int(CAP_PROP_OPEN_TIMEOUT_MSEC), 5000, int(CAP_PROP_READ_TIMEOUT_MSEC), 10000 });
-			return cap.cap.open(name, CAP_FFMPEG, params);
-		}
-		if (cap.cap.open(name, CAP_FFMPEG, params)) return true;
-		// A file FFmpeg can't read: let OpenCV try its other backends, as before.
-	}
-#endif
-	return cap.cap.open(name);
+	if (ok) for (const string& note : cap->notes()) cout << note << endl;
+	return ok;
 }
 
-// A source name that is safe to write down (the log, the run manifest).  A URL loses any user:password@ in front of the host,
-// and any query parameter that looks like a password: Foscam and many other IP cameras take ?user=admin&pwd=secret.
+// A source name that is safe to write down (the log, the run manifest): frameio::safeName() (FrameInput.h) drops a URL's
+// user:password@ and any query parameter that looks like a password (Foscam and many IP cameras take ?user=admin&pwd=secret).
 // File paths and camera indexes come back as they are.
-string withoutPassword(const string& name){
-	size_t scheme = name.find("://");
-	if (scheme == string::npos) return name;
-	string url = name;
-	// user:password@host.  The host part ends at the query (or fragment); the last '@' before that ends the user info, so an
-	// unescaped '@' or '/' in the password doesn't leave the rest of it behind.
-	size_t queryAt = url.find_first_of("?#", scheme + 3);
-	size_t at = url.rfind('@', queryAt == string::npos ? string::npos : queryAt - 1);
-	if (at != string::npos && at > scheme) url.erase(scheme + 3, at - (scheme + 3) + 1);
-	// ?a=1&pwd=x&b=2 -> ?a=1&b=2: drop the parameters named pwd or pw, or with "pass" anywhere in the name.
-	size_t q = url.find('?');
-	if (q == string::npos) return url;
-	size_t hash = url.find('#', q);
-	string query = url.substr(q + 1, hash == string::npos ? string::npos : hash - q - 1), kept;
-	for (size_t start = 0; start <= query.size();){
-		size_t amp = query.find('&', start);
-		string param = query.substr(start, amp == string::npos ? string::npos : amp - start);
-		string key = param.substr(0, param.find('='));
-		for (char& c : key) c = (char)tolower((unsigned char)c);
-		if (!param.empty() && key != "pwd" && key != "pw" && key.find("pass") == string::npos) kept += (kept.empty() ? "" : "&") + param;
-		if (amp == string::npos) break;
-		start = amp + 1;
-	}
-	return url.substr(0, q) + (kept.empty() ? "" : "?" + kept) + (hash == string::npos ? "" : url.substr(hash));
-}
+string withoutPassword(const string& name){ return frameio::safeName(name); }
 
-// A source for the log: "camera 0", or the file or URL without any password it carries.
-string sourceLabel(const string& name){
-	if (isCameraIndex(name)) return "camera " + name;
-	if (isPiCamera(name)) return picam::label(name);
-	return withoutPassword(name);
-}
+// A source for the log: "camera 0", "Pi camera 0", or the file or URL without any password it carries.
+string sourceLabel(const string& name){ return frameio::label(name); }
 
 // Output name for a video: Foscam "manual_20160130172251.avi" -> "20160130_172251" (the 2016 naming), anything else -> its stem.
 string outputStem(const string& videoName){
@@ -364,7 +303,7 @@ void setTimeBase(const string& source, bool fpsReported){
 	else {
 		error_code ec;
 		auto written = fs::last_write_time(source, ec);
-		double frames = capture.get(CAP_PROP_FRAME_COUNT);
+		double frames = capture->get(CAP_PROP_FRAME_COUNT);
 		if (!ec && fpsReported && frames > 0){
 			// C++17 can't convert a file time to the system clock portably; both tick in real time, so shift by "now" on each.
 			auto sys = chrono::system_clock::now() + chrono::duration_cast<chrono::system_clock::duration>(written - fs::file_time_type::clock::now());
@@ -659,7 +598,7 @@ void setup(){
 	// Do a one-time setup of region of interest, obstructions and speed posts
 	Mat frame;
 	openSource(capture, filesToDo[0]);
-	if (!capture.isOpened() || !readFrame(capture, frame)){
+	if (!capture->isOpened() || !readFrame(*capture, frame)){
 		cerr << "Can't read video from " << filesToDo[0] << endl;
 		exit(EXIT_FAILURE);
 	}
@@ -678,8 +617,8 @@ void setup(){
 	}
 	if (g.hasStreetEdge())
 		cv::line(frame, Point(g.AnalysisBoxLeft, g.AnalysisBoxTop + g.streetEdge[0]), Point(g.AnalysisBoxLeft + g.AnalysisBoxWidth, g.AnalysisBoxTop + g.streetEdge[1]), Scalar(CVCyan), 1);
-	double fps = capture.get(CAP_PROP_FPS);
-	capture.release();
+	double fps = capture->get(CAP_PROP_FPS);
+	capture->release();
 
 	cv::imshow("Full Frame", frame);
 	waitKey(20);
@@ -884,9 +823,9 @@ bool setupFromArgs(int argc, char** argv){
 		string piError;
 		if (isPiCamera(inputPath)){ if (picam::parse(inputPath, pi, piError)) fps = picam::chooseFps(pi, nullptr); }
 		else {
-			FrameSource probe;
+			unique_ptr<frameio::FrameSource> probe = frameio::closed();
 			openSource(probe, inputPath);
-			if (probe.isOpened()) fps = probe.get(CAP_PROP_FPS);
+			if (probe->isOpened()) fps = probe->get(CAP_PROP_FPS);
 		}
 		hiLiteVideo.open(hiLitePath, VideoWriter::fourcc('m', 'p', '4', 'v'), fps > 0 ? fps : 30.0, Size(Globals::FrameWidth, Globals::FrameHeight), true);
 		if (!hiLiteVideo.isOpened()){ cerr << "Can't write highlights video " << hiLitePath << endl; return false; }
@@ -1851,7 +1790,7 @@ bool waitOrStop(int ms){
 // source while it is reconnecting; otherwise a live source that stops delivering is reopened here until it delivers again.
 bool readFramePair(const string& source){
 	for (;;){
-		if (readFrame(capture, frame1) && readFrame(capture, frame2)){
+		if (readFrame(*capture, frame1) && readFrame(*capture, frame2)){
 			if (reconnectAttempts > 0){
 				string line = "Reconnected to " + sourceLabel(source) + " at " + formatTime(clockNow(), false) + " after a "
 					+ to_string(int(clockNow() - outageStarted)) + " s gap (" + to_string(reconnectAttempts) + " attempts).  Tracking restarted.";
@@ -1880,7 +1819,7 @@ bool readFramePair(const string& source){
 			outages.push_back({ runEnded >= 0 ? runEnded : outageStarted, -1 });
 			numObjects = 0;
 		}
-		capture.release();
+		capture->release();
 		int wait = reconnectWaits[min(reconnectAttempts, int(size(reconnectWaits)) - 1)];
 		reconnectAttempts++;
 		string line = "Reconnecting to " + sourceLabel(source) + ": attempt " + to_string(reconnectAttempts) + " in " + to_string(wait) + " s";
@@ -1944,7 +1883,7 @@ int vstMain(int argc, char** argv){
 		lastPiError.clear();
 		openSource(capture, FName);
 
-		if (!capture.isOpened()){
+		if (!capture->isOpened()){
 			if (isPiCamera(FName)) cerr << "Can't start " << sourceLabel(FName) << " (the reason is above)." << endl;
 			else cerr << "Can't open video " << withoutPassword(FName) << endl
 				<< "Check the path, and that this OpenCV build can decode it (try converting with: ffmpeg -i in.ext -c:v libx264 out.mp4)." << endl;
@@ -1953,11 +1892,11 @@ int vstMain(int argc, char** argv){
 
 		// Any resolution works: readFrame() scales to 1280x720.  Any frame rate works: computeFinalSpeed() rescales the
 		// calibration frame counts from CalibrationFPS to this rate.  Below ~20 fps cars jump too far between frames to track well.
-		int width = int(capture.get(CAP_PROP_FRAME_WIDTH)), height = int(capture.get(CAP_PROP_FRAME_HEIGHT));
+		int width = int(capture->get(CAP_PROP_FRAME_WIDTH)), height = int(capture->get(CAP_PROP_FRAME_HEIGHT));
 		if (width != Globals::FrameWidth || height != Globals::FrameHeight)
 			cout << "Scaling " << width << "x" << height << " frames to " << Globals::FrameWidth << "x" << Globals::FrameHeight
 				<< "; VST.cfg pixel values refer to the scaled frame." << endl;
-		double FPS = capture.get(CAP_PROP_FPS);
+		double FPS = capture->get(CAP_PROP_FPS);
 		bool fpsReported = FPS > 0 && FPS < 1000;
 		if (!fpsReported){
 			cout << "Video doesn't report a usable frame rate; assuming CalibrationFPS (" << g.CalibrationFPS << ")." << endl;
@@ -1970,12 +1909,12 @@ int vstMain(int argc, char** argv){
 		g.videoFPS = FPS;
 		// Live means a camera, or a URL that doesn't report a length.  A URL that does (an http:// link to a recorded file)
 		// is a file: it ends at its end instead of being reopened and played again.
-		liveSource = isLiveCamera(FName) || (isStreamUrl(FName) && !(capture.get(CAP_PROP_FRAME_COUNT) > 0));
+		liveSource = isLiveCamera(FName) || (isStreamUrl(FName) && !(capture->get(CAP_PROP_FRAME_COUNT) > 0));
 		reconnectAttempts = 0;
 		stoppedWhileReconnecting = false;
 		setTimeBase(FName, fpsReported);
 
-		capture.set(CAP_PROP_POS_FRAMES, startFrame);  // Set frame number to start at, in first file to be processed;  Remaining files will start at zero.
+		capture->set(CAP_PROP_POS_FRAMES, startFrame);  // Set frame number to start at, in first file to be processed;  Remaining files will start at zero.
 		frameNumber = int(startFrame);
 		int delay = 10;   //at least 10ms delay is necessary for proper operation of this program <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
@@ -2067,7 +2006,7 @@ int vstMain(int argc, char** argv){
 
 		} // main loop for processing one input file
 
-		capture.release();
+		capture->release();
 		printSummary();
 		// Vehicles still in the zone when the video ended (or the source was stopped) go in the manifest as untimed.  Each
 		// video settles the manifest; only the run's last video, or a stop while reconnecting, marks it complete.
@@ -2128,7 +2067,7 @@ void resetEngineState(){
 	if (statsFile.is_open()) statsFile.close();
 	traceFile.clear();
 	statsFile.clear();
-	capture.release();
+	capture->release();
 	filesToDo.clear();
 	fileName.clear();
 	objDelay = 50;
@@ -2194,7 +2133,7 @@ int vst::run(const std::vector<std::string>& args, const vst::Hooks& h){
 	if (traceFile.is_open()) traceFile.close();
 	if (statsFile.is_open()) statsFile.close();
 	hiLiteVideo.release();
-	capture.release();
+	capture->release();
 	cout.flush();
 	cout.rdbuf(oldOut);
 	cerr.rdbuf(oldErr);

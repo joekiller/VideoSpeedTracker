@@ -42,6 +42,7 @@
 #include <cctype>
 #include <filesystem>
 #include "UserPaths.h"
+#include "FrameInput.h"
 
 #define CVBlack 0,0,0
 #define CVCyan 255,255,153
@@ -50,7 +51,7 @@ using namespace std;
 using namespace cv;
 namespace fs = std::filesystem;
 
-VideoCapture hiLiteVideoIn;  //Input hiLites video
+unique_ptr<frameio::FrameSource> hiLiteVideoIn = frameio::closed();  //Input hiLites video, through the frame input port (FrameInput.h)
 VideoWriter hiLiteVideoOut; // For writing highlights...the edited Scofflaws
 vector<Mat> frames;  // Frames of the vehicle clip currently being reviewed; grows as needed
 int framePTR = 0;
@@ -211,16 +212,16 @@ int main(int argc, char** argv){
 
 	string fullName = (dirPath / fileName).string();
 	cout << "Fullname is: <" << fullName << "> " << endl;
-	hiLiteVideoIn.open(fullName);
+	hiLiteVideoIn = frameio::open(fullName);
 
-	if (!hiLiteVideoIn.isOpened()){
+	if (!hiLiteVideoIn->isOpened()){
 		cout << "ERROR ACQUIRING VIDEO FEED\n";
 		getchar();
 		return 0;
 	}
 
 	frames.resize(1);
-	if (hiLiteVideoIn.read(frames[0])){
+	if (hiLiteVideoIn->read(frames[0])){
 		if (leftSide < 0 || top < 0 || leftSide + 640 > frames[0].cols || top + 360 > frames[0].rows){
 			cout << "Crop 640x360 at (" << leftSide << ", " << top << ") doesn't fit in the " << frames[0].cols << "x" << frames[0].rows
 				<< " input.  Fix CropLeft/CropTop in " << configPath << endl;
@@ -237,10 +238,10 @@ int main(int argc, char** argv){
 		if (yesNo == "n") return -1; // Coould modify this to move cropping rectangle around until user happy.
 	}
 
-	hiLiteVideoIn.release();
+	hiLiteVideoIn->release();
 	waitKey(20);
-	hiLiteVideoIn.open(fullName);
-	if (!hiLiteVideoIn.isOpened()){
+	hiLiteVideoIn = frameio::open(fullName);
+	if (!hiLiteVideoIn->isOpened()){
 		cout << "ERROR ACQUIRING VIDEO FEED\n";
 		getchar();
 		return 0;
@@ -252,7 +253,7 @@ int main(int argc, char** argv){
 		outputPath = (dirPath / "forPosting" / ("forPost_" + fileName)).string();
 	}
 	cout << "Writing " << outputPath << endl;
-	hiLiteVideoOut.open(outputPath, VideoWriter::fourcc('m', 'p', '4', 'v'), hiLiteVideoIn.get(CAP_PROP_FPS), Size(640, 360), true);
+	hiLiteVideoOut.open(outputPath, VideoWriter::fourcc('m', 'p', '4', 'v'), hiLiteVideoIn->get(CAP_PROP_FPS), Size(640, 360), true);
 	if (!hiLiteVideoOut.isOpened()){
 		cout << "ERROR Opening output file\n";
 		getchar();
@@ -263,13 +264,13 @@ int main(int argc, char** argv){
 	bool atVideoEnd = false;
 	string response;
 
-	while (!atVideoEnd && hiLiteVideoIn.get(CAP_PROP_POS_FRAMES) < hiLiteVideoIn.get(CAP_PROP_FRAME_COUNT)){
+	while (!atVideoEnd && hiLiteVideoIn->get(CAP_PROP_POS_FRAMES) < hiLiteVideoIn->get(CAP_PROP_FRAME_COUNT)){
 
 		framePTR = 0;
 		bool atVehicleClipEnd = false;
 		while (!atVehicleClipEnd){
 			if ((int)frames.size() <= framePTR) frames.resize(framePTR + 1);
-			if (hiLiteVideoIn.read(frames[framePTR])){
+			if (hiLiteVideoIn->read(frames[framePTR])){
 				if (!blackFrame(frames[framePTR])){  //  If this is a black frame, keep it but don't show it
 					imshow("Next Frame", frames[framePTR]);
 					waitKey(20);
@@ -332,7 +333,7 @@ int main(int argc, char** argv){
 				hiLiteVideoOut.write(frames[i](Rect(leftSide, top, 640, 360)));
 	}
 
-	hiLiteVideoIn.release();
+	hiLiteVideoIn->release();
 	hiLiteVideoOut.release();
 
 	return 0;
