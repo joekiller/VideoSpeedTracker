@@ -207,9 +207,16 @@ bool App::openSource(const std::string& path) {
 		piSettings_ = pi;
 		for (int i = 0; i < int(piCams_.size()); i++) if (piCams_[i].index == pi.camera) piChoice_ = i;
 	}
+	if (player.opening()) pendingRecent_ = path;   // remembered once it answers (frame())
+	else rememberSource(path);
+	return true;
+}
+
+// The source opened: reopen it next launch and list it under Recent.
+void App::rememberSource(const std::string& path) {
+	pendingRecent_.clear();
 	prefs.lastSource = path;
 	prefs.addRecent(path);
-	return true;
 }
 
 void App::disconnectSource() {
@@ -483,7 +490,7 @@ void App::showSessionResults() {
 		r.area = v.ev.area;
 		r.large = v.large;
 		r.fps = v.fps;
-		r.time = v.live ? v.time : v.recorded;   // empty for recordings without a start time: shown as time into the video
+		r.time = v.passed();   // empty for recordings without a start time
 		rows.push_back(r);
 	}
 	rowsFrom.clear();
@@ -620,7 +627,10 @@ void App::frame(float w, float h) {
 		if (live && !player.opening() && !player.isOpen() && !player.error.empty()) {
 			toast(player.error, c::bad, ICON_WARN);
 			source.clear();
+			pendingRecent_.clear();
 		}
+		if (!pendingRecent_.empty() && pendingRecent_ == source && player.isOpen() && !player.opening()) rememberSource(source);
+		else if (!pendingRecent_.empty() && pendingRecent_ != source) pendingRecent_.clear();   // cancelled or replaced
 	}
 	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
 	autosave();
@@ -1059,10 +1069,15 @@ void App::pageSource() {
 			piCams_.empty() ? "A webcam, a phone in USB webcam mode, or a Raspberry Pi camera. Tracks live, in real time."
 				: "A Raspberry Pi camera, a webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
 			bool pi = piChoice_ >= 0 && piChoice_ < int(piCams_.size());
-			ImGui::SetNextItemWidth(px(pi ? 92 : 110));
+			// The menu takes what the Connect/Disconnect button leaves, so the button's label is never cut off in a narrow
+			// window (three cards share the left two thirds of the page).
+			bool inUse = pi ? picam::isName(source) : source == std::to_string(cameraIndex_);
+			float connectW = buttonWidth(inUse ? ICON_XMARK " Disconnect" : ICON_LINK " Connect");
+			float settingsW = pi ? ImGui::GetFrameHeight() + px(4) : 0;
+			ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x - connectW - settingsW - px(8), px(76), px(110)));
 			char camLabel[96];
 			if (pi) snprintf(camLabel, sizeof camLabel, ICON_CAMERA " Pi %d", piCams_[piChoice_].index);
-			else snprintf(camLabel, sizeof camLabel, ICON_CAMERA "  %d", cameraIndex_);
+			else snprintf(camLabel, sizeof camLabel, "USB %d", cameraIndex_);   // "USB camera N" in the menu
 			if (ImGui::BeginCombo("##cam", camLabel, ImGuiComboFlags_HeightLarge)) {
 				for (int i = 0; i < int(piCams_.size()); i++) {
 					snprintf(camLabel, sizeof camLabel, "Pi camera %d: %s", piCams_[i].index, piCams_[i].model.c_str());
@@ -1091,7 +1106,6 @@ void App::pageSource() {
 			ImGui::SameLine(0, px(pi ? 6 : 8));
 			// The button follows the menu: Disconnect while the camera it names is the source (or connecting), Connect
 			// otherwise.  A Pi camera's source name carries its settings, so any Pi camera source counts as "it".
-			bool inUse = pi ? picam::isName(source) : source == std::to_string(cameraIndex_);
 			if (inUse) {
 				if (ghostButton(ICON_XMARK " Disconnect", ImVec2(-FLT_MIN, 0))) disconnectSource();
 			}
@@ -2733,7 +2747,8 @@ void App::vehicleCard(const Vehicle& v, float width) {
 	dl->AddText(fonts.caption, fsz(fonts.caption), sp + ImVec2(ss.x + px(4), ss.y - fsz(fonts.caption) - px(4)), c::dim, "mph");
 	std::string dir = std::string(v.ev.leftToRight ? "→ " : "← ") + v.ev.compass + (v.large ? "   " ICON_TRUCK : "");
 	dl->AddText(fonts.body, fsz(fonts.body), sp + ImVec2(0, ss.y + px(2)), v.ev.leftToRight ? c::l2r : c::r2l, dir.c_str());
-	std::string when = v.time.size() > 11 ? v.time.substr(11) : v.time;
+	const std::string& at = v.passed();
+	std::string when = at.size() > 11 ? at.substr(11) : at;
 	ImVec2 ws = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, when.c_str());
 	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(width - ws.x - px(12), px(10)), c::faint, when.c_str());
 	if (v.ev.wrongWay) {
@@ -2764,7 +2779,12 @@ void App::pageResults() {
 
 	// Toolbar: filter, where the rows come from, file actions.
 	static const char* const filters[] = { "All", "Speeding", "Way over", "Wrong way" };
-	segmented("rfilter", &resultsFilter_, filters, 4, px(440));
+	// The file buttons keep their full labels; the filter gives up width first, so the row fits a 1366-1480 px laptop
+	// window instead of pushing "Make report" off the edge.
+	float actionsW = px(16) * 2 + px(180);
+	for (const char* l : { ICON_CLOCK " This session", ICON_FILE_CSV " Open CSV", ICON_FILM " Highlights", ICON_FOLDER_OPEN " Folder", ICON_REPORT "  Make report" })
+		actionsW += buttonWidth(l) + ImGui::GetStyle().ItemSpacing.x;
+	segmented("rfilter", &resultsFilter_, filters, 4, std::clamp(avail - actionsW, px(300), px(440)));
 	ImGui::SameLine(0, px(16));
 	ImGui::SetNextItemWidth(px(180));
 	ImGui::InputTextWithHint("##search", ICON_SEARCH "  min speed or source", searchBuf_, sizeof searchBuf_);
@@ -2833,7 +2853,7 @@ void App::pageResults() {
 	snprintf(sub, sizeof sub, "%d mph or more", prefs.egregious);
 	statTile(ICON_BOLT, "Way over", std::to_string(way), sub, c::bad, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), cfg.g.LegalDirection == "Both" ? "set a one-way direction in Zones" : "against the one-way", c::wrong, ImVec2(tw, th));
+	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), cfg.g.LegalDirection == "Both" ? "one-way? set it in step 4" : "against the one-way", c::wrong, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
 	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / rows.size(), top);
 	statTile(ICON_CHART, "85th percentile", std::to_string(p85) + " mph", sub, c::accent2, ImVec2(tw, th));
@@ -3090,7 +3110,7 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 	std::sort(vs.begin(), vs.end(), [](const Vehicle& a, const Vehicle& b) { return a.ev.speed > b.ev.speed; });
 	for (const Vehicle& v : vs) {
 		if (in.snapshots.size() >= 6) break;
-		std::string when = v.live ? v.time : v.recorded;
+		std::string when = v.passed();
 		std::string day = when.substr(0, 10);
 		if (v.snapshot.empty() || (!from.empty() && (day.empty() || day < from)) || (!to.empty() && (day.empty() || day > to))) continue;
 		std::string jpeg = report::blurForReport(v.snapshot);
@@ -3199,7 +3219,12 @@ void App::pageCompanion() {
 		"phone or a tablet, or skip this: every step works from this computer, and Calibrate can take timed pictures while you're outside.");
 	ImGui::Dummy(ImVec2(0, px(4)));
 	bool want = on;
-	if (ImGui::Checkbox("Allow the companion app to connect", &want)) setRemote(want);
+	// setRemote() starts or destroys the server right here, so read it again: drawing the pairing card below from the
+	// value before the click dereferenced a destroyed server, and turning the companion off crashed the app.
+	if (ImGui::Checkbox("Allow the companion app to connect", &want)) {
+		setRemote(want);
+		on = server && server->running();
+	}
 	ImGui::BeginDisabled(on);
 	formLabel("Port", px(110));
 	ImGui::InputInt("##port", &prefs.remotePort, 0);
@@ -3243,6 +3268,14 @@ void App::pageCompanion() {
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::accent2));
 		ImGui::TextWrapped("%s", server->baseUrl().c_str());
 		ImGui::PopStyleColor();
+		// Typing the address opens the phone's "Enter it by hand" form, which asks for the pairing code too, so show it
+		// in groups of four (the phone ignores the spaces).
+		std::string grouped;
+		for (size_t i = 0; i < prefs.remoteToken.size(); i++) grouped += (i && i % 4 == 0 ? " " : "") + std::string(1, prefs.remoteToken[i]);
+		dimText("with the pairing code:");
+		ImGui::PushFont(fonts.strong);
+		ImGui::TextUnformatted(grouped.c_str());
+		ImGui::PopFont();
 		if (ghostButton(ICON_LINK "  Copy pairing link")) { ImGui::SetClipboardText(url.c_str()); toast("Pairing link copied", c::ok, ICON_CHECK); }
 		// Only shown when there's a choice: a computer on Wi-Fi and Ethernet, or with a VPN or virtual adapters, has
 		// several addresses and the automatic pick can be one the phone can't reach.  The interfaces are re-read

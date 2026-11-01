@@ -231,7 +231,7 @@ json statusJson(App& app) {
 	SourceInfo::Kind k = classifySource(app.source);
 	json src = app.source.empty() ? json(nullptr) : json{
 		{ "kind", k == SourceInfo::Camera ? "camera" : k == SourceInfo::Stream ? "stream" : k == SourceInfo::Image ? "image" : "file" },
-		{ "name", displayName(app.source) }, { "fps", in.fps }, { "width", in.width }, { "height", in.height } };
+		{ "name", friendlySourceName(app.source) }, { "fps", in.fps }, { "width", in.width }, { "height", in.height } };
 	return json{
 		{ "version", VST_VERSION }, { "siteName", app.prefs.siteName },
 		{ "running", app.tracker.running() }, { "paused", app.tracker.paused() },

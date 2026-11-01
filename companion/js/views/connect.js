@@ -36,7 +36,7 @@ export function render({ vst, view, start, probeResult }) {
     <details style="margin-top:4px" ${tried ? 'open' : ''}><summary class="small muted">Can't scan? Enter it by hand</summary>
       <form class="card stack" id="manual" style="margin-top:4px">
         <label class="field"><span>Address shown under the QR code</span><input class="input" id="addr" inputmode="url" autocomplete="off" placeholder="192.168.1.20:8787" value="${vst.base.replace(/^https?:\/\//, '')}"></label>
-        <label class="field"><span>Pairing code</span><input class="input" id="tok" autocomplete="off" autocapitalize="off" spellcheck="false" value="${vst.token}"></label>
+        <label class="field"><span>Pairing code (under the address in VST Studio)</span><input class="input" id="tok" autocomplete="off" autocapitalize="off" spellcheck="false" value="${vst.token}"></label>
         <button class="btn primary block" type="submit">${icon('wifi')}Connect</button>
         <p class="small" id="msg" role="status" style="margin:0"></p>
       </form>
@@ -49,7 +49,7 @@ export function render({ vst, view, start, probeResult }) {
   $('#manual').onsubmit = async (e) => {
     e.preventDefault();
     $('#msg').textContent = 'Connecting…';
-    try { vst.useLive($('#addr').value, $('#tok').value.trim()); } catch { $('#msg').textContent = 'That address doesn\'t look right.'; return; }
+    try { vst.useLive($('#addr').value, $('#tok').value.replace(/\s+/g, '')); } catch { $('#msg').textContent = 'That address doesn\'t look right.'; return; }
     if (location.protocol === 'https:' && vst.base.startsWith('http:')) {
       $('#msg').textContent = 'This page is on https, which can\'t reach VST over plain http. Open the address above directly instead.';
       return;

@@ -28,7 +28,9 @@ export async function render({ vst, view, prefs, start }) {
 
       <h3>Camera</h3>
       <div class="list">
-        <div class="item"><div class="label"><b>${src.name || 'Source'}</b><small>${{ file: 'Video file', camera: 'Camera', stream: 'Network stream' }[src.kind] || ''}</small></div><div class="value">${src.width}×${src.height} · ${src.fps} fps</div></div>
+        ${s.source
+          ? html`<div class="item"><div class="label"><b>${src.name || 'Source'}</b><small>${{ file: 'Video file', camera: 'Camera', stream: 'Network stream', image: 'Photo' }[src.kind] || ''}</small></div><div class="value">${src.width ? `${src.width}×${src.height} · ${Math.round(src.fps)} fps` : 'Connecting…'}</div></div>`
+          : html`<div class="item"><div class="label"><b>No camera connected</b><small>Pick one in VST Studio, step 3: Connect the camera</small></div><div class="value">—</div></div>`}
         <div class="item"><div class="label"><b>Processing</b><small>Frames analysed per second</small></div><div class="value">${s.running && !s.paused ? `${(s.procFps || 0).toFixed(1)} fps` : '—'}</div></div>
         <div class="item"><div class="label"><b>Frame</b></div><div class="value">${(s.frame || 0).toLocaleString()}${s.totalFrames ? ` of ${s.totalFrames.toLocaleString()}` : ''}</div></div>
         <div class="item"><div class="label"><b>This session</b><small>Since VST started</small></div><div class="value">${c.vehicles ?? 0} vehicles · top ${c.topSpeed ?? 0} mph</div></div>

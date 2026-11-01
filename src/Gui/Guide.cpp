@@ -567,7 +567,8 @@ void App::sitePlanner() {
 	if (shortView && r.zone > 0) {
 		// The fastest car this view can time, and what 60 fps would make of it: the spec a short view is bought on.
 		ImGui::PushTextWrapPos(0);
-		if (prefs.planFps < 59) dimText(ICON_GAUGE "  At %.0f fps this view times cars %s. A 60 fps camera would time them %s.",
+		// The 60 fps sentence only when it says something new: "over 70 mph" twice reads like a mistake.
+		if (prefs.planFps < 59 && plan::fastestText(pv.fastest60) != plan::fastestText(pv.fastestMph)) dimText(ICON_GAUGE "  At %.0f fps this view times cars %s. A 60 fps camera would time them %s.",
 			prefs.planFps, plan::fastestText(pv.fastestMph).c_str(), plan::fastestText(pv.fastest60).c_str());
 		else dimText(ICON_GAUGE "  At %.0f fps this view times cars %s.", prefs.planFps, plan::fastestText(pv.fastestMph).c_str());
 		ImGui::PopTextWrapPos();

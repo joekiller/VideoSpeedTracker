@@ -38,6 +38,10 @@ struct Vehicle {
 	bool large = false;
 	bool speeding = false, egregious = false;
 	int frames() const { return std::max(ev.endFrame - ev.startFrame, 1); }
+	// When it passed, as Results, the csv and the phone show it: the clock for a live source, the recording's own time for
+	// a video ("" when the recording's start time isn't known).  `time` alone is when this computer logged it, which for
+	// a video played today is today, not when the car drove by.
+	const std::string& passed() const { return live ? time : recorded; }
 	cv::Mat snapshot;           // BGR crop around the vehicle at the end speed line
 	std::string clipPath;       // short mp4 of the analysis box, empty if none
 };
