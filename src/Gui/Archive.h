@@ -28,6 +28,7 @@
 #pragma once
 #include <opencv2/core.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace archive {
@@ -77,6 +78,9 @@ struct Info {
 	std::vector<std::string> files;       // every file in it, relative, '/'-separated (archive.json itself excluded)
 	std::vector<Vehicle> vehicles;
 	std::string firstPassed, lastPassed;  // the earliest and latest `passed`, "" when none are known
+	// A published dataset (Dataset.h): its dataset.json plus status, as one JSON object, which review.html shows as the
+	// cover (badge, plain summary, how we know, the numbers).  "" for a plain archive.  Not stored in archive.json.
+	std::string dataset;
 };
 
 // One vehicle to archive: its row, plus where its picture and clip come from.
@@ -94,7 +98,16 @@ struct Request {
 	std::vector<std::string> historyFiles;// calibration-history.csv candidates; the first that exists is copied
 	std::vector<Source> vehicles;
 	bool move = true;                     // take the stats csvs, manifests, highlights and clips out of the data folder
+	// Publishing (Dataset.h) uses the same writer: another folder under dataDir, extra files written inside before the
+	// folder is renamed into place, and SHA256SUMS over every file except review.html (rewritten as checks are added)
+	// and the files listed in noSums (status.json and checks/, which are added to later).
+	std::string root = "Archive";
+	std::vector<std::pair<std::string, std::string>> extra;   // relative path ('/'-separated), contents
+	bool checksums = false;
 };
+
+// SHA256SUMS text for the files of a folder, "<hex>  <relative path>\n" each, the format `sha256sum -c` reads.
+std::string checksumsFor(const std::string& dir, const std::vector<std::string>& files);
 
 // The archive folder name for a request: "<YYYY-MM-DD of created>_<slug of name>", "-2", "-3"... if taken.
 std::string folderFor(const std::string& archiveRoot, const std::string& created, const std::string& name);

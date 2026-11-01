@@ -249,6 +249,18 @@ if(TARGET vst_report)
   target_link_libraries(resume_test PRIVATE vst_report)
   add_test(NAME reopen_studio COMMAND resume_test ${CMAKE_BINARY_DIR}/resume-test)
 
+  # Calibration sets (src/Gui/CalSets.cpp): runs from one view share a set that follows today's calibration, a run from
+  # a new view locks the old set, and past speeds are re-timed exactly from ZoneSeconds.
+  add_executable(calsets_test tests/calsets_test.cpp)
+  target_link_libraries(calsets_test PRIVATE vst_report)
+  add_test(NAME calibration_sets COMMAND calsets_test ${CMAKE_BINARY_DIR}/calsets-test)
+
+  # Published datasets (src/Gui/Dataset.cpp): schema, SHA256SUMS, and re-checking against a newer calibration with the
+  # equivalence test that marks a dataset still accurate, under review or tainted.
+  add_executable(dataset_test tests/dataset_test.cpp)
+  target_link_libraries(dataset_test PRIVATE vst_report)
+  add_test(NAME published_datasets COMMAND dataset_test ${CMAKE_BINARY_DIR}/dataset-test)
+
   # Calibrating from a Tesla dashcam clip (src/Gui/DashCam.cpp): reads per-frame speed from synthetic TeslaCam MP4s
   # and picks a pass's speed out of them.
   add_executable(dashcam_test tests/dashcam_test.cpp)

@@ -45,6 +45,7 @@ struct VehicleEvent {
 	std::string timestamp;           // csv Timestamp: ISO 8601 local time with UTC offset when it passed, or "" if unknown
 	int width = 0;                   // the vehicle's side-on length in pixels (VehicleDynamics::getLengthPx); csv LengthPx
 	SpeedTrend trend;                // entry and exit speed, acceleration class, speed 20 ft on (csv EntryMph..MphIn20ft)
+	double zoneSeconds = 0;          // seconds between the speed lines (VehicleDynamics::getZoneSeconds; csv ZoneSeconds), 0 = unknown
 };
 
 // A vehicle the tracker followed into the speed zone but did not log: timed but slower than minLoggedSpeed (a walker,

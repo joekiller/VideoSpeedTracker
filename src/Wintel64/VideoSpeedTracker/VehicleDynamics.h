@@ -87,6 +87,9 @@ public:
 	void markEnteredAtEdge() { fitTiming = true; }
 
 	int getFinalSpeed();
+	// Seconds the front bumper took between the speed lines, from the same timing as getFinalSpeed() (0 = not timed).  Speed =
+	// zone length / this, so a later calibration of the same view can re-time the car exactly (csv ZoneSeconds; CalSets.h).
+	double getZoneSeconds() const { return zoneSeconds; }
 
 	// Entry and exit speed, acceleration class and the speed 20 ft on (SpeedTrend.h), set when the car is timed.  Unknown
 	// until then, and for a car whose front bumper wasn't seen often or cleanly enough to tell.
@@ -161,6 +164,7 @@ private:
 
 	int entryGap;
 	int finalSpeed = -1;  // A final valid speed will be > 0;
+	double zoneSeconds = 0;  // set with finalSpeed by computeFinalSpeed() / subFrameSpeed()
 	vst::SpeedTrend trend;  // see getSpeedTrend()
 
 // for hilites reel

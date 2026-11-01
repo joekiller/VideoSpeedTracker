@@ -21,6 +21,7 @@ struct StatsRow {
 	double accel = 0;              // mph per second, + speeding up
 	int mphIn20ft = 0;             // projected 20 ft past the exit line
 	int lengthPx = 0;              // LengthPx (v1.10+): side-on length in pixels, 0 when unknown or the csv predates it
+	double zoneSeconds = 0;        // ZoneSeconds (v1.10+): seconds between the speed lines, 0 when unknown (CalSets.h re-times with it)
 };
 
 // Reads a stats csv.  Returns false with error set if the file can't be read; malformed rows are skipped and counted.

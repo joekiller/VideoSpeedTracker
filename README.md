@@ -311,8 +311,8 @@ measured speeds. If a video doesn't report a frame rate, VST assumes `Calibratio
 Each vehicle VST measures is one row of `stats_<name>.csv`:
 
 ```
-Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx
-20160130, 172251, 348, NW, 290, 320, 30, 878, 317, 561, 63, , 33, , 2016-01-30T17:23:02-05:00, 34, 32, -2.0, decelerating, 31, 182
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx, ZoneSeconds
+20160130, 172251, 348, NW, 290, 320, 30, 878, 317, 561, 63, , 33, , 2016-01-30T17:23:02-05:00, 34, 32, -2.0, decelerating, 31, 182, 0.9871
 ```
 
 | Column | Meaning |
@@ -332,6 +332,7 @@ Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, 
 | Trend | `decelerating` (-2 or less), `steady`, `accelerating` (+2 to +6) or `rapid` (+6 or more) |
 | MphIn20ft | the speed 20 ft past the second line at that acceleration (the exit speed when steady; 0 if it would stop) |
 | LengthPx | the vehicle's side-on length in analysis-box pixels (median box, less what frame differencing adds); VST Studio shows it in feet with the calibration |
+| ZoneSeconds | seconds the front bumper took between the speed lines, to 0.1 ms; estSpeed is the zone length over this, so VST Studio can re-time every car exactly when the same view is calibrated again |
 
 The five trend columns are empty when VST couldn't tell (too few or too ragged sightings). How they're measured, the thresholds
 and how much noise a 14-20 ft view leaves: [docs/speed-trend.md](docs/speed-trend.md).
