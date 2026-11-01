@@ -74,3 +74,7 @@
 #define ICON_ARROW_UP_RIGHT "\xef\x8d\x9d"
 #define ICON_SUN            "\xef\x86\x85"
 #define ICON_CHEVRON_DOWN   "\xef\x81\xb8"
+#define ICON_TREND_UP       "\xee\x82\x98"
+#define ICON_TREND_DOWN     "\xee\x82\x97"
+#define ICON_MINUS          "\xef\x81\xa8"
+#define ICON_ANGLES_UP      "\xef\x84\x82"

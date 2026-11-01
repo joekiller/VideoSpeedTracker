@@ -7,6 +7,7 @@
 #include "UserPaths.h"
 #include <imgui.h>
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <qrcodegen.hpp>
@@ -94,6 +95,13 @@ namespace {
 
 std::string lowerDir(const std::string& s) { return s == "L2R" ? "L2R" : s == "R2L" ? "R2L" : "both"; }
 
+// A pass's speed trend (SpeedTrend.h), rounded as the csv rounds it, or null when the tracker couldn't tell.
+json trendJson(const vst::SpeedTrend& t) {
+	if (!t.known()) return nullptr;
+	return json{ { "kind", vst::trendName(t.trend) }, { "entry", int(t.entryMph + 0.5) }, { "exit", int(t.exitMph + 0.5) },
+		{ "accel", std::round(t.accelMphPerSec * 10) / 10 }, { "in20ft", int(t.projectedMph + 0.5) } };
+}
+
 json vehicleJson(const Vehicle& v) {
 	return json{
 		{ "id", v.id }, { "time", v.live || v.recorded.empty() ? v.time : v.recorded }, { "video", v.video }, { "frame", v.ev.frame },
@@ -104,6 +112,7 @@ json vehicleJson(const Vehicle& v) {
 		{ "snapshot", v.belowMin ? json(nullptr) : json("/api/vehicles/" + std::to_string(v.id) + "/snapshot.jpg") },
 		{ "clip", v.clipPath.empty() ? json(nullptr) : json("/api/vehicles/" + std::to_string(v.id) + "/clip.mp4") },
 		{ "belowMin", v.belowMin },
+		{ "trend", trendJson(v.ev.trend) },
 	};
 }
 

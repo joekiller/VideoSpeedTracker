@@ -65,6 +65,9 @@ const VEHICLE = {
   speed: isInt, speeding: isBool, egregious: isBool,
   area: isInt, large: isBool, frames: isInt, startFrame: isInt, endFrame: isInt, fps: isNum,
   snapshot: (x) => x === null || isStr(x), clip: (c) => c === null || isStr(c), belowMin: isBool,
+  // null when VST couldn't tell; entry + exit average the speed (each rounded), and a steady pass is projected at its exit.
+  trend: (t) => t === null || (['decelerating', 'steady', 'accelerating', 'rapid'].includes(t.kind)
+    && isInt(t.entry) && isInt(t.exit) && isNum(t.accel) && isInt(t.in20ft) && t.in20ft >= 0),
 };
 
 /** "Every error is JSON {"error": "message"}." */

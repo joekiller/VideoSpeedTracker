@@ -462,6 +462,10 @@ with snapshots and clips), **All saved runs** (every run in the data folder's `S
 run. Results opens on all saved runs when this session hasn't measured anything yet, so earlier results are there
 the moment Studio reopens. Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
 time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows its snapshot, details and clip.
+The **In → out** column shows each car's speed at the first and second speed line with an icon for how it changed:
+slowing down (green), steady, speeding up (amber) or rapidly speeding up (red); sort it to find the cars that floored
+it. The detail card adds the acceleration and the speed 20 ft further on. How it's measured, and why a 14 ft view at
+30 fps sometimes says "can't tell": [speed-trend.md](speed-trend.md).
 **Open CSV** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
 time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
 recordings (`manual_yyyymmddhhmmss`) is when the recording started.

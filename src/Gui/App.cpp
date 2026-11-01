@@ -779,6 +779,11 @@ bool App::appendStatsRows(const std::string& path, const std::string& label, int
 		r.statsPath = path;
 		r.beforeCal = before;
 		if (const CalPass* p = calibrationPass(path, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
+		r.trend = s.trend;
+		r.entryMph = s.entryMph;
+		r.exitMph = s.exitMph;
+		r.accel = s.accel;
+		r.mphIn20ft = s.mphIn20ft;
 		rows.push_back(r);
 	}
 	return true;
@@ -816,6 +821,20 @@ void App::showSavedRuns() {
 	if (skipped) toast(std::to_string(skipped) + " rows in the saved runs weren't in VST's format and were skipped", c::warn, ICON_WARN);
 }
 
+// How Results shows a speed trend: an icon, its colour and the words.  Slowing down is the good news (green), steady is
+// neutral, speeding up is a warning and rapidly speeding up is red.  Unknown is a faint dash.
+struct TrendLook { const char* icon; ImU32 color; const char* label; };
+static TrendLook trendLook(const std::string& trend) {
+	vst::Trend t = vst::trendFromName(trend.c_str());
+	switch (t) {
+	case vst::Trend::Decelerating: return { ICON_TREND_DOWN, c::ok, vst::trendLabel(t) };
+	case vst::Trend::Steady: return { ICON_MINUS, c::dim, vst::trendLabel(t) };
+	case vst::Trend::Accelerating: return { ICON_TREND_UP, c::warn, vst::trendLabel(t) };
+	case vst::Trend::RapidlyAccelerating: return { ICON_ANGLES_UP, c::bad, vst::trendLabel(t) };
+	default: return { ICON_MINUS, c::faint, "Can't tell" };
+	}
+}
+
 void App::showSessionResults() {
 	rows.clear();
 	const EarlierRuns& earlier = runsBeforeCalibration();
@@ -837,6 +856,15 @@ void App::showSessionResults() {
 		r.statsPath = v.statsPath;
 		r.beforeCal = std::find(earlier.csvs.begin(), earlier.csvs.end(), v.statsPath) != earlier.csvs.end();
 		if (const CalPass* p = calibrationPass(v.statsPath, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
+		const vst::SpeedTrend& t = v.ev.trend;
+		if (t.known()) {
+			// Rounded the way the csv rounds them, so a session row and the same car read back from the csv match.
+			r.trend = vst::trendName(t.trend);
+			r.entryMph = int(t.entryMph + 0.5);
+			r.exitMph = int(t.exitMph + 0.5);
+			r.accel = std::round(t.accelMphPerSec * 10) / 10;
+			r.mphIn20ft = int(t.projectedMph + 0.5);
+		}
 		rows.push_back(r);
 	}
 	rowsScope = ResultsScope::Session;
@@ -3915,12 +3943,14 @@ void App::pageResults() {
 	ImGui::Dummy(ImVec2(0, px(2)));
 
 	float tableH = ImGui::GetContentRegionAvail().y;
-	if (ImGui::BeginTable("rows", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable
+	if (ImGui::BeginTable("rows", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable
 		| ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX, ImVec2(leftW, tableH))) {
 		ImGui::TableSetupScrollFreeze(0, 1);
 		ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, px(46));
 		ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, px(110));
 		ImGui::TableSetupColumn("Direction", 0, 1.5f);
+		// Entry -> exit speed with the trend's icon; sorts by acceleration (fastest speeding up first, unknown last).
+		ImGui::TableSetupColumn("In " ICON_ARROW_RIGHT " out", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, px(118));
 		ImGui::TableSetupColumn("When", 0, 1.2f);
 		ImGui::TableSetupColumn("Frames", ImGuiTableColumnFlags_WidthFixed, px(70));
 		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(80));
@@ -3935,8 +3965,14 @@ void App::pageResults() {
 				bool asc = ss->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
 				std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
 					const ResultRow *x = shown[a], *y = shown[b];
-					int kx = colIdx == 1 ? x->speed : colIdx == 4 ? x->frames : colIdx == 5 ? x->area : a;
-					int ky = colIdx == 1 ? y->speed : colIdx == 4 ? y->frames : colIdx == 5 ? y->area : b;
+					if (colIdx == 3) {
+						// Unknown trends sort after every known one, whichever way round.
+						bool kxn = !x->trend.empty(), kyn = !y->trend.empty();
+						if (kxn != kyn) return kxn;
+						return asc ? x->accel < y->accel : x->accel > y->accel;
+					}
+					int kx = colIdx == 1 ? x->speed : colIdx == 5 ? x->frames : colIdx == 6 ? x->area : a;
+					int ky = colIdx == 1 ? y->speed : colIdx == 5 ? y->frames : colIdx == 6 ? y->area : b;
 					return asc ? kx < ky : kx > ky;
 				});
 			}
@@ -3975,6 +4011,20 @@ void App::pageResults() {
 							r.calKind == 1 ? "calibration" : "check", std::round(r.drivenMph * 10) / 10);
 				}
 				else if (r.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
+				ImGui::TableNextColumn();
+				ImGui::AlignTextToFramePadding();
+				{
+					TrendLook tl = trendLook(r.trend);
+					ImGui::PushStyleColor(ImGuiCol_Text, v4(tl.color));
+					if (r.trend.empty()) ImGui::TextUnformatted(tl.icon);
+					else ImGui::Text("%s  %d " ICON_ARROW_RIGHT " %d", tl.icon, r.entryMph, r.exitMph);
+					ImGui::PopStyleColor();
+					if (ImGui::IsItemHovered()) {
+						if (r.trend.empty()) ImGui::SetTooltip("Not seen often or cleanly enough to tell whether it was speeding up or slowing down");
+						else ImGui::SetTooltip("%s: %d mph at the first speed line, %d at the second (%+.1f mph/s).\nAbout %d mph 20 ft further on.",
+							tl.label, r.entryMph, r.exitMph, r.accel, r.mphIn20ft);
+					}
+				}
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				if (!r.time.empty()) ImGui::TextUnformatted(r.time.size() > 11 ? r.time.substr(11).c_str() : r.time.c_str());
@@ -4054,6 +4104,23 @@ void App::pageResults() {
 			ImGui::TextUnformatted(v.c_str());
 		};
 		kv("Direction", std::string(r.l2r ? "Left to right, " : "Right to left, ") + r.compass);
+		{
+			// Speed change: the trend in words and colour, entry -> exit, and where it was headed 20 ft on.
+			TrendLook tl = trendLook(r.trend);
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
+			ImGui::TextUnformatted("Speed change");
+			ImGui::PopStyleColor();
+			ImGui::SameLine(px(120));
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(tl.color));
+			ImGui::Text("%s  %s", tl.icon, tl.label);
+			ImGui::PopStyleColor();
+			if (!r.trend.empty()) {
+				char buf[96];
+				snprintf(buf, sizeof buf, "%d " ICON_ARROW_RIGHT " %d mph  (%+.1f mph/s)", r.entryMph, r.exitMph, r.accel);
+				kv("In, out", buf);
+				kv("20 ft on", r.mphIn20ft == 0 ? std::string("stopped, at this rate") : "about " + std::to_string(r.mphIn20ft) + " mph");
+			}
+		}
 		kv("In the zone", std::to_string(r.frames) + " frames (" + std::to_string(r.frames / r.fps).substr(0, 4) + " s)");
 		{
 			char sz[96];

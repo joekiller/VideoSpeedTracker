@@ -27,6 +27,7 @@
 #include <opencv2/opencv.hpp>
 #include "Projection.h"
 #include "Snapshot.h"
+#include "SpeedTrend.h"
 
 using namespace std;
 using namespace cv;
@@ -87,6 +88,10 @@ public:
 
 	int getFinalSpeed();
 
+	// Entry and exit speed, acceleration class and the speed 20 ft on (SpeedTrend.h), set when the car is timed.  Unknown
+	// until then, and for a car whose front bumper wasn't seen often or cleanly enough to tell.
+	const vst::SpeedTrend& getSpeedTrend() const { return trend; }
+
 	void holdFrame(Mat inMat);
 
 	void saveFrame(Mat inMat);
@@ -101,6 +106,7 @@ private:
 
 	void assembleStats(int frameNumber, direction dir);
 	int subFrameSpeed(Globals& g, direction dir);
+	void computeTrend(Globals& g, direction dir);
 	statusTypes estimateNextVehicleData(Globals& g, int FrameNum);
 
 
@@ -155,6 +161,7 @@ private:
 
 	int entryGap;
 	int finalSpeed = -1;  // A final valid speed will be > 0;
+	vst::SpeedTrend trend;  // see getSpeedTrend()
 
 // for hilites reel
 	Mat lastFeed;

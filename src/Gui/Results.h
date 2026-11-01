@@ -13,6 +13,13 @@ struct StatsRow {
 	int speed = 0;
 	bool flagged = false;          // "*****": implausibly fast, worth checking by eye
 	std::string timestamp;         // when it passed, ISO 8601 with UTC offset; empty if unknown or the csv predates the column
+	// The speed trend columns (v1.10+; src/Wintel64/VideoSpeedTracker/SpeedTrend.h).  trend is "decelerating", "steady",
+	// "accelerating" or "rapid", or "" when the tracker couldn't tell or the csv predates the columns; the numbers are
+	// meaningful only when it is set.
+	std::string trend;
+	int entryMph = 0, exitMph = 0;  // at the two speed lines
+	double accel = 0;              // mph per second, + speeding up
+	int mphIn20ft = 0;             // projected 20 ft past the exit line
 };
 
 // Reads a stats csv.  Returns false with error set if the file can't be read; malformed rows are skipped and counted.

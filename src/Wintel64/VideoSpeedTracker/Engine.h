@@ -10,6 +10,7 @@
 #pragma once
 #include <functional>
 #include <opencv2/core.hpp>
+#include "SpeedTrend.h"
 #include <string>
 #include <vector>
 
@@ -43,6 +44,7 @@ struct VehicleEvent {
 	int area;
 	std::string timestamp;           // csv Timestamp: ISO 8601 local time with UTC offset when it passed, or "" if unknown
 	int width = 0;                   // the vehicle's side-on length in pixels (VehicleDynamics::getLengthPx); not in the csv
+	SpeedTrend trend;                // entry and exit speed, acceleration class, speed 20 ft on (csv EntryMph..MphIn20ft)
 };
 
 // A vehicle the tracker followed into the speed zone but did not log: timed but slower than minLoggedSpeed (a walker,

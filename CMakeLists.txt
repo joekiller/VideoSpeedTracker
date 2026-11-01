@@ -122,6 +122,11 @@ endforeach()
 add_test(NAME software_level COMMAND level_test)
 add_test(NAME frame_input COMMAND frame_input_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-frame-input)
 add_test(NAME perspective COMMAND perspective_test)
+# Speed trend (SpeedTrend.h): entry and exit speed, the acceleration class and the speed 20 ft on, from exact and noisy
+# simulated passes through 14 and 20 ft zones at 30 and 60 fps.  Header only, no OpenCV.
+add_executable(speed_trend_test tests/speed_trend_test.cpp)
+target_include_directories(speed_trend_test PRIVATE ${VST_DIR})
+add_test(NAME speed_trend COMMAND speed_trend_test)
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}
     -DVST=$<TARGET_FILE:VideoSpeedTracker>
@@ -337,7 +342,7 @@ endif()
 
 if(VST_WERROR AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_engine vst_report VSTStudio level_test frame_input_test
-      perspective_test report_test health_test plan_test resume_test dashcam_test calibration_test engine_reconnect_test)
+      perspective_test speed_trend_test report_test health_test plan_test resume_test dashcam_test calibration_test engine_reconnect_test)
     if(TARGET ${t})
       target_compile_options(${t} PRIVATE -Werror)
     endif()

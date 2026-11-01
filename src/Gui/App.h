@@ -81,6 +81,10 @@ struct ResultRow {
 	int calKind = 0;            // 1: the user's own calibration drive, 2: their check drive (CalPass), left out of the tiles and charts
 	double drivenMph = 0;       // for those, the speed they said they drove
 	bool beforeCal = false;     // measured with an earlier calibration than the current one
+	// Speed trend (SpeedTrend.h): "decelerating", "steady", "accelerating", "rapid", or "" when not known.
+	std::string trend;
+	int entryMph = 0, exitMph = 0, mphIn20ft = 0;
+	double accel = 0;           // mph/s
 };
 
 // Where the Results page's rows come from.  Session: vehicles measured since Studio opened (with snapshots).  Saved:
