@@ -67,10 +67,11 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     frameWidth: 1280, frameHeight: 720,
   };
   const state = { running: true, paused: false, frame: 0, marks: {} };
-  // Step 2's site planner (GET/PUT /api/plan).  The demo street is calibrated (the Locust Avenue numbers above), so
-  // it starts as VST Studio would after step 5: measured.  Camera: the default phone guess.
-  const planState = { distFt: 0, clearFt: 0, source: 'calibration', note: '', carLengths: null,
-    camera: { hfov: 66, width: 1920, fps: 30, shutter: 120 } };
+  // Step 2's site planner (GET/PUT /api/plan), with VST Studio's draft model (src/Gui/Guide.cpp planCommit): every
+  // change goes into a draft the plan previews, and only {"save": true} (or autosave) makes it the saved plan; the
+  // one-way, compass and site name the map suggests wait in `pending` until then too.  The demo street is calibrated
+  // (the Locust Avenue numbers above), so it starts as VST Studio would after step 5: measured.
+  const camera = { hfov: 66, width: 1920, fps: 30, shutter: 120 };
   const measuredPlan = () => {
     const c = config;
     const frames = c.legalDirection === 'L2R' ? c.CalibrationFramesL2R : c.legalDirection === 'R2L' ? c.CalibrationFramesR2L
@@ -78,51 +79,135 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     return plan.fromCalibration(frames, c.CalibrationSpeed, c.CalibrationFPS, c.speedLineRight - c.speedLineLeft, c.AnalysisBoxWidth,
       Math.max(0, c.obstruction[1] - c.obstruction[0]));
   };
-  const useMeasured = () => {
+  const measuredStreet = () => {
     const m = measuredPlan();
-    Object.assign(planState, { distFt: plan.distForCoverFt(m.coverFt, planState.camera.hfov), clearFt: m.clearFt, source: 'calibration',
-      note: 'Measured by your step 5 calibration' });
+    return { distFt: plan.distForCoverFt(m.coverFt, camera.hfov), clearFt: m.clearFt, source: 'calibration', note: 'Measured by your step 5 calibration' };
   };
-  useMeasured();
+  let saved = { ...measuredStreet(), carLengths: null, map: null };
+  let draft = { ...saved };
+  let pending = {};   // { shortView, legalDirection, L2RDirection, R2LDirection, siteName } applied to config on save
+  let autosave = false;
   const r1 = (v) => Math.round(v * 10) / 10;
+  const same = (x, y) => Math.abs(x.distFt - y.distFt) < .05 && Math.abs(x.clearFt - y.clearFt) < .05 && x.source === y.source
+    && JSON.stringify(x.map) === JSON.stringify(y.map) && (x.speedLimit ?? config.speedLimit) === (y.speedLimit ?? config.speedLimit);
+  const dirty = () => !same(draft, saved) || Object.keys(pending).length > 0;
+  /** The draft's changes in words, like App::planChanges. */
+  const changes = () => {
+    const out = [];
+    const len = (what, was, now) => { if (Math.abs(was - now) >= .5) out.push(`${what}: ${was.toFixed(0)} → ${now.toFixed(0)} ft`); };
+    len('Window to the lane', saved.distFt, draft.distFt);
+    len('Clear stretch', saved.clearFt, draft.clearFt);
+    if (draft.source !== saved.source) out.push(`Street numbers: ${plan.SOURCE_NAMES[saved.source]} → ${plan.SOURCE_NAMES[draft.source]}`);
+    const lim = draft.speedLimit ?? config.speedLimit;
+    if (lim !== config.speedLimit) out.push(`Speed limit: ${config.speedLimit} → ${lim} mph`);
+    if (JSON.stringify(draft.map) !== JSON.stringify(saved.map)) out.push(draft.map?.street ? `Map: camera and lane pins on ${draft.map.street}` : 'Map: camera and lane pins placed');
+    if (pending.shortView) out.push('Turn on short-view timing (step 4\'s settings)');
+    if (pending.legalDirection) out.push(`One-way street: legal direction ${pending.legalDirection === 'L2R' ? 'left to right' : 'right to left'} in the picture`);
+    if (pending.L2RDirection) out.push(`Compass: left to right is ${pending.L2RDirection}-bound, right to left ${pending.R2LDirection}-bound`);
+    if (pending.siteName) out.push(`Site name: ${config.siteName} → ${pending.siteName}`);
+    return out;
+  };
+  const commit = () => {
+    if (draft.speedLimit != null) { config.speedLimit = draft.speedLimit; if (config.egregious <= config.speedLimit) config.egregious = config.speedLimit + 10; }
+    if (pending.shortView) config.subFrameTiming = 1;
+    for (const k of ['legalDirection', 'L2RDirection', 'R2LDirection', 'siteName']) if (pending[k]) config[k] = pending[k];
+    delete draft.speedLimit;
+    saved = { ...draft };
+    pending = {};
+  };
+  const edited = () => { if (autosave) commit(); };
+  const verdictOf = (st, short) => plan.verdict({ ...camera, distFt: st.distFt, clearFt: st.clearFt, speedLimit: st.speedLimit ?? config.speedLimit }, short);
   function planJson() {
-    const p = { ...planState.camera, distFt: planState.distFt, clearFt: planState.clearFt, speedLimit: config.speedLimit };
+    const lim = draft.speedLimit ?? config.speedLimit;
     const m = measuredPlan();
-    const v = plan.verdict(p, !!config.subFrameTiming);
+    const v = verdictOf(draft, !!config.subFrameTiming || !!pending.shortView);
+    const sv = verdictOf(saved, !!config.subFrameTiming);
+    let map = null;
+    if (draft.map) {
+      const r = plan.fromMap(draft.map);
+      map = { camLat: draft.map.camLat, camLon: draft.map.camLon, laneLat: draft.map.laneLat, laneLon: draft.map.laneLon,
+        street: draft.map.street || '', distFt: r ? r1(r.distFt) : 0, facing: r ? r.facing : '' };
+    }
     return {
-      street: { distFt: r1(p.distFt), clearFt: r1(p.clearFt), coverFt: r1(plan.coverFt(p.distFt, p.hfov)), source: planState.source,
-        sourceName: plan.SOURCE_NAMES[planState.source], note: planState.note, speedLimit: config.speedLimit },
+      street: { distFt: r1(draft.distFt), clearFt: r1(draft.clearFt), coverFt: r1(plan.coverFt(draft.distFt, camera.hfov)), source: draft.source,
+        sourceName: plan.SOURCE_NAMES[draft.source], note: draft.note, speedLimit: lim },
       presets: plan.PRESETS.map((x) => ({ ...x })),
-      camera: { ...planState.camera },
+      camera: { ...camera },
       verdict: { ...v, frameRate: null },
       measured: m ? { coverFt: r1(m.coverFt), clearFt: r1(m.clearFt), how: 'your step 5 calibration' } : null,
-      carLengths: planState.carLengths,
+      carLengths: draft.carLengths,
       picture: true,
       typicalCarFt: plan.TYPICAL_CAR_FT,
+      map,
+      legalDirection: pending.legalDirection || config.legalDirection,
+      L2RDirection: pending.L2RDirection || config.L2RDirection, R2LDirection: pending.R2LDirection || config.R2LDirection,
+      shortViewOnSave: !!pending.shortView,
+      dirty: dirty(), changes: changes(), autosave,
+      saved: { distFt: r1(saved.distFt), clearFt: r1(saved.clearFt), speedLimit: config.speedLimit, source: saved.source,
+        grade: sv.grade, label: sv.label, text: sv.text },
     };
   }
   /** Like VST Studio's applyPlan (src/Gui/Server.cpp): one change per request, problems in words. */
   function setPlan(b) {
     const num = (k) => (k in b ? (typeof b[k] === 'number' ? b[k] : NaN) : undefined);
+    const street = (distFt, clearFt, source, note) => Object.assign(draft, { distFt: Math.max(distFt, 3), clearFt: Math.max(clearFt, 3), source, note });
+    if ('save' in b) { if (b.save === true) commit(); return []; }
+    if ('discard' in b) { if (b.discard === true) { draft = { ...saved }; pending = {}; } return []; }
+    if ('autosave' in b) {
+      if (typeof b.autosave !== 'boolean') return ['autosave must be true or false'];
+      autosave = b.autosave;
+      if (autosave && dirty()) commit();
+      return [];
+    }
     if ('preset' in b) {
       const x = plan.PRESETS.find((q) => q.key === b.preset);
       if (!x) return ['unknown preset'];
-      Object.assign(planState, { distFt: x.distFt, clearFt: x.clearFt, source: 'guess', note: x.name });
+      street(x.distFt, x.clearFt, 'guess', x.name);
     } else if ('carLengths' in b) {
       const n = num('carLengths');
       if (!(n >= 1 && n <= 20)) return ['carLengths must be between 1 and 20'];
       const m = plan.fromCarLengths(n, config.AnalysisBoxWidth, Math.max(0, config.obstruction[1] - config.obstruction[0]));
-      Object.assign(planState, { distFt: plan.distForCoverFt(m.coverFt, planState.camera.hfov), clearFt: m.clearFt, source: 'picture',
-        note: `${n.toFixed(1)} car lengths across the picture`, carLengths: n });
+      street(plan.distForCoverFt(m.coverFt, camera.hfov), m.clearFt, 'picture', `${n.toFixed(1)} car lengths across the picture`);
+      draft.carLengths = n;
     } else if (b.useMeasured) {
-      useMeasured();
+      Object.assign(draft, measuredStreet());
+    } else if ('shortView' in b) {
+      if (typeof b.shortView !== 'boolean') return ['shortView must be true or false'];
+      if (b.shortView) pending.shortView = true; else delete pending.shortView;
+    } else if ('map' in b) {
+      const mj = b.map;
+      if (!mj || typeof mj !== 'object' || Array.isArray(mj)) return ['map must be an object'];
+      for (const k of ['camLat', 'camLon', 'laneLat', 'laneLon']) if (k in mj && typeof mj[k] !== 'number') return [`map.${k} must be a number`];
+      if (![mj.camLat, mj.laneLat].every((x) => x == null || (x >= -90 && x <= 90))) return ['latitudes must be between -90 and 90'];
+      if (![mj.camLon, mj.laneLon].every((x) => x == null || (x >= -180 && x <= 180))) return ['longitudes must be between -180 and 180'];
+      const pick = { camLat: mj.camLat || 0, camLon: mj.camLon || 0, laneLat: mj.laneLat || 0, laneLon: mj.laneLon || 0,
+        ...(typeof mj.wayBearing === 'number' ? { wayBearing: mj.wayBearing } : {}),
+        oneway: typeof mj.oneway === 'number' ? Math.max(-1, Math.min(1, Math.round(mj.oneway))) : 0,
+        maxspeedMph: typeof mj.maxspeedMph === 'number' ? mj.maxspeedMph : 0,
+        street: typeof mj.street === 'string' ? mj.street.slice(0, 80) : '' };
+      const r = plan.fromMap(pick);
+      if (!r) {
+        const d = pick.camLat && pick.laneLat ? plan.groundDistanceM(pick.camLat, pick.camLon, pick.laneLat, pick.laneLon) * plan.FT : 0;
+        return [d ? `the two pins are ${d.toFixed(0)} ft apart; put one on your window and one in the middle of the lane in front of it`
+          : 'place both pins: your window, then the middle of the lane'];
+      }
+      street(r.distFt, Math.min(draft.clearFt, plan.coverFt(r.distFt, camera.hfov)), 'map', `Measured on the map${pick.street ? `, ${pick.street}` : ''}`);
+      draft.map = { camLat: pick.camLat, camLon: pick.camLon, laneLat: pick.laneLat, laneLon: pick.laneLon, street: pick.street };
+      if (r.speedLimit) draft.speedLimit = r.speedLimit;
+      pending = { ...(pending.shortView ? { shortView: true } : {}) };
+      if (r.l2r !== config.L2RDirection || r.r2l !== config.R2LDirection) Object.assign(pending, { L2RDirection: r.l2r, R2LDirection: r.r2l });
+      if (r.legal !== 'both' && r.legal !== config.legalDirection) pending.legalDirection = r.legal;
+      if (pick.street && (!config.siteName || config.siteName === 'My street')) pending.siteName = pick.street;
     } else {
-      const d = num('distFt'), c = num('clearFt');
-      if (d === undefined && c === undefined) return ['send preset, distFt/clearFt, carLengths or useMeasured'];
+      const d = num('distFt'), c = num('clearFt'), lim = num('speedLimit');
+      if (d === undefined && c === undefined && lim === undefined) return ['send preset, distFt/clearFt, speedLimit, carLengths, useMeasured, shortView, map, save, discard or autosave'];
       if (d !== undefined && !(d >= 3 && d <= 1000)) return [Number.isNaN(d) ? 'distFt must be a number' : 'distFt must be between 3 and 1000'];
       if (c !== undefined && !(c >= 3 && c <= 1000)) return [Number.isNaN(c) ? 'clearFt must be a number' : 'clearFt must be between 3 and 1000'];
-      Object.assign(planState, { distFt: d ?? planState.distFt, clearFt: c ?? planState.clearFt, source: 'typed', note: '' });
+      if (lim !== undefined && !(lim >= 5 && lim <= 80)) return [Number.isNaN(lim) ? 'speedLimit must be a number' : 'speedLimit must be between 5 and 80'];
+      if (d !== undefined || c !== undefined) street(d ?? draft.distFt, c ?? draft.clearFt, 'typed', '');
+      if (lim !== undefined) draft.speedLimit = Math.round(lim);
     }
+    edited();
     return [];
   }
   // VST Studio's calibration-history.csv, in memory: { time, kind: 'apply'|'check', dir, calFrames, error }.

@@ -98,6 +98,9 @@ public:
 	// Setup progress, shared by the side rail and the header's "next step" button.
 	bool zonesDone();
 	bool calibrationDone();
+	bool calibrationStale() const;      // calibrated for this config, but the speed lines have moved since
+	std::string speedLinesSig() const;  // the speed lines and box width a calibration is made on
+	bool remoteOn() const;              // the companion server is up for the phone (not just the map's local one)
 	std::string dataDir();
 	std::string findSample();
 	// Sets the calibration for one direction from a pass at a known speed; keeps the other direction's
@@ -152,7 +155,40 @@ public:
 	// and syncPlanFromCalibration() applies it once per new calibration, so the planner follows step 5 by itself and
 	// a number typed afterwards sticks.  Called after every calibration and whenever the planner or /api/plan is shown.
 	plan::Inputs planInputs() const;
+	static plan::Inputs planInputs(const PlanState& s);
 	void setPlanStreet(double distM, double clearM, plan::Source source, const std::string& note);
+
+	// Pick your spot's save model.  The page (and the phone's "Your street", through /api/plan) edits planDraft_, a
+	// preview: the verdict, diagram and table show it, nothing else in the app does, and nothing changes until
+	// planCommit() saves it (the Save button, PUT /api/plan {"save": true}) or planDiscard() drops it.  With
+	// prefs.planAutosave on, planEdited() saves each edit straight away instead.
+	//   planDraft_.plan     the planner's numbers (PlanState, Settings.h)
+	//   planDraft_.shortView / legal / l2r / r2l / siteName
+	//                       settings that live in VST.cfg or elsewhere, which the draft applies only on Save: the
+	//                       short-view timing button and what the map read about the street (one-way, compass)
+	// planBase_ is the saved plan the draft started from.  When the saved plan changes underneath (a calibration
+	// measured the street, Mark your street's lane card, the Live page's limit), planSync() moves an untouched draft
+	// along with it, and keeps an edited one, noting that the saved plan moved (planMoved_).
+	struct PlanDraft {
+		PlanState plan;
+		bool shortView = false;
+		std::string legal, l2r, r2l, siteName;   // "" = leave as it is
+	};
+	PlanDraft planDraft_;
+	PlanState planSaved() const { return PlanState::of(prefs); }
+	bool planDirty() const;
+	std::vector<std::string> planChanges() const;   // the draft against the saved plan, in words, one change a line
+	void planSync();
+	bool planCommit(bool quiet = false);
+	void planDiscard();
+	void planEdited();                              // after any change to the draft: saves it when autosave is on
+	void setDraftStreet(double distM, double clearM, plan::Source source, const std::string& note);
+	// What the map placed (plan::fromMap), into the draft: the distance, the posted limit, the pins, the street's name,
+	// and the one-way direction and compass headings for Mark your street.  False (and why) when the pins don't work.
+	bool applyMapToDraft(const plan::MapPick& m, std::string& why);
+	// Opens Pick your spot's map in the default browser: the companion page served by Studio itself.  With the companion
+	// off, the server starts on this computer only (127.0.0.1) for the map's sake.
+	void openMap();
 	bool planFromCalibration(plan::Measured& m, std::string& how);
 	void syncPlanFromCalibration(bool announce = true);
 	// "Cars across the picture" needs a picture of the user's own street: an open camera, stream, video or photo that
@@ -249,9 +285,25 @@ private:
 	void sharedFeedBadge(const View& v);
 	const char* feedHint(const char* idle) const;
 	void sitePlanner();
+	void planSaveBar(float width);      // Guide.cpp: Pick your spot's unsaved-changes bar (Save, Discard, autosave)
+	void mapCard(float width);          // Guide.cpp: "Find it on the map"
+	void cameraTiers(float width);      // Guide.cpp: which camera to get, worked out for this street
+	PlanState planBase_;                // the saved plan the draft started from
+	bool planMoved_ = false;            // the saved plan changed under an edited draft
+	bool planLoaded_ = false;           // planDraft_ read from prefs (a draft kept over a restart) yet
+	bool planWasShown_ = false;
+	double planSavedAt_ = 0;            // now() at the last save of the plan, for the bar's "Saved automatically"
+	double rulerCars_ = 0;
+	float rulerShift_ = 0, rulerY_ = -1;  // the ruler's stripes slid sideways (frame px) and their height (-1 = lane height)              // Zero in's car-length ruler as it's being slid (0 = start from the draft)         // Pick your spot was on screen last frame (leaving it with a draft says so)
+	bool localServer_ = false;          // the server runs only for the map, on 127.0.0.1
 	void shortViewNote(double coverM, bool on);   // Guide.cpp: the planner's short-view advice and its settings button
 	void zeroInCard(float width);       // Guide.cpp: refining the street, from the picture or from a calibration
 	void autosave();
+	// Preferences are written as they change (checked every couple of seconds, once nothing is being edited), not only
+	// at a clean exit, so a crash, a power cut or a killed process doesn't lose step 2's numbers.
+	void savePrefsSoon();
+	double prefsCheckAt_ = 0;
+	std::string prefsWritten_;
 	void recordCalibration(CalEvent e);
 	const std::vector<CalEvent>& calibrationHistory();
 	void calibrationCheckCard(float width);

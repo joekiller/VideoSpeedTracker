@@ -156,7 +156,17 @@ bool App::calibrationDone() {
 	// The bundled sample's VST.cfg comes calibrated for that video, so the sample never nags.
 	if (sampleCache_.empty()) sampleCache_ = findSample();
 	if (!source.empty() && source == sampleCache_) return true;
-	return !cfg.path().empty() && prefs.calibratedFor == cfg.path() && cfg.problems().empty();
+	return !cfg.path().empty() && prefs.calibratedFor == cfg.path() && cfg.problems().empty() && !calibrationStale();
+}
+
+// A calibration counts frames between the speed lines, so moving them (by hand on Mark your street, or short-view
+// timing's re-fit on Save in step 2) or resizing the box makes it wrong.  The lines it was made on are kept with it.
+std::string App::speedLinesSig() const {
+	return std::to_string(cfg.g.speedLineLeft) + "," + std::to_string(cfg.g.speedLineRight) + "," + std::to_string(cfg.g.AnalysisBoxWidth);
+}
+
+bool App::calibrationStale() const {
+	return !cfg.path().empty() && prefs.calibratedFor == cfg.path() && !prefs.calibratedLines.empty() && prefs.calibratedLines != speedLinesSig();
 }
 
 // Settings save themselves.  Edits are debounced: a pending save waits until no control has been active for
@@ -171,6 +181,19 @@ void App::autosave() {
 	autosaveAt_ = 0;
 	if (cfg.save()) savedAt_ = t;
 	else toast(cfg.error, c::bad, ICON_WARN);
+}
+
+bool App::remoteOn() const { return server && server->running() && !localServer_; }
+
+void App::savePrefsSoon() {
+	double t = now();
+	if (!persist || screenshotMode || t < prefsCheckAt_ || ImGui::IsAnyItemActive()) return;
+	prefsCheckAt_ = t + 2;
+	std::string text = prefs.render();
+	if (prefsWritten_.empty()) { prefsWritten_ = text; return; }   // as loaded; nothing to write yet
+	if (text == prefsWritten_) return;
+	prefs.save();
+	prefsWritten_ = text;
 }
 
 std::string App::dataDir() {
@@ -284,7 +307,8 @@ void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
 	// the same lane.  (Before, a pass against the legal direction calibrated only that way, and the legal direction,
 	// the one step 2 and the speed zone card read, kept whatever it had: often the 2016 sample's value.)
 	const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
-	prefs.calibratedFor = cfg.path();   // autosave writes it to VST.cfg on the next frame
+	prefs.calibratedFor = cfg.path();
+	prefs.calibratedLines = speedLinesSig();   // autosave writes it to VST.cfg on the next frame
 	for (bool dir : { l2r, !l2r }) {
 		if (dir != l2r && !oneWay) break;
 		(dir ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
@@ -346,6 +370,7 @@ void App::averageCalibration(const CalCheck& check) {
 	if (g.LegalDirection == "L2R" || g.LegalDirection == "R2L")   // one lane: both directions (see applyCalibration())
 		(check.l2r ? g.CalibrationFramesR2L : g.CalibrationFramesL2R) = calFrames;
 	prefs.calibratedFor = cfg.path();
+	prefs.calibratedLines = speedLinesSig();
 	// Recorded as an apply of the check pass (its speed, frames and fps) with the averaged value in force.  That
 	// starts a fresh calibration, so the direction reads "not checked" until a third pass checks the average.
 	CalEvent e;
@@ -392,6 +417,7 @@ void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const 
 		if (lastCheck_.l2r == dirL2R) lastCheck_ = CalCheck();
 	}
 	prefs.calibratedFor = cfg.path();
+	prefs.calibratedLines = speedLinesSig();
 	calibAppliedId_ = 0;
 	toast(std::string("Calibrated from ") + from + ": " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
 		+ " mph. Check it with one drive past.", c::ok, ICON_CHECK_CIRCLE);
@@ -432,6 +458,8 @@ void App::toast(const std::string& text, unsigned color, const char* icon) {
 
 void App::setRemote(bool on) {
 	prefs.remoteEnabled = on;
+	// The map's local-only server makes way for the real one (or just stops).
+	if (localServer_) { server.reset(); localServer_ = false; }
 	if (!on) { server.reset(); return; }
 	if (server && server->running()) return;
 	server = std::make_unique<Server>(*this);
@@ -634,6 +662,15 @@ void App::frame(float w, float h) {
 	}
 	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
 	autosave();
+	// Pick your spot's draft: follow the saved plan where untouched, save it as it's edited when autosave is on (once no
+	// control is being dragged or typed in), and say so when the page is left with changes unsaved.
+	planSync();
+	if (prefs.planAutosave && planDirty() && !ImGui::IsAnyItemActive()) planCommit(true);
+	bool planShown = page == Page::Guide && guideStep_ == 1;
+	if (planWasShown_ && !planShown && planDirty())
+		toast("Pick your spot has unsaved changes. They're kept as a preview until you save or discard them there.", c::warn, ICON_WARN);
+	planWasShown_ = planShown;
+	savePrefsSoon();
 
 	ImGui::SetNextWindowPos(ImVec2(0, 0));
 	ImGui::SetNextWindowSize(ImVec2(w, h));
@@ -650,7 +687,10 @@ void App::frame(float w, float h) {
 	drawHeader(w - railW);
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(24), px(18)));
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, v4(c::bg0));
-	ImGui::BeginChild("page", ImVec2(w - railW, 0), ImGuiChildFlags_AlwaysUseWindowPadding, page == Page::Guide || page == Page::Source || page == Page::Companion ? 0 : ImGuiWindowFlags_NoScrollbar);
+	// One child per page (and per Guide step), so each keeps its own scroll position when you leave and come back.
+	char pageId[24];
+	snprintf(pageId, sizeof pageId, "page%d_%d", int(page), page == Page::Guide ? guideStep_ : 0);
+	ImGui::BeginChild(pageId, ImVec2(w - railW, 0), ImGuiChildFlags_AlwaysUseWindowPadding, page == Page::Guide || page == Page::Source || page == Page::Companion ? 0 : ImGuiWindowFlags_NoScrollbar);
 	ImGui::PopStyleColor();
 	switch (page) {
 	case Page::Guide: pageGuide(); break;
@@ -688,10 +728,10 @@ int App::flowStep() const {
 bool App::flowDone(int step) {
 	switch (step) {
 	case 0: return prefs.guideDone || (page == Page::Guide && guideStep_ > 0);
-	case 1: return prefs.guideDone;
+	case 1: return prefs.planConfirmed;   // saved at least once (a rough guess counts)
 	case 2: return (!source.empty() && !player.opening()) || !batch.empty();   // connected, not still connecting
 	case 3: return zonesDone();
-	case 4: return calibrationDone();
+	case 4: return calibrationDone() && !(sampleCache_.size() && source == sampleCache_);   // the sample's own calibration isn't yours
 	default: return false;
 	}
 }
@@ -777,7 +817,8 @@ void App::drawRail(float h) {
 		sectionLabel(label);
 	};
 	// One row: icon, label, and for a setup step its number (a check once it's done).
-	auto row = [&](int id, const char* icon, const char* label, bool sel, int number, bool done) -> bool {
+	// `unsaved` swaps the number for an amber dot (Pick your spot with a draft), with a tooltip saying what it means.
+	auto row = [&](int id, const char* icon, const char* label, bool sel, int number, bool done, bool unsaved = false) -> bool {
 		ImVec2 pos = ImGui::GetCursorScreenPos();
 		float iw = ImGui::GetContentRegionAvail().x, ih = px(40);
 		ImGui::PushID(id);
@@ -793,7 +834,15 @@ void App::drawRail(float h) {
 		ImU32 col = sel ? c::text : (hov ? c::text : c::dim);
 		dl->AddText(f, fsz(f), pos + ImVec2(px(14), (ih - fsz(f)) * .5f), sel ? c::accent : col, icon);
 		dl->AddText(f, fsz(f), pos + ImVec2(px(44), (ih - fsz(f)) * .5f), col, label);
-		if (number > 0) {
+		if (unsaved) {
+			ImVec2 cc = pos + ImVec2(iw - px(18), ih * .5f);
+			dl->AddCircleFilled(cc, px(9), alpha(c::warn, .25f));
+			dl->AddCircleFilled(cc, px(4), c::warn);
+			ImGui::PushID(id);
+			if (hov) ImGui::SetTooltip("Unsaved changes: they're a preview until you save them on this page.");
+			ImGui::PopID();
+		}
+		else if (number > 0) {
 			ImVec2 cc = pos + ImVec2(iw - px(18), ih * .5f);
 			ImFont* sf = fonts.caption;
 			const std::string n = done ? std::string(ICON_CHECK) : std::to_string(number);
@@ -810,7 +859,7 @@ void App::drawRail(float h) {
 	group("SET UP");
 	int here = flowStep();
 	for (int i = 0; i < kFlowSteps; i++)
-		if (row(100 + i, kFlow[i].icon, kFlow[i].name, here == i, i + 1, flowDone(i))) goFlow(i);
+		if (row(100 + i, kFlow[i].icon, kFlow[i].name, here == i, i + 1, flowDone(i), i == 1 && planDirty())) goFlow(i);
 	group("RUN");
 	item(Page::Track);
 	item(Page::Results);
@@ -837,8 +886,8 @@ void App::drawRail(float h) {
 		: (savedAt_ > 0 && now() - savedAt_ < 3) ? "  saved " ICON_CHECK : "  saved";
 	std::string l1 = std::string(ICON_GEAR "  ") + cfgName + cfgState;
 	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(38)), broken ? c::bad : c::dim, l1.c_str());
-	std::string l2 = std::string(ICON_BROADCAST "  companion ") + (server && server->running() ? "on" : "off");
-	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(60)), server && server->running() ? c::accent2 : c::faint, l2.c_str());
+	std::string l2 = std::string(ICON_BROADCAST "  companion ") + (remoteOn() ? "on" : localServer_ ? "off (map open)" : "off");
+	dl->AddText(fonts.caption, fsz(fonts.caption), p + ImVec2(px(12), px(60)), remoteOn() ? c::accent2 : c::faint, l2.c_str());
 	ImGui::EndChild();
 }
 
@@ -876,7 +925,8 @@ void App::drawHeader(float w) {
 	bool runnable = haveSource && cfg.problems().empty();
 	int nextStep = -1;
 	if (!run) {
-		if (here >= 0 && here < kFlowSteps - 1 && !(runnable && zonesDone() && calibrationDone())) nextStep = here + 1;
+		// Setup walks step by step to Calibrate; only there (or off the flow) does the button start a run.
+		if (here >= 0 && here < kFlowSteps - 1) nextStep = here + 1;
 		else if (!haveSource) nextStep = 2;
 		else if (!cfg.problems().empty()) nextStep = 3;
 	}
@@ -885,7 +935,7 @@ void App::drawHeader(float w) {
 		runText = std::string(here > nextStep ? "Back to: " : "Next: ") + kFlow[nextStep].name + "  " + (here > nextStep ? ICON_ARROW_LEFT : ICON_ARROW_RIGHT);
 	const char* runLabel = runText.c_str();
 	bool calNag = !run && nextStep < 0 && !calibrationDone() && page != Page::Calibrate;
-	const char* calText = ICON_GAUGE "  Not calibrated yet";
+	const char* calText = calibrationStale() ? ICON_GAUGE "  Speed lines moved: calibrate again" : ICON_GAUGE "  Not calibrated yet";
 	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
 	float pauseW = run ? ImGui::GetFrameHeight() + px(10) : 0;
@@ -1970,6 +2020,11 @@ void App::pageCalibrate() {
 	}
 	bool coneShots = !coneShot_[0].empty() && !coneShot_[1].empty();
 	if (!coneShots || calibMode_ != 2) coneView_ = -1;
+	if (calibrationStale()) {
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+		ImGui::TextWrapped(ICON_WARN "  The speed lines moved since this calibration (step 4, or short-view timing in step 2), so it no longer fits them. Calibrate once more, any way below.");
+		ImGui::PopStyleColor();
+	}
 	float avail = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
 	float sideW = px(400);
 	float canvasW = avail - sideW - px(20);
@@ -3330,7 +3385,7 @@ void App::reportDialog() {
 void App::pageCompanion() {
 	float avail = ImGui::GetContentRegionAvail().x;
 	float leftW = std::min(px(520), avail * .45f);
-	bool on = server && server->running();
+	bool on = remoteOn();
 
 	beginCard("remote", ICON_BROADCAST, "Remote companion", ImVec2(leftW, 0));
 	dimText("Open VST on your phone to check the camera's aim, help with calibration from the street, and see recent speeders, "
@@ -3342,7 +3397,7 @@ void App::pageCompanion() {
 	// value before the click dereferenced a destroyed server, and turning the companion off crashed the app.
 	if (ImGui::Checkbox("Allow the companion app to connect", &want)) {
 		setRemote(want);
-		on = server && server->running();
+		on = remoteOn();
 	}
 	ImGui::BeginDisabled(on);
 	formLabel("Port", px(110));

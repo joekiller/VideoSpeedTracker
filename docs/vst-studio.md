@@ -46,12 +46,27 @@ roughly: pick the closest of **Narrow street from a front window** (20 ft to the
 street from the house** (35 / 50 ft) or **Wide street or a long, open view** (50 / 90 ft), or type the distance to
 the moving lane and how long a stretch of it is clear, in feet, and set the speed limit. *Quick ways to estimate*
 has tricks for doing it without a tape (paces, sidewalk slabs, a parked car, a map's measure tool). A label under
-the numbers says where they came from: **Rough guess**, **Your numbers**, **From your picture** or **Measured**.
+the numbers says where they came from: **Rough guess**, **Your numbers**, **From your picture**, **From the map** or
+**Measured**.
+
+**Nothing changes until you save.** Every change on this page (and from the phone, which edits the same plan) is a
+preview: the bar at the top says **Preview: N unsaved changes** (hover it for the list), the verdict shows the saved
+plan's beside the preview's, and the step's dot on the left rail turns amber. **Save changes** keeps them,
+**Discard** puts the saved plan back. Leaving the page keeps the preview, and so does closing VST Studio. Turn on
+**Save automatically** (off by default) to save each change as it is made. Short-view timing, and the one-way,
+compass and site name the map finds, are applied to your settings only when you save.
+
+**Find it on the map** opens a map of OpenStreetMap in your web browser (the phone has it too, under Pick your spot).
+Search for your address, drop pin 1 on the window and pin 2 in the middle of the lane in front of it, and **Send to
+Pick your spot**: the distance between the pins becomes the plan's, and the street under pin 2 gives its name, whether
+it is one-way (and so which way is legal in the picture), its posted limit and the compass headings of cars crossing
+the picture. The search and the map pictures come from OpenStreetMap's servers; the pins only go to your VST.
 
 **Zero in on it** firms the guess up as setup goes on, so nobody has to measure anything on day one:
 
 - **From your camera's picture.** Once a camera (or a video or photo of your own view) is open, the card shows it with
-  a ruler of car-length blocks across the lane. Slide until one block is as long as a car, then **Use it**: that many
+  a ruler of car-length blocks across the lane. Drag the stripes sideways or up and down onto a parked car (or use
+  **Slide sideways**), scroll or use **Size** until one block is as long as the car, then **Use it**: that many
   15.5 ft car lengths is the width of street the picture spans, which sets the plan.
 - **From your calibration.** Any calibration in step 5 (a drive past, VST Ride-along, a Tesla clip, a car of known
   length, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
@@ -62,7 +77,7 @@ the numbers says where they came from: **Rough guess**, **Your numbers**, **From
 With a camera connected, **Plan with your camera** copies its real size and frame rate into the plan. A camera
 below 24 fps gets a note saying how fast a car the planned view still times and how to raise it (most webcams and
 phone apps drop to 15 fps in dim light or on "auto"); the frame-rate check on Connect the camera says the same.
-The phone companion's Setup step 1 has the same card (`GET/PUT /api/plan`, docs/companion-api.md). The camera
+The phone companion's Setup step 2 has the same card (`GET/PUT /api/plan`, docs/companion-api.md). The camera
 starts as a phone; pick another from the list once you know which one you'll use, and open **Camera details** for
 field of view, resolution, frame rate and shutter. It shows a to-scale top view and works out the usable timing
 zone, the frames a car spends in it, the timing and calibration error, and motion blur, with a verdict and a table of
@@ -198,7 +213,7 @@ can turn into one: cones a taped distance apart, or a car whose length you know.
   error grows with it, and with the camera at an angle to the street the same stretch of road doesn't cover the same
   pixels everywhere across the picture. Below about 60% of the zone the page says so.
 
-  The phone companion has the same step (Setup › Calibration drive › *No car handy?*), so you can stand on the
+  The phone companion has the same step (Setup › 5 Calibrate › *No car handy?*), so you can stand on the
   street with the phone on your Wi-Fi, see yourself and the pole on the live picture, tap it and apply there.
 
   On your own, or with the phone busy being the camera, **Take two timed pictures**: press it, walk out, and hold

@@ -209,12 +209,14 @@ describe('plan.js (the demo planner) matches src/Gui/Plan.cpp', () => {
     assert.equal(plan.fromCarLengths(6).coverFt, 93);
     assert.equal(plan.fromCarLengths(6).clearFt, 93);
   });
-  it('the narrow preset: short view, about ±0.9 mph at 35 mph over 18 ft at 30 fps; needs a tweak at 15 fps', () => {
+  it('the narrow preset: short view, about ±0.9 mph at 35 mph over 18 ft at 30 fps, blurry at 1/120 s; needs a tweak at 15 fps', () => {
     const narrow = { ...phone, distFt: 20, clearFt: 20 };
     const v = plan.verdict(narrow, false);
     assert.equal(v.shortView, true);
-    assert.equal(v.text, 'About ±0.9 mph at 35 mph, over a 18 ft zone.');
-    assert.equal(v.label, 'Good to go');
+    // The timing is good, but a phone's 1/120 s smears a car 32 px at that distance (the red blur tile), so it says so.
+    assert.equal(v.text, 'About ±0.9 mph at 35 mph, over a 18 ft zone. Cars blur a lot at this shutter: 1/500 s or faster sharpens them.');
+    assert.equal(v.label, 'Works, a bit rougher');
+    assert.equal(plan.verdict({ ...narrow, shutter: 1000 }, false).label, 'Good to go');
     const slow = plan.verdict({ ...narrow, fps: 15 }, false);
     assert.equal(slow.grade, 2);
     assert.match(slow.text, /^A car at 35 mph crosses the 18 ft zone in 5 frames/);
@@ -224,5 +226,55 @@ describe('plan.js (the demo planner) matches src/Gui/Plan.cpp', () => {
   });
   it('distance from cover round-trips through the field of view', () => {
     for (const hfov of [45, 66, 100]) assert.ok(Math.abs(plan.coverFt(plan.distForCoverFt(93, hfov), hfov) - 93) < 1e-9);
+  });
+  it('a 60 fps C922 never grades worse than a 30 fps phone; heavy blur is never "Good to go"', () => {
+    const street = { ...phone, distFt: 42, clearFt: 54 };
+    const c922 = { ...street, hfov: 70, width: 1280, fps: 60, shutter: 1000 };
+    assert.ok(plan.verdict(c922, false).grade <= plan.verdict(street, false).grade);
+    const blur = plan.verdict({ ...phone, distFt: 20, clearFt: 20, shutter: 60 }, false);
+    assert.ok(blur.blurry && blur.grade >= 1);
+    assert.match(blur.text, /shutter/);
+  });
+  it('the map: 22 ft due east, a camera facing east sees southbound cars go left to right', () => {
+    const lon = -78.4870 + 22 / plan.FT / (111320 * Math.cos(38.023 * Math.PI / 180));
+    const r = plan.fromMap({ camLat: 38.0230, camLon: -78.4870, laneLat: 38.0230, laneLon: lon });
+    assert.ok(Math.abs(r.distFt - 22) < .3);
+    assert.equal(r.facing, 'E');
+    assert.equal(r.l2r, 'S');
+    assert.equal(r.r2l, 'N');
+    assert.equal(r.legal, 'both');
+    assert.equal(plan.compass8(113), 'SE');
+    assert.equal(plan.fromMap({ camLat: 38, camLon: -78, laneLat: 38, laneLon: -78 }), null, 'one tap is not two pins');
+  });
+});
+
+// The map page's OpenStreetMap readers (js/views/map.js): what it sends VST about the street under the lane pin.
+describe('map.js reads OpenStreetMap tags', async () => {
+  const map = await import('../js/views/map.js');
+  it('posted limits: mph as written, bare numbers are km/h', () => {
+    assert.equal(map.maxspeedMph('25 mph'), 25);
+    assert.equal(map.maxspeedMph('40'), 25);
+    assert.equal(map.maxspeedMph('signals'), 0);
+    assert.equal(map.maxspeedMph(undefined), 0);
+  });
+  it('one-way: yes is along the drawn direction, -1 against it, a roundabout is one-way', () => {
+    assert.equal(map.onewayOf({ oneway: 'yes' }), 1);
+    assert.equal(map.onewayOf({ oneway: '-1' }), -1);
+    assert.equal(map.onewayOf({ oneway: 'no' }), 0);
+    assert.equal(map.onewayOf({ junction: 'roundabout' }), 1);
+    assert.equal(map.onewayOf({}), 0);
+  });
+  it('the street under the pin is the nearest road segment, not a footpath beside it', () => {
+    const ways = [
+      { tags: { highway: 'footway' }, geometry: [{ lat: 38.0005, lon: -78.00001 }, { lat: 38.0006, lon: -78.00001 }] },
+      { tags: { highway: 'residential', name: '7th 1/2 Street Southwest', oneway: 'yes', maxspeed: '25 mph' },
+        geometry: [{ lat: 38, lon: -78 }, { lat: 38.001, lon: -78.001 }] },
+    ];
+    const s = map.nearestStreet(ways, 38.0005, -78.0005);
+    assert.equal(s.street, '7th 1/2 Street Southwest');
+    assert.equal(s.oneway, 1);
+    assert.equal(s.maxspeedMph, 25);
+    assert.ok(Math.abs(s.wayBearing - 321.8) < 1, `bearing ${s.wayBearing}`);
+    assert.equal(map.nearestStreet(ways, 38.01, -78.01), null, 'nothing within 30 m');
   });
 });

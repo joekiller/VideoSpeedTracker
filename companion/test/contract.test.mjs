@@ -304,7 +304,7 @@ describe('PUT /api/config', () => {
 });
 
 const PLAN = {
-  street: (s) => s && ['distFt', 'clearFt', 'coverFt'].every((k) => isNum(s[k])) && ['guess', 'typed', 'picture', 'calibration'].includes(s.source)
+  street: (s) => s && ['distFt', 'clearFt', 'coverFt'].every((k) => isNum(s[k])) && ['guess', 'typed', 'picture', 'calibration', 'map'].includes(s.source)
     && isStr(s.sourceName) && isStr(s.note) && isInt(s.speedLimit),
   presets: (a) => Array.isArray(a) && a.length >= 3 && a.every((x) => isStr(x.key) && isStr(x.name) && isStr(x.hint) && isNum(x.distFt) && isNum(x.clearFt)),
   camera: (c) => c && ['hfov', 'width', 'fps', 'shutter'].every((k) => isNum(c[k])),
@@ -314,6 +314,15 @@ const PLAN = {
   carLengths: (n) => n === null || isNum(n),
   picture: isBool,
   typicalCarFt: isNum,
+  map: (m) => m === null || (['camLat', 'camLon', 'laneLat', 'laneLon', 'distFt'].every((k) => isNum(m[k])) && isStr(m.street) && isStr(m.facing)),
+  legalDirection: (d) => ['both', 'L2R', 'R2L'].includes(d),
+  L2RDirection: isStr,
+  R2LDirection: isStr,
+  shortViewOnSave: isBool,
+  dirty: isBool,
+  changes: (a) => Array.isArray(a) && a.every(isStr),
+  autosave: isBool,
+  saved: (s) => s && isNum(s.distFt) && isNum(s.clearFt) && isInt(s.speedLimit) && isStr(s.source) && [0, 1, 2].includes(s.grade) && isStr(s.label) && isStr(s.text),
 };
 
 describe('GET/PUT /api/plan', () => {
@@ -325,7 +334,7 @@ describe('GET/PUT /api/plan', () => {
 
   it('refuses bad changes with 200 {ok:false, problems, plan} and changes nothing', async () => {
     const { data: before } = await api.get('/api/plan');
-    for (const bad of [{ preset: 'castle' }, { distFt: 'far' }, { clearFt: 1 }, { carLengths: 99 }, {}]) {
+    for (const bad of [{ preset: 'castle' }, { distFt: 'far' }, { clearFt: 1 }, { carLengths: 99 }, { autosave: 'yes' }, { map: { camLat: 1 } }, { map: { camLat: 99, camLon: 0, laneLat: 1, laneLon: 0 } }, {}]) {
       const r = await api.put('/api/plan', bad);
       assert.equal(r.status, 200, `${JSON.stringify(bad)}: rejected in-band`);
       assert.equal(r.data.ok, false, `${JSON.stringify(bad)}: ok`);
@@ -347,12 +356,44 @@ describe('GET/PUT /api/plan', () => {
       assert.equal(r.data.plan.street.source, 'typed');
       assert.equal(r.data.plan.street.clearFt, 30);
       r = await api.put('/api/plan', { carLengths: 6 });
-      assert.equal(r.data.plan.street.source, 'picture');
-      assert.equal(r.data.plan.street.coverFt, 93);
-      assert.equal(r.data.plan.carLengths, 6);
+      if (r.data.plan.picture) {
+        assert.equal(r.data.plan.street.source, 'picture');
+        assert.equal(r.data.plan.street.coverFt, 93);
+        assert.equal(r.data.plan.carLengths, 6);
+      } else {
+        // No picture of the user's own street (VST Studio on its bundled sample): refused, saying why.
+        assert.equal(r.data.ok, false);
+        assert.match(r.data.problems.join(' '), /picture/);
+      }
     } finally {
-      await api.put('/api/plan', { distFt: before.street.distFt, clearFt: before.street.clearFt });
+      await api.put('/api/plan', { discard: true });
     }
+  });
+
+  it('changes are a preview until saved; discard puts the saved plan back', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes the planner; set MUTATE=1 to run against a real VST Studio');
+    let { data: p } = await api.get('/api/plan');
+    if (p.autosave) await api.put('/api/plan', { autosave: false });
+    await api.put('/api/plan', { discard: true });
+    ({ data: p } = await api.get('/api/plan'));
+    const saved = p.saved;
+    assert.equal(p.dirty, false);
+    let r = await api.put('/api/plan', { distFt: 27, clearFt: 31 });
+    assert.equal(r.data.plan.dirty, true, 'an edit is unsaved');
+    assert.equal(r.data.plan.street.distFt, 27, 'the plan previews the draft');
+    assert.deepEqual(r.data.plan.saved, saved, 'the saved plan is untouched');
+    assert.ok(r.data.plan.changes.some((c) => /Window to the lane/.test(c)), 'the change is listed in words');
+    r = await api.put('/api/plan', { discard: true });
+    assert.equal(r.data.plan.dirty, false);
+    assert.equal(r.data.plan.street.distFt, saved.distFt);
+    // Two pins about 7 m apart, square-on to a north-south one-way: 23 ft, and the legal way read off the map.
+    r = await api.put('/api/plan', { map: { camLat: 38.0293, camLon: -78.4900, laneLat: 38.0293, laneLon: -78.48992, wayBearing: 0, oneway: 1, street: 'Test St' } });
+    assert.equal(r.data.ok, true, r.data.problems.join('. '));
+    assert.equal(r.data.plan.street.source, 'map');
+    assert.ok(Math.abs(r.data.plan.street.distFt - 23) < 1, `map distance ${r.data.plan.street.distFt}`);
+    assert.equal(r.data.plan.map.facing, 'E');
+    assert.equal(r.data.plan.legalDirection, 'R2L', 'facing east, a northbound car crosses right to left');
+    await api.put('/api/plan', { discard: true });
   });
 });
 

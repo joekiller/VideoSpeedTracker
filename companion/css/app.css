@@ -438,3 +438,34 @@ details.table td, details.table th { text-align: left; padding: 4px 6px; border-
 .chart .fill-warn { fill: var(--bar-warn); }
 .chart .fill-bad { fill: var(--bad); }
 .legend i.sw { width: 10px; height: 10px; border-radius: 2px; }
+
+/* Pick your spot's draft bar (setup step 2) and Mark your street's save bar (step 4). */
+.draftbar .changes { margin: 6px 0 4px; padding-left: 18px; }
+.draftbar .changes li { margin: 2px 0; }
+.callout .grow { min-width: 0; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 0 0; border-top: 1px solid var(--line); }
+.switch-row .label small { display: block; color: var(--muted); font-size: 12px; }
+.savebar { position: sticky; bottom: calc(var(--tab-h) + var(--safe-b) + 8px); z-index: 20; display: flex; align-items: center; gap: 8px; margin-top: 16px;
+  padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--warn); box-shadow: 0 6px 20px rgba(0,0,0,.3); }
+.savebar[hidden] { display: none; }
+.savebar small { display: block; }
+
+/* The map (#/map). */
+.map { position: relative; height: min(62vh, 520px); margin-top: 10px; overflow: hidden; border-radius: var(--radius-sm); background: #dfe3e8;
+  border: 1px solid var(--line); touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+.map:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.map .tiles img { position: absolute; max-width: none; pointer-events: none; image-rendering: auto; }
+.map svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.map .pin path { stroke: #fff; stroke-width: 2.5; }
+.map .pin.cam path { fill: #2563eb; }
+.map .pin.lane path { fill: #ea580c; }
+.map .pin.on path { stroke: #0b0d10; stroke-width: 3; }
+.map .pin text { fill: #fff; font: 700 13px system-ui, sans-serif; }
+.map .pin-label { font: 700 14px system-ui, sans-serif; }
+.map-zoom { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.map-zoom button { width: 40px; height: 40px; border-radius: 10px; border: 1px solid rgba(0,0,0,.2); background: #fff; color: #111; font-size: 22px; line-height: 1; cursor: pointer; }
+.map-attr { position: absolute; right: 0; bottom: 0; padding: 2px 6px; font-size: 11px; color: #333; background: rgba(255,255,255,.85); border-top-left-radius: 6px; }
+.map-attr a { color: #1d4ed8; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.dot.cam { background: #2563eb; }
+.dot.lane { background: #ea580c; }

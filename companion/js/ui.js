@@ -89,7 +89,9 @@ export function ago(iso) {
   if (a < 45) return 'just now';
   if (a < 3600) return rtf.format(Math.round(s / 60), 'minute');
   if (a < 86400) return rtf.format(Math.round(s / 3600), 'hour');
-  return rtf.format(Math.round(s / 86400), 'day');
+  if (a < 30 * 86400) return rtf.format(Math.round(s / 86400), 'day');
+  // Older than a month (a recorded video from years back): the date reads better than "3,928 days ago".
+  return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 export const clock = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 export const dateLong = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
