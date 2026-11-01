@@ -1578,13 +1578,18 @@ void App::drawHeader(float w) {
 	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
 	float pauseW = run ? ImGui::GetFrameHeight() + px(10) : 0;
-	// Unplugged since last time: name the remembered source rather than "No source", which reads as forgotten.
+	// Unplugged since last time, or a camera that just failed to open: name the remembered source rather than
+	// "No source", which reads as forgotten.  A camera or stream is "not connected"; a video file (the sample, say,
+	// after a camera attempt replaced it) is just "closed", since nothing about it is broken.
+	const std::string& shown = !source.empty() ? source : prefs.lastSource;
+	SourceInfo::Kind shownKind = shown.empty() ? SourceInfo::None : classifySource(shown);
+	bool live = shownKind == SourceInfo::Camera || shownKind == SourceInfo::Stream;
 	std::string chip = !source.empty() ? shortSourceName(source, 36)
-		: !prefs.lastSource.empty() ? shortSourceName(prefs.lastSource, 28) + " · not connected" : std::string("No source");
+		: !shown.empty() ? shortSourceName(shown, 28) + (live ? " · not connected" : " · closed") : std::string("No source");
 	if (player.opening()) chip = "Connecting to " + chip + "…";
 	if (batch.size() > 1) chip = std::to_string(batch.size()) + " videos queued";
-	const char* chipIcon = source.empty() ? ICON_VIDEO : classifySource(source) == SourceInfo::Camera ? ICON_CAMERA
-		: classifySource(source) == SourceInfo::Stream ? ICON_BROADCAST : ICON_FILE_VIDEO;
+	const char* chipIcon = shown.empty() ? ICON_VIDEO : shownKind == SourceInfo::Camera ? ICON_CAMERA
+		: shownKind == SourceInfo::Stream ? ICON_BROADCAST : ICON_FILE_VIDEO;
 	std::string chipText = std::string(chipIcon) + "  " + chip;
 	ImVec2 cs = pillSize(chipText.c_str(), fonts.body);
 	float right = w - px(24);
