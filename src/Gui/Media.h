@@ -37,6 +37,10 @@ struct SourceInfo {
 	double fps = 0;
 	int frames = 0;            // 0 when unknown (cameras, streams, some H.264 files)
 	std::string codec;
+	// A camera's shutter as the opening policy left it, and the rate it really sent while opening (Facts, FrameInput.h).
+	frameio::Shutter shutter = frameio::Shutter::Unknown;
+	int shutterUs = 0;
+	double measuredFps = 0;
 	double seconds() const { return fps > 0 && frames > 0 ? frames / fps : 0; }
 };
 

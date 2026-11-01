@@ -147,6 +147,9 @@ void describe(const frameio::FrameSource& src, SourceInfo& in) {
 	in.fps = f.fps;
 	in.frames = in.kind == SourceInfo::File ? f.frames : 0;
 	in.codec = f.codec;
+	in.shutter = f.shutter;
+	in.shutterUs = f.shutterUs;
+	in.measuredFps = f.measuredFps;
 }
 
 }  // namespace
@@ -283,7 +286,10 @@ void Player::feed(const cv::Mat& working, double turnedBy, const SourceInfo& abo
 	}
 	if (about.path != info_.path) info_ = about;
 	auto& feedIn = static_cast<frameio::FeedSource&>(*cap_);
-	feedIn.describe({ info_.width, info_.height, info_.fps, info_.frames, info_.codec });
+	frameio::Facts facts;
+	facts.width = info_.width; facts.height = info_.height; facts.fps = info_.fps; facts.frames = info_.frames; facts.codec = info_.codec;
+	facts.shutter = info_.shutter; facts.shutterUs = info_.shutterUs; facts.measuredFps = info_.measuredFps;
+	feedIn.describe(facts);
 	feedIn.push(working.clone());
 	playing = false;
 	fedLevel_ = turnedBy;

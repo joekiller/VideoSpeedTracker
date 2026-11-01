@@ -7,7 +7,13 @@
 #include <opencv2/videoio/registry.hpp>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <limits>
 
 namespace frameio {
 
@@ -94,8 +100,50 @@ Facts FrameSource::facts() const {
 			char ch = char((fourcc >> (8 * i)) & 255);
 			if (std::isprint((unsigned char)ch)) f.codec += ch;
 		}
+	addFacts(f);
 	return f;
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// USB camera exposure (see uvc:: in FrameInput.h)
+// ---------------------------------------------------------------------------------------------------------------------
+
+namespace uvc {
+
+static bool isWindowsBackend(const std::string& b) { return b == "MSMF" || b == "DSHOW"; }
+
+double exposureValue(const std::string& backend, int us) {
+	if (us <= 0) return std::numeric_limits<double>::quiet_NaN();
+	if (backend == "V4L2") return std::max(1.0, std::round(us / 100.0));
+	if (isWindowsBackend(backend)) return std::round(std::log2(us / 1e6));
+	return std::numeric_limits<double>::quiet_NaN();
+}
+
+double autoExposureValue(const std::string& backend, bool automatic) {
+	if (backend == "V4L2") return automatic ? 3 : 1;
+	return automatic ? 1 : 0;
+}
+
+bool tookExposure(const std::string& backend, double wanted, double readBack) {
+	if (std::isnan(wanted) || std::isnan(readBack)) return false;
+	// V4L2 cameras round to their own step (a C922's is 1, others' coarser); Windows reads back the same log2 step.
+	if (backend == "V4L2") return std::fabs(readBack - wanted) <= std::max(1.0, wanted * .25);
+	return std::fabs(readBack - wanted) < .5;
+}
+
+std::vector<int> ladder(int us) {
+	std::vector<int> out;
+	for (int t = us; t > 0 && t <= 4000 && out.size() < 3; t *= 2) out.push_back(t);
+	if (out.empty() && us > 0) out.push_back(us);   // asked for something slower than 1/250 s: just that
+	return out;
+}
+
+bool brightEnough(double automaticMean, double fixedMean) {
+	if (std::isnan(fixedMean)) return false;
+	return fixedMean >= 40 && (std::isnan(automaticMean) || fixedMean >= automaticMean * .45);
+}
+
+}  // namespace uvc
 
 void toWorking(cv::Mat& frame) {
 	if (!frame.empty() && (frame.cols != kWorkingWidth || frame.rows != kWorkingHeight))
@@ -138,6 +186,14 @@ public:
 	void release() override { cap_.release(); }
 	double get(int prop) const override { return cap_.get(prop); }
 	bool set(int prop, double value) override { return cap_.set(prop, value); }   // seeking: files, and URLs of recorded files
+	std::vector<std::string> notes() const override { return notes_; }
+
+protected:
+	void addFacts(Facts& f) const override {
+		f.shutter = shutter_;
+		f.shutterUs = shutter_ == Shutter::Fixed ? shutterUs_ : 0;
+		f.measuredFps = measuredFps_;
+	}
 
 private:
 	void openCamera(int index, const OpenOptions& o) {
@@ -148,6 +204,91 @@ private:
 		cap_.set(cv::CAP_PROP_FRAME_WIDTH, o.cameraWidth);
 		cap_.set(cv::CAP_PROP_FRAME_HEIGHT, o.cameraHeight);
 		if (o.cameraFps > 0) cap_.set(cv::CAP_PROP_FPS, o.cameraFps);
+		fixShutter(o);
+	}
+
+	// Reads `n` frames and returns the mean brightness of the last three, after the camera has had the first ones to
+	// settle on a new setting; `fps` gets the rate those later frames arrived at.  NaN when the camera stops sending.
+	double sample(int n, double& fps) {
+		cv::Mat f;
+		double sum = 0;
+		int summed = 0;
+		std::chrono::steady_clock::time_point from;
+		const int timedFrom = std::max(1, n / 3);
+		for (int i = 0; i < n; i++) {
+			if (!cap_.read(f) || f.empty()) return std::numeric_limits<double>::quiet_NaN();
+			if (i == timedFrom) from = std::chrono::steady_clock::now();
+			if (i >= n - 3) { cv::Scalar m = cv::mean(f); sum += f.channels() >= 3 ? (m[0] + m[1] + m[2]) / 3 : m[0]; summed++; }
+		}
+		double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+		fps = s > 0 ? (n - 1 - timedFrom) / s : 0;
+		return summed ? sum / summed : std::numeric_limits<double>::quiet_NaN();
+	}
+
+	// The opening policy's shutter step (OpenOptions::cameraShutterUs): fix the exposure time so cars stay sharp and the
+	// frame rate can't sag on automatic, trying uvc::ladder() fastest first and keeping the first bright enough picture;
+	// else back to automatic.  Every outcome goes in notes() for the log and in facts() for the UI.
+	void fixShutter(const OpenOptions& o) {
+		int want = o.cameraShutterUs;
+		if (o.cameraShutterFromEnv)
+			if (const char* env = std::getenv("VST_CAMERA_SHUTTER_US")) want = std::atoi(env);
+		const std::string backend = cap_.getBackendName();
+		double autoFps = 0;
+		const double automaticMean = sample(12, autoFps);   // what the camera shows on its own, and how fast
+		if (std::isnan(automaticMean)) return;               // no picture yet: the reader says so, nothing to fix
+		measuredFps_ = autoFps;
+		char b[200];
+		if (want <= 0) { shutter_ = Shutter::Automatic; noteRate(); return; }
+		if (std::isnan(uvc::exposureValue(backend, want))) {
+			shutter_ = Shutter::CantSet;
+			snprintf(b, sizeof b, "Camera shutter: can't be set from VST on this system (%s), so it stays automatic.", backend.c_str());
+			notes_.push_back(b);
+			noteRate();
+			return;
+		}
+		for (int us : uvc::ladder(want)) {
+			const double value = uvc::exposureValue(backend, us);
+			cap_.set(cv::CAP_PROP_AUTO_EXPOSURE, uvc::autoExposureValue(backend, false));
+			if (!cap_.set(cv::CAP_PROP_EXPOSURE, value) || !uvc::tookExposure(backend, value, cap_.get(cv::CAP_PROP_EXPOSURE))) {
+				backToAutomatic(backend);
+				shutter_ = Shutter::CantSet;
+				notes_.push_back("Camera shutter: this camera didn't take a fixed exposure time, so it stays automatic.");
+				noteRate();
+				return;
+			}
+			double fps = 0;
+			const double mean = sample(10, fps);
+			if (std::isnan(mean)) return;
+			if (uvc::brightEnough(automaticMean, mean)) {
+				shutter_ = Shutter::Fixed;
+				shutterUs_ = us;
+				measuredFps_ = fps;
+				snprintf(b, sizeof b, "Camera shutter: fixed at 1/%d s.", int(std::lround(1e6 / us)));
+				notes_.push_back(b);
+				noteRate();
+				return;
+			}
+		}
+		backToAutomatic(backend);
+		double fps = 0;
+		if (!std::isnan(sample(10, fps))) measuredFps_ = fps;
+		shutter_ = Shutter::Automatic;
+		snprintf(b, sizeof b, "Camera shutter: too dark at 1/%d s or faster, so it's back on automatic.",
+			int(std::lround(1e6 / uvc::ladder(want).back())));
+		notes_.push_back(b);
+		noteRate();
+	}
+
+	void backToAutomatic(const std::string& backend) { cap_.set(cv::CAP_PROP_AUTO_EXPOSURE, uvc::autoExposureValue(backend, true)); }
+
+	// A camera that says one rate and sends a lower one (a webcam slowing its shutter in dim light) is worth a line.
+	void noteRate() {
+		double said = cap_.get(cv::CAP_PROP_FPS);
+		if (measuredFps_ > 0 && said > 0 && said < 1000 && measuredFps_ < said * .8) {
+			char b[160];
+			snprintf(b, sizeof b, "Camera frame rate: it reports %.0f fps but sent about %.0f while opening.", said, measuredFps_);
+			notes_.push_back(b);
+		}
 	}
 
 	void openNamed(const std::string& name, const OpenOptions& o) {
@@ -174,6 +315,10 @@ private:
 
 	Kind kind_;
 	cv::VideoCapture cap_;
+	Shutter shutter_ = Shutter::Unknown;
+	int shutterUs_ = 0;
+	double measuredFps_ = 0;
+	std::vector<std::string> notes_;
 };
 
 // A Raspberry Pi camera: rpicam-vid, read frame by frame (PiCamera.h).
@@ -197,6 +342,14 @@ public:
 	}
 	std::string error() const override { return pi_.error(); }
 	std::vector<std::string> notes() const override { return pi_.notes(); }
+protected:
+	// rpicam-vid sets the shutter it is given (PiCamera.h, 0 = automatic), and Reader::open() times the real rate.
+	void addFacts(Facts& f) const override {
+		if (!pi_.isOpened()) return;
+		f.shutter = pi_.shutterUs() > 0 ? Shutter::Fixed : Shutter::Automatic;
+		f.shutterUs = std::max(0, pi_.shutterUs());
+		f.measuredFps = pi_.fps();
+	}
 private:
 	picam::Reader pi_;
 };
@@ -263,6 +416,127 @@ std::unique_ptr<FrameSource> open(const std::string& name, const OpenOptions& op
 	case Kind::Image: return std::make_unique<ImageSource>(name);
 	default: return std::make_unique<CaptureSource>(name, k, options);
 	}
+}
+
+}  // namespace frameio
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Camera reports (CameraReport, FrameInput.h)
+// ---------------------------------------------------------------------------------------------------------------------
+
+namespace frameio {
+
+namespace {
+
+// The modes worth knowing about for timing, VST's own ask first.
+const struct { int w, h; double fps; } kProbeModes[] = { { 1280, 720, 60 }, { 1280, 720, 30 }, { 1920, 1080, 60 }, { 1920, 1080, 30 }, { 640, 480, 60 }, { 640, 480, 30 } };
+
+const struct { int prop; const char* name; } kProbeControls[] = {
+	{ cv::CAP_PROP_AUTO_EXPOSURE, "AUTO_EXPOSURE" }, { cv::CAP_PROP_EXPOSURE, "EXPOSURE" }, { cv::CAP_PROP_GAIN, "GAIN" },
+	{ cv::CAP_PROP_BRIGHTNESS, "BRIGHTNESS" }, { cv::CAP_PROP_CONTRAST, "CONTRAST" }, { cv::CAP_PROP_SHARPNESS, "SHARPNESS" },
+	{ cv::CAP_PROP_BACKLIGHT, "BACKLIGHT" }, { cv::CAP_PROP_AUTOFOCUS, "AUTOFOCUS" }, { cv::CAP_PROP_FOCUS, "FOCUS" },
+	{ cv::CAP_PROP_AUTO_WB, "AUTO_WB" }, { cv::CAP_PROP_WB_TEMPERATURE, "WB_TEMPERATURE" }, { cv::CAP_PROP_ZOOM, "ZOOM" },
+};
+
+// The rate frames arrive at over about a second, after a few to let a new mode start.  0 when the camera sends nothing.
+double timedRate(cv::VideoCapture& cap) {
+	cv::Mat f;
+	for (int i = 0; i < 5; i++) if (!cap.read(f) || f.empty()) return 0;
+	auto from = std::chrono::steady_clock::now();
+	int n = 0;
+	while (std::chrono::steady_clock::now() - from < std::chrono::milliseconds(1000) && n < 240) {
+		if (!cap.read(f) || f.empty()) break;
+		n++;
+	}
+	double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+	return n > 0 && s > 0 ? n / s : 0;
+}
+
+std::string deviceName(int index) {
+#ifdef __linux__
+	std::ifstream in("/sys/class/video4linux/video" + std::to_string(index) + "/name");
+	std::string line;
+	if (in && std::getline(in, line)) return line;
+#else
+	(void)index;
+#endif
+	return "";
+}
+
+std::string number(double v) {
+	char b[32];
+	if (std::isnan(v)) return "?";
+	snprintf(b, sizeof b, std::fabs(v - std::round(v)) < 1e-6 ? "%.0f" : "%.2f", v);
+	return b;
+}
+
+}  // namespace
+
+CameraReport probeCamera(int index) {
+	CameraReport r;
+	r.index = index;
+	r.name = deviceName(index);
+	try {
+		for (cv::VideoCaptureAPIs api : cv::videoio_registry::getCameraBackends())
+			r.available += (r.available.empty() ? "" : ", ") + cv::videoio_registry::getBackendName(api);
+		cv::VideoCapture cap;
+		if (!cap.open(index)) { r.error = "The camera didn't open (it may be in use by another app, or need a driver)."; return r; }
+		r.opened = true;
+		r.backend = cap.getBackendName();
+		for (const auto& c : kProbeControls) {
+			CameraReport::Control k;
+			k.name = c.name;
+			k.value = cap.get(c.prop);
+			k.readable = !std::isnan(k.value) && k.value != -1;
+			k.settable = k.readable && cap.set(c.prop, k.value);   // its own value back: changes nothing
+			r.controls.push_back(k);
+		}
+		for (const auto& m : kProbeModes) {
+			CameraReport::Mode mode;
+			mode.askW = m.w; mode.askH = m.h; mode.askFps = m.fps;
+			cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+			cap.set(cv::CAP_PROP_FRAME_WIDTH, m.w);
+			cap.set(cv::CAP_PROP_FRAME_HEIGHT, m.h);
+			cap.set(cv::CAP_PROP_FPS, m.fps);
+			mode.measured = timedRate(cap);
+			mode.w = int(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+			mode.h = int(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+			mode.fps = cap.get(cv::CAP_PROP_FPS);
+			r.modes.push_back(mode);
+		}
+		cap.release();
+		// Then as VST really opens it: the opening policy, shutter step included.
+		auto src = open(std::to_string(index));
+		if (src->isOpened()) { r.policy = src->facts(); r.notes = src->notes(); }
+		else r.notes.push_back("Opening it the normal way afterwards failed.");
+		src->release();
+	} catch (const std::exception& e) {
+		r.notes.push_back(std::string("Stopped by an error: ") + e.what());
+	}
+	return r;
+}
+
+std::string CameraReport::markdown() const {
+	std::ostringstream o;
+	o << "**Camera** " << index << (name.empty() ? "" : " (" + name + ")") << ", backend " << (backend.empty() ? "?" : backend) << "\n\n";
+	if (!available.empty()) o << "Camera backends in this build: " << available << "\n\n";
+	if (!opened) { o << error << "\n"; return o.str(); }
+	o << "| Asked | Got | Reports | Sent |\n| --- | --- | --- | --- |\n";
+	for (const Mode& m : modes)
+		o << "| " << m.askW << "x" << m.askH << " @ " << number(m.askFps) << " | " << m.w << "x" << m.h << " | " << number(m.fps)
+		  << " fps | " << (m.measured > 0 ? number(std::round(m.measured)) + " fps" : std::string("nothing")) << " |\n";
+	o << "\n| Control | Value | Reads | Sets |\n| --- | --- | --- | --- |\n";
+	for (const Control& k : controls)
+		o << "| " << k.name << " | " << (k.readable ? number(k.value) : "") << " | " << (k.readable ? "yes" : "no") << " | " << (k.settable ? "yes" : "no") << " |\n";
+	const char* shutter = policy.shutter == Shutter::Fixed ? "fixed" : policy.shutter == Shutter::Automatic ? "automatic"
+		: policy.shutter == Shutter::CantSet ? "can't set" : "unknown";
+	o << "\n**As VST opens it:** " << policy.width << "x" << policy.height << ", reports " << number(policy.fps) << " fps, sent about "
+	  << number(std::round(policy.measuredFps)) << " fps, shutter " << shutter;
+	if (policy.shutter == Shutter::Fixed && policy.shutterUs > 0) o << " at 1/" << std::lround(1e6 / policy.shutterUs) << " s";
+	o << (policy.codec.empty() ? "" : ", " + policy.codec) << "\n";
+	for (const std::string& n : notes) o << "- " << n << "\n";
+	return o.str();
 }
 
 }  // namespace frameio
