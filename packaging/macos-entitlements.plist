@@ -2,7 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Hardened runtime would otherwise refuse Homebrew's OpenCV dylibs (not signed by our team). -->
+	<!-- The bundled FFmpeg dylibs are signed by our team, so library validation would pass; it stays relaxed so a
+	     power user can swap in their own build of those LGPL libraries (re-signed ad hoc) without re-signing VST. -->
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
 	<!-- Hardened runtime blocks the camera without this, for the command-line tools as well as VST Studio. -->

@@ -101,8 +101,8 @@ built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`
 | Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 / 26.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
 | Windows x64 | `VideoSpeedTracker-<ver>-windows-x64-setup.exe` | run it: installs for you (no admin prompt) or for everyone, adds **VST Studio** to the Start menu, and uninstalls from Settings › Apps. Your config and results stay put across upgrades and uninstalls |
 | Windows x64, portable | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
-| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.dmg` | `brew install opencv`, open the disk image and drag **VSTStudio.app** to Applications; the command-line tools are in the image too |
-| macOS, archive | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | the same files: `brew install opencv`, untar, open **VSTStudio.app** |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.dmg` | open the disk image and drag **VSTStudio.app** onto Applications. That one app is everything (macOS 13 or later, nothing else to install): the command-line tools, templates and docs are inside it ([below](#macos-command-line-tools)) |
+| macOS, archive | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | the same app: untar, move **VSTStudio.app** to Applications and open it |
 
 Every package includes the 2016 sample video and a `VST.cfg` set up for it. Open **VST Studio** first: it starts on
 the sample and walks you through your own camera. On the command line, the first thing to run is
@@ -141,7 +141,8 @@ sha256sum -c SHA256SUMS --ignore-missing        # macOS: shasum -a 256 -c SHA256
 The `.deb` files have no separate GPG signature: apt checks signatures on repositories, not on a `.deb` installed
 from a file, so the attestation is the Linux signature (see [docs/code-signing.md](docs/code-signing.md#linux-and-checksums-build-provenance)).
 These attestations are not Windows Authenticode or Apple notarization; tag releases carry those separately (below).
-To check a macOS download yourself, in the opened disk image or untarred folder:
+To check a macOS download yourself, in the opened disk image or untarred folder (checking the app covers the
+command-line tools inside it, which are signed and notarized with it):
 
 ```
 spctl -a -t open --context context:primary-signature -vv VideoSpeedTracker-*.dmg   # the image: Notarized Developer ID
@@ -179,12 +180,37 @@ per-user data folder, so running from the unzipped Windows folder (where the tem
 
 Each run prints the config file it used.
 
+### macOS command-line tools
+
+The macOS download is a single `VSTStudio.app`; opening it starts VST Studio. The command-line programs and the
+files that ship with them live inside the bundle (Finder: right-click VSTStudio.app › Show Package Contents):
+
+| | |
+|---|---|
+| `VSTStudio.app/Contents/MacOS/` | `VideoSpeedTracker`, `ProcessHiLites` (and `VSTStudio` itself) |
+| `VSTStudio.app/Contents/Frameworks/` | the FFmpeg libraries all three load (LGPL 2.1, built by `packaging/build-ffmpeg.sh`) |
+| `VSTStudio.app/Contents/Resources/` | `VST.cfg` and `ProcessHiLites.cfg` templates, `README.md`, `GETTING-STARTED.md`, `LICENSE.txt`, `licenses/`, the sample video and the phone companion |
+
+To run them by name, link them into a folder on your `PATH` (they still find their templates, the sample and their
+libraries through the link):
+
+```
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/VSTStudio.app/Contents/MacOS/{VideoSpeedTracker,ProcessHiLites} /usr/local/bin/
+VideoSpeedTracker --demo
+```
+
+Don't edit the templates inside the app: that breaks its signature, and an update replaces them anyway. Each program
+copies its template to `~/Library/Application Support/VideoSpeedTracker` the first time it runs, and that copy is
+the one to edit.
+
 ### Licenses
 
-VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. The Linux and Windows packages link OpenCV
-(Apache 2.0) and its bundled third-party code statically, and the Windows zip also ships OpenCV's FFmpeg plugin
-(LGPL 2.1); their license texts are in `licenses/opencv` (Windows) or `/usr/share/doc/videospeedtracker/opencv`
-(Linux). FFmpeg and GTK on Linux, and OpenCV on macOS, come from apt or Homebrew with their own licenses.
+VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. Every package links OpenCV (Apache 2.0) and its
+bundled third-party code statically. The Windows zip also ships OpenCV's FFmpeg plugin and the macOS app ships the
+FFmpeg libraries in `Contents/Frameworks` (both LGPL 2.1, dynamically loaded). License texts are in
+`licenses/opencv` (Windows), `VSTStudio.app/Contents/Resources/licenses/{opencv,ffmpeg}` (macOS) or
+`/usr/share/doc/videospeedtracker/opencv` (Linux). FFmpeg and GTK on Linux come from apt with their own licenses.
 
 The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
 still in the git history before the release workflow was added. Every package contains `VideoSpeedTracker`, the

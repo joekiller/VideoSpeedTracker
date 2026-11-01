@@ -481,8 +481,8 @@ without noticeable bugs (except the codec pop-up issue noted above).
 
 *Note:* OpenCV 2.4 and 3.x are no longer supported; CMake requires
 OpenCV 4 or newer. Release packages use OpenCV 5.0.0, built from source
-and linked statically on Linux and Windows, and Homebrew's `opencv` on
-macOS.
+and linked statically on every platform; the macOS app also carries a
+small LGPL FFmpeg build for video files and streams.
 
 ## Installing Executables
 Executables that can run on Win7tel64 platforms can be found in the repo

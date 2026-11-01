@@ -22,6 +22,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Warnings as errors in our own code (not fetched dependencies) on GCC and Clang. The PR check turns it on, so a new
 # warning fails the pull request instead of piling up in release logs on main.
 option(VST_WERROR "Treat compiler warnings in VST's own sources as errors (GCC/Clang)" OFF)
+# macOS release: VSTStudio.app carries its FFmpeg dylibs (packaging/build-ffmpeg.sh, install names @rpath/...) in
+# Contents/Frameworks, and all three programs sit in Contents/MacOS, so installed executables look there. Set before
+# any target so each one picks it up. Libraries with absolute install names (Homebrew's, in a developer build) ignore
+# it, and build-tree executables keep CMake's own build rpath, so ctest finds the libraries where they were built.
+if(APPLE)
+  set(CMAKE_INSTALL_RPATH "@executable_path/../Frameworks")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
