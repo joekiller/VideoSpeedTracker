@@ -91,6 +91,27 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
   editing `VST.cfg`) puts the direction back to `unchecked`. VST Studio works this out from
   `calibration-history.csv` in its config folder, so it survives restarts.
 
+  Each direction also has `combined`, what the calibration's measurements add up to (see
+  [Calibration](#calibration)), and `calibration.inputs` lists the measurements:
+
+  ```json
+  "calibration": {
+    "L2R": { "state": "unchecked", …, "combined": {
+      "summary": "3 measurements agree within 2%", "detail": "", "n": 3, "agree": true, "zoneFt": 31.42, "sigmaPct": 1.8,
+      "setAside": 0, "shares": [ { "id": "2026-11-01T14:03:22-04:00#1", "contribution": 0.412, "offPct": -0.6, "outlier": false }, … ] } },
+    "R2L": { … },
+    "inputs": [ { "id": "2026-11-01T14:03:22-04:00#1", "method": "pass", "methodName": "Drive past", "label": "Drive past at 15 mph",
+      "time": "2026-11-01T14:03:22-04:00", "dirs": "both", "zoneFt": 31.25, "sigmaPct": 4.1, "removed": false, "otherLines": false }, … ]
+  }
+  ```
+
+  `summary` and `detail` are the words VST Studio shows (`detail` is the next step, or empty); `n` counts the
+  measurements in the result, `zoneFt` and `sigmaPct` are the result and its uncertainty (`null` with none), and
+  `setAside` counts ones made on other speed lines. `shares` has one entry per counted measurement: its share of the
+  weight (they add up to 1), how far it is from the result in percent, and whether it is well off the others.
+  `method` is `pass`, `cones`, `car`, `camera` or `earlier` (others may be added; show `methodName`), `dirs` is
+  `L2R`, `R2L` or `both`, `removed` says it was taken out, and `otherLines` that it was made on other speed lines.
+
 ### `GET /api/health`
 
 How an unattended run is holding up (see "Leaving it running" in [vst-studio.md](vst-studio.md)):
@@ -330,14 +351,17 @@ decline to start (no source chosen, zones that don't validate); `ok` is still tr
 ### Calibration
 
 The tracker turns frames-in-the-zone into speed by comparison with a vehicle driven at a known
-speed. Three ways to record it:
+speed. Each way of calibrating adds a *measurement* of the street between the speed lines, and
+`CalibrationFrames<dir>` is their weighted combination (inverse-variance; the method and weights are in
+[vst-studio.md](vst-studio.md#your-calibration-every-way-adds-up)). A new measurement joins the others instead of
+replacing them; `GET /api/status` `calibration` shows them and what they add up to. Three ways to add one:
 
 * **From a logged pass (preferred).** Drive through at a known speed, find the pass, then
-  `POST /api/calibration/apply {"dir": "L2R"|"R2L", "speed": 25, "vehicleId": 1042}`. VST sets
-  `CalibrationFrames<dir>` so that a pass like that one (its `frames` at its `fps`) reads `speed`
-  mph. `CalibrationSpeed` and `CalibrationFPS` stay as they are, since the other direction's
-  calibration is expressed against them: `CalibrationFrames<dir> = frames × speed / CalibrationSpeed
-  × CalibrationFPS / fps`, rounded.
+  `POST /api/calibration/apply {"dir": "L2R"|"R2L", "speed": 25, "vehicleId": 1042}`. The pass says the
+  zone is `speed × 5280/3600 × frames / fps` feet; on a one-way street it measures the lane both ways,
+  on a two-way street just `dir`. With nothing else measured, `CalibrationFrames<dir>` becomes the value that
+  makes a pass like that one read `speed` mph (`frames × speed / CalibrationSpeed × CalibrationFPS / fps`,
+  rounded); with other measurements, the combination's. `CalibrationSpeed` and `CalibrationFPS` stay as they are.
 * **By hand.** `POST /api/calibration/mark {"dir", "edge": "start"|"end"}` records the current frame
   as the calibration vehicle's front bumper crosses the first and then the second speed line, and
   answers `{"ok": true, "frame": 2161, "marks": [start, end]}` (`-1` for an edge not marked yet);
@@ -348,8 +372,9 @@ speed. Three ways to record it:
   `cones` are the two spots in frame coordinates (1280×720, like the speed
   lines) and `feet` is the taped distance between them; `dir` defaults to `"both"`. The zone between
   the speed lines is `(speedLineRight - speedLineLeft) / |x2 - x1| × feet` long, and VST sets
-  `CalibrationFrames<dir>` to the frames a car at `CalibrationSpeed` takes to cross it at
-  `CalibrationFPS`: `zoneFeet / (CalibrationSpeed × 5280 / 3600) × CalibrationFPS`, rounded. The answer
+  adds that length as a measurement for `dir`, so on its own `CalibrationFrames<dir>` becomes the frames a car at
+  `CalibrationSpeed` takes to cross it at `CalibrationFPS` (`zoneFeet / (CalibrationSpeed × 5280 / 3600) ×
+  CalibrationFPS`, rounded), and beside others, the combination's. The answer
   adds `"zoneFeet"` and the unrounded `"frames"` (both to 0.1). Refusals: cones missing or off the
   picture, `feet` not positive, an unknown `dir`, spots less than 40 px apart across the picture, or
   speed lines not set. The calibration shows as Not checked until a check pass (below).
@@ -357,6 +382,12 @@ speed. Three ways to record it:
 Every way of applying returns `{"ok": true, "problems": [], "config": { … }}`, or `200`
 `{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked, `speed` isn't
 positive, or (for the spots) one of the refusals above. A body that isn't a JSON object is a `400`.
+
+**Taking one out.** `POST /api/calibration/inputs {"id": "…", "removed": true}` takes a measurement out of
+the calibration, and `{"id": "…", "removed": false}` puts it back; the rest are recombined at once. It answers
+`{"ok": true, "problems": [], "calibration": { … }, "config": { … }}` (`calibration` as in `GET /api/status`), or
+`200 {"ok": false, "problems": [ … ]}` for a missing or unknown `id`. A body that isn't a JSON object is a `400`.
+A removed measurement stays listed, so it can always be put back.
 
 **Checking it.** One pass at a speedometer reading is easy to get wrong, so after calibrating, drive past
 once more (ideally at a different speed) and send that pass to

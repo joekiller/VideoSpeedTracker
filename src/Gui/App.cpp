@@ -297,35 +297,21 @@ void App::stopTracking() {
 }
 
 void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
-	Globals& g = cfg.g;
+	const Globals& g = cfg.g;
 	if (mph <= 0 || frames <= 0) return;
 	if (fps <= 0) fps = g.CalibrationFPS;
-	// speed = CalibrationSpeed × CalibrationFrames × (fps / CalibrationFPS) / frames, so a pass at `mph` taking
-	// `frames` at `fps` corresponds to CalibrationFrames = frames × mph / CalibrationSpeed × CalibrationFPS / fps.
-	int calFrames = std::max(1, int(std::lround(calib::impliedFrames(mph, frames, fps, g.CalibrationSpeed, g.CalibrationFPS))));
 	// A one-way street has one lane, so a pass either way measures it for both directions: a wrong-way car is timed in
-	// the same lane.  (Before, a pass against the legal direction calibrated only that way, and the legal direction,
-	// the one step 2 and the speed zone card read, kept whatever it had: often the 2016 sample's value.)
+	// the same lane.  On a two-way street each lane is its own distance from the camera, so a pass speaks for its own.
 	const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
-	prefs.calibratedFor = cfg.path();
-	prefs.calibratedLines = speedLinesSig();   // autosave writes it to VST.cfg on the next frame
-	for (bool dir : { l2r, !l2r }) {
-		if (dir != l2r && !oneWay) break;
-		(dir ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
-		// The record of it: which pass, at what speed, and the value it set.  A new apply also makes any earlier check
-		// of this direction moot, so the page's last check result goes too.
-		CalEvent e;
-		e.l2r = dir;
-		e.drivenMph = mph;
-		e.frames = frames;
-		e.fps = fps;
-		e.calFrames = calFrames;
-		recordCalibration(e);
-		if (lastCheck_.l2r == dir) lastCheck_ = CalCheck();
-	}
-	toast(std::string("Calibrated ") + (oneWay ? "the lane (both directions)" : l2r ? "left → right" : "right → left") + ": "
-		+ std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
-	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+	calib::Input in;
+	in.method = "pass";
+	in.dirs = oneWay ? calib::kBothDirs : l2r ? calib::kL2R : calib::kR2L;
+	in.zoneFt = calib::zoneFtFromPass(mph, frames, fps);
+	in.sigma = calib::sigmaPass(mph, frames);
+	char label[64];
+	snprintf(label, sizeof label, "Drive past at %g mph%s", std::round(mph * 10) / 10, oneWay ? "" : l2r ? ", left → right" : ", right → left");
+	in.label = label;
+	addCalibrationInput(in, "the drive past");
 }
 
 CalCheck App::checkCalibration(bool l2r, double mph, int frames, double fps) {
@@ -359,30 +345,135 @@ CalCheck App::checkCalibration(bool l2r, double mph, int frames, double fps) {
 }
 
 void App::averageCalibration(const CalCheck& check) {
-	Globals& g = cfg.g;
 	if (!check.valid) return;
-	// Each pass implies a CalibrationFrames value.  The first pass's is the one the check was made against; the
-	// check pass's comes from its own frames and speed, the same way an apply works it out.  The new calibration
-	// is their mean, rounded, so neither pass's speedometer reading or lane position wins outright.
-	double second = calib::impliedFrames(check.drivenMph, check.frames, check.fps, g.CalibrationSpeed, g.CalibrationFPS);
-	int calFrames = std::max(1, int(std::lround((check.calFrames + second) / 2)));
-	(check.l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
-	if (g.LegalDirection == "L2R" || g.LegalDirection == "R2L")   // one lane: both directions (see applyCalibration())
-		(check.l2r ? g.CalibrationFramesR2L : g.CalibrationFramesL2R) = calFrames;
-	prefs.calibratedFor = cfg.path();
-	prefs.calibratedLines = speedLinesSig();
-	// Recorded as an apply of the check pass (its speed, frames and fps) with the averaged value in force.  That
-	// starts a fresh calibration, so the direction reads "not checked" until a third pass checks the average.
-	CalEvent e;
-	e.l2r = check.l2r;
-	e.drivenMph = check.drivenMph;
-	e.frames = check.frames;
-	e.fps = check.fps;
-	e.calFrames = calFrames;
-	recordCalibration(e);
+	// The check pass is honest evidence too: it joins the inputs like any pass, weighted by its own uncertainty, so
+	// the calibration becomes the weighted middle of everything measured (two passes: about their mean).  The page's
+	// check result goes, and the direction reads "not checked" until another pass checks the combination.
+	applyCalibration(check.l2r, check.drivenMph, check.frames, check.fps);
 	lastCheck_ = CalCheck();
-	toast(std::string("Averaged ") + (check.l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
-		+ std::to_string(int(g.CalibrationSpeed)) + " mph. Check it once more.", c::ok, ICON_CHECK_CIRCLE);
+}
+
+const std::vector<calib::Input>& App::calibrationInputs() {
+	if (calInputsLoaded_ && calInputsFor_ == cfg.path()) return calInputs_;
+	calInputsFor_ = cfg.path();
+	calInputsLoaded_ = true;
+	bool known = false;
+	calInputs_ = screenshotMode || cfg.path().empty() ? std::vector<calib::Input>() : calib::loadInputs(calib::inputsPath(), cfg.path(), &known);
+	if (known || !calibrationDone()) return calInputs_;
+	// A calibration from before inputs were kept: seed it as one input per direction so the next method adds to it
+	// rather than wiping it out.  The history's latest apply that set today's value says what it was: a pass whose own
+	// numbers imply that value is that pass, with a pass's uncertainty; anything else (a cones or car calibration, an
+	// average, a hand edit, the sample's VST.cfg) is "Earlier calibration" at kSigmaEarlier.  The seed is saved with
+	// the first change, so until then it's recomputed the same way each time.
+	const Globals& g = cfg.g;
+	const std::vector<CalEvent>& rows = calibrationHistory();
+	std::string lines = speedLinesSig();
+	for (bool l2r : { true, false }) {
+		int frames = l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L;
+		if (frames <= 0) continue;
+		const CalEvent* last = nullptr;
+		for (const CalEvent& e : rows) if (!e.check && e.l2r == l2r && e.calFrames == frames) last = &e;
+		calib::Input in;
+		in.time = last ? last->time : "";
+		in.dirs = l2r ? calib::kL2R : calib::kR2L;
+		in.lines = lines;
+		double implied = last ? calib::impliedFrames(last->drivenMph, last->frames, last->fps, g.CalibrationSpeed, g.CalibrationFPS) : 0;
+		bool wasPass = last && std::lround(implied) == frames
+			&& !(std::fabs(last->drivenMph - g.CalibrationSpeed) < 1e-6 && last->frames == frames && std::fabs(last->fps - g.CalibrationFPS) < 1e-6);
+		if (wasPass) {
+			in.method = "pass";
+			in.zoneFt = calib::zoneFtFromPass(last->drivenMph, last->frames, last->fps);
+			in.sigma = calib::sigmaPass(last->drivenMph, last->frames);
+			char label[64];
+			snprintf(label, sizeof label, "Drive past at %g mph", last->drivenMph);
+			in.label = label;
+		}
+		else {
+			in.method = "earlier";
+			in.zoneFt = calib::zoneFtForFrames(frames, g.CalibrationSpeed, g.CalibrationFPS);
+			in.sigma = calib::kSigmaEarlier;
+			in.label = "Your earlier calibration";
+		}
+		// The same measurement both ways (a one-way street's pass): one input for the lane, not two.
+		if (!l2r && !calInputs_.empty() && calInputs_[0].method == in.method && std::fabs(calInputs_[0].zoneFt - in.zoneFt) < 1e-6) {
+			calInputs_[0].dirs = calib::kBothDirs;
+			continue;
+		}
+		if (in.time.empty()) in.time = calib::nowIso();
+		in.id = calib::newInputId(calInputs_, in.time);
+		calInputs_.push_back(in);
+	}
+	return calInputs_;
+}
+
+calib::Combined App::calibrationCombined(bool l2r) {
+	return calib::combine(calibrationInputs(), l2r, speedLinesSig());
+}
+
+void App::saveCalibrationInputs() {
+	if (screenshotMode || cfg.path().empty()) return;
+	std::string err;
+	if (!calib::saveInputs(calib::inputsPath(), cfg.path(), calInputs_, err)) toast(err, c::bad, ICON_WARN);
+}
+
+void App::addCalibrationInput(calib::Input in, const char* from) {
+	if (!(in.zoneFt > 0) || !(in.sigma > 0) || !(in.dirs & calib::kBothDirs)) return;
+	calibrationInputs();   // loaded (and seeded) for this config before adding to it
+	if (in.time.empty()) in.time = calib::nowIso();
+	if (in.lines.empty()) in.lines = speedLinesSig();
+	bool added = calib::addInput(calInputs_, in);
+	saveCalibrationInputs();
+	applyCombinedCalibration();
+	// The toast says what changed and what it all adds up to now, in the same words as the page.
+	calib::Combined cmb = calibrationCombined(in.dirs != calib::kR2L);
+	std::string head = added ? std::string("Added ") + from + ". " : std::string("That one is already counted. ");
+	toast(head + calib::summary(cmb) + ".", cmb.valid && (cmb.n == 1 || cmb.agree()) ? c::ok : c::warn, ICON_CHECK_CIRCLE);
+}
+
+bool App::setCalibrationInputRemoved(const std::string& id, bool removed) {
+	calibrationInputs();
+	for (calib::Input& in : calInputs_) {
+		if (in.id != id) continue;
+		in.removed = removed;
+		saveCalibrationInputs();
+		applyCombinedCalibration();
+		return true;
+	}
+	return false;
+}
+
+void App::applyCombinedCalibration() {
+	Globals& g = cfg.g;
+	bool any = false;
+	for (bool l2r : { true, false }) {
+		calib::Combined cmb = calibrationCombined(l2r);
+		if (!cmb.valid) continue;
+		any = true;
+		// The engine counts whole frames, so the combination is rounded here; the inputs keep the exact value.
+		int frames = std::max(1, int(std::lround(calib::framesForZone(cmb.zoneFt, g.CalibrationSpeed, g.CalibrationFPS))));
+		int& cur = l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L;
+		// Only a change of value is a new calibration in the history.  An input that agrees to the frame leaves the
+		// value, and any check of it, standing.
+		bool wasCalibrated = calibrationState(l2r).kind != CalState::None && calibrationDone();
+		if (frames == cur && wasCalibrated) continue;
+		cur = frames;
+		// Recorded as the pass the value stands for: a car at CalibrationSpeed taking CalibrationFrames frames at
+		// CalibrationFPS (the history format has no column for the method; calibration-inputs.json has the detail).
+		CalEvent e;
+		e.l2r = l2r;
+		e.drivenMph = g.CalibrationSpeed;
+		e.frames = frames;
+		e.fps = g.CalibrationFPS;
+		e.calFrames = frames;
+		recordCalibration(e);
+		if (lastCheck_.l2r == l2r) lastCheck_ = CalCheck();
+	}
+	if (any) {
+		prefs.calibratedFor = cfg.path();
+		prefs.calibratedLines = speedLinesSig();   // autosave writes it to VST.cfg on the next frame
+	}
+	else if (prefs.calibratedFor == cfg.path()) prefs.calibratedFor.clear();   // every input removed: not calibrated
+	calibAppliedId_ = 0;
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
 }
 
@@ -397,31 +488,18 @@ perspective::CameraSetup App::cameraSetup() const {
 	return c;
 }
 
-void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from) {
-	Globals& g = cfg.g;
-	int calFrames = std::max(1, int(std::lround(calFramesD)));
-	if (calFramesD <= 0 || (!l2r && !r2l)) return;
-	for (int d = 0; d < 2; d++) {
-		bool dirL2R = d == 0;
-		if (!(dirL2R ? l2r : r2l)) continue;
-		(dirL2R ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
-		// The history format has no column for the method; the row reads as the pass the measurement stands for, a
-		// car at CalibrationSpeed taking CalibrationFrames frames at CalibrationFPS.
-		CalEvent e;
-		e.l2r = dirL2R;
-		e.drivenMph = g.CalibrationSpeed;
-		e.frames = calFrames;
-		e.fps = g.CalibrationFPS;
-		e.calFrames = calFrames;
-		recordCalibration(e);
-		if (lastCheck_.l2r == dirL2R) lastCheck_ = CalCheck();
-	}
-	prefs.calibratedFor = cfg.path();
-	prefs.calibratedLines = speedLinesSig();
-	calibAppliedId_ = 0;
-	toast(std::string("Calibrated from ") + from + ": " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
-		+ " mph. Check it with one drive past.", c::ok, ICON_CHECK_CIRCLE);
-	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from, const char* method, double sigma,
+	const std::string& label) {
+	const Globals& g = cfg.g;
+	if (!(calFramesD > 0) || (!l2r && !r2l)) return;
+	calib::Input in;
+	in.method = method ? method : "cones";
+	in.dirs = (l2r ? calib::kL2R : 0) | (r2l ? calib::kR2L : 0);
+	in.zoneFt = calib::zoneFtForFrames(calFramesD, g.CalibrationSpeed, g.CalibrationFPS);
+	in.sigma = sigma > 0 ? sigma : in.method == "camera" ? calib::kSigmaCamera : in.method == "car" ? calib::sigmaCar(200, false, 0, 0)
+		: calib::sigmaCones(200);
+	in.label = label.empty() ? std::string("Measured from ") + from : label;
+	addCalibrationInput(in, from);
 }
 
 // Appends a calibration event to calibration-history.csv and to the in-memory copy the page reads.  The
@@ -448,7 +526,11 @@ const std::vector<CalEvent>& App::calibrationHistory() {
 CalState App::calibrationState(bool l2r) {
 	// calibrationDone() covers calibrations made before the history existed (v1.1) and the bundled sample, whose
 	// VST.cfg comes calibrated for that video: those count as calibrated, not checked, until a check says more.
-	return calib::state(calibrationHistory(), l2r, l2r ? cfg.g.CalibrationFramesL2R : cfg.g.CalibrationFramesR2L, calibrationDone());
+	// With inputs on record, a direction none of them counts for (all removed, or made on other speed lines) is not
+	// calibrated, whatever the history's last apply was.
+	bool done = calibrationDone();
+	if (!done && !calibrationInputs().empty() && !calibrationCombined(l2r).valid) return CalState();
+	return calib::state(calibrationHistory(), l2r, l2r ? cfg.g.CalibrationFramesL2R : cfg.g.CalibrationFramesR2L, done);
 }
 
 void App::toast(const std::string& text, unsigned color, const char* icon) {
@@ -1793,10 +1875,17 @@ void App::zoneInspector() {
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
 					ImGui::SetTooltip("Draws the green street edge from this setup, so short-view timing measures along the ground.");
 				ImGui::SameLine();
-				if (primaryButton(ICON_CHECK "  Calibrate from it", ImVec2(-FLT_MIN, 0)))
-					applyDistanceCalibration(true, true, zoneFt / (g.CalibrationSpeed * 5280 / 3600) * g.CalibrationFPS, "the camera setup");
+				if (primaryButton(ICON_CHECK "  Calibrate from it", ImVec2(-FLT_MIN, 0))) {
+					// A typed-in camera model is the roughest input (kSigmaCamera), so once anything is measured on the
+					// street it counts for little; until then it gives a working start.
+					char label[96];
+					snprintf(label, sizeof label, "Camera setup: %.0f ft away, %.0f ft up", cam.distanceFt, cam.heightFt);
+					applyDistanceCalibration(true, true, calib::framesForZone(zoneFt, g.CalibrationSpeed, g.CalibrationFPS), "the camera setup",
+						"camera", calib::kSigmaCamera, label);
+				}
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-					ImGui::SetTooltip("Sets both directions' calibration from the zone's length in feet. One drive past then checks it.");
+					ImGui::SetTooltip("Adds the zone's length from this setup to your calibration, as a rough measurement.\n"
+						"Anything measured on the street (a drive past, cones, a known car) counts for much more.");
 			}
 		}
 		endCard();
@@ -2142,8 +2231,14 @@ void App::pageCalibrate() {
 
 	ImGui::Dummy(ImVec2(0, px(2)));
 	// Under the picture: the latest check pass's result when there is one (it has the room to sit beside the
-	// numbers), otherwise how the calibration is used.
+	// numbers), else every measurement the calibration is made of, else (nothing measured yet) how it is used.
 	if (lastCheck_.valid) calibrationCheckCard(canvasW);
+	else if (!calibrationInputs().empty()) {
+		// The rest of the column, scrolling if a two-way street's two lists need more.
+		beginCard("calinputs", ICON_LAYERS, "What your calibration is made of", ImVec2(canvasW, std::max(px(150), ImGui::GetContentRegionAvail().y)), true);
+		calibrationInputsCard(true);
+		endCard();
+	}
 	else {
 		beginCard("how", ICON_INFO, "How VST turns frames into speed", ImVec2(canvasW, 0));
 		ImGui::PushTextWrapPos(0);
@@ -2265,7 +2360,7 @@ void App::pageCalibrate() {
 			"Stand a cone on each, or have one person hold a pole (or a broom) upright on one spot, then the other.");
 		stepLine(2, "With no car in the way, mark each spot on the picture, here or on the phone companion from the street. "
 			"Any point on an upright pole will do, so it works even where the road surface is hidden.");
-		stepLine(3, "Enter the distance and apply. Then check it with one drive past.");
+		stepLine(3, "Enter the distance and add it to your calibration. A drive past later cross-checks it.");
 		ImGui::Dummy(ImVec2(0, px(4)));
 		// On your own, or with the phone busy being the camera: two timed pictures (live cameras), or the recording.
 		bool live = player.isOpen() && (player.info().kind == SourceInfo::Camera || player.info().kind == SourceInfo::Stream);
@@ -2351,7 +2446,11 @@ void App::pageCalibrate() {
 			ImGui::PopTextWrapPos();
 		}
 		ImGui::BeginDisabled(framesD <= 0 || tooClose);
-		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD);
+		if (primaryButton(ICON_PLUS "  Add to calibration", ImVec2(-FLT_MIN, 0))) {
+			char label[64];
+			snprintf(label, sizeof label, "Cones or pole, %g ft apart", coneFt_);
+			applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD, "the cones", "cones", calib::sigmaCones(markPx), label);
+		}
 		ImGui::EndDisabled();
 		if (ImGui::SmallButton("Clear spots")) { coneX_[0] = coneX_[1] = coneY_[0] = coneY_[1] = -1; conePlacing_ = -1; }
 		if (anyCalibrated) {
@@ -2462,7 +2561,10 @@ void App::pageCalibrate() {
 		}
 		else if (tooSmall) dimText(ICON_WARN "  The car is too small on the picture to measure. Pick a nearer one.");
 		ImGui::BeginDisabled(framesD <= 0 || tooSmall);
-		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD, "the car's length");
+		if (primaryButton(ICON_PLUS "  Add to calibration", ImVec2(-FLT_MIN, 0))) {
+			std::string label = std::string(carModel_ >= 0 ? calib::kKnownCars[carModel_].name : "A car of known length") + (carParked_ ? ", parked" : "");
+			applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD, "the known car", "car", calib::sigmaCar(rawPx, carParked_, laneFt, carFartherFt_), label);
+		}
 		ImGui::EndDisabled();
 		if (ImGui::SmallButton("Clear bumpers##car")) { carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1; conePlacing_ = -1; }
 		if (anyCalibrated) {
@@ -2512,7 +2614,7 @@ void App::pageCalibrate() {
 		}
 		else {
 			ImGui::BeginDisabled(!frames);
-			if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
+			if (primaryButton(ICON_PLUS "  Add to calibration", ImVec2(-FLT_MIN, 0))) applyCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
 			ImGui::EndDisabled();
 		}
 		if (ImGui::SmallButton("Clear marks")) m[0] = m[1] = -1;
@@ -2521,7 +2623,8 @@ void App::pageCalibrate() {
 	}
 
 	ImGui::Dummy(ImVec2(0, px(4)));
-	beginCard("calnow", ICON_GAUGE, "Current calibration");
+	beginCard("calnow", ICON_GAUGE, "Your calibration");
+	calibrationInputsCard(false);
 	float half = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
 	auto calTile = [&](const char* name, int frames, ImU32 col) {
 		char v[32];
@@ -2591,6 +2694,146 @@ void App::pageCalibrate() {
 	ImGui::EndChild();
 }
 
+// The Calibrate page's "Your calibration" list (CalEvidence.h): what every measurement added up to, in one line a
+// novice can read ("3 measurements agree within 2%"), how sure that is, and each measurement with its share of the
+// weight, how far it sits from the rest, and a button to take it out.  Taken-out ones stay listed with "Put back",
+// and ones made on other speed lines are listed as not counted, so nothing ever vanishes without a trace.
+void App::calibrationInputsCard(bool list) {
+	const Globals& g = cfg.g;
+	const std::vector<calib::Input>& inputs = calibrationInputs();
+	calib::Combined both[2] = { calibrationCombined(true), calibrationCombined(false) };
+	// One section for a one-way street whose two directions count the same inputs (the usual case: a pass there
+	// measures the lane both ways); otherwise one per direction, since each lane is its own distance away.
+	auto sameIds = [](const calib::Combined& a, const calib::Combined& b) {
+		if (a.shares.size() != b.shares.size()) return false;
+		for (size_t i = 0; i < a.shares.size(); i++) if (a.shares[i].id != b.shares[i].id) return false;
+		return true;
+	};
+	std::vector<int> dirs;
+	if (g.LegalDirection != "Both" && sameIds(both[0], both[1])) dirs.push_back(g.LegalDirection == "R2L" ? 1 : 0);
+	else dirs = { 0, 1 };
+	std::string toRemove, toRestore;
+
+	for (int d : dirs) {
+		const calib::Combined& cmb = both[d];
+		ImGui::PushID(d);
+		if (dirs.size() > 1) {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(d == 0 ? c::l2r : c::r2l));
+			ImGui::TextUnformatted(d == 0 ? "→  Left to right" : "←  Right to left");
+			ImGui::PopStyleColor();
+		}
+		std::string detail;
+		std::string head = calib::summary(cmb, &detail);
+		bool good = cmb.valid && (cmb.n == 1 || cmb.agree());
+		ImU32 col = !cmb.valid ? c::warn : good ? (cmb.n >= 2 ? c::ok : c::text) : c::warn;
+		ImGui::PushFont(fonts.strong);
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(col));
+		ImGui::PushTextWrapPos(0);
+		ImGui::TextWrapped("%s  %s", !cmb.valid || !good ? ICON_WARN : cmb.n >= 2 ? ICON_CHECK_CIRCLE : ICON_CIRCLE, head.c_str());
+		ImGui::PopTextWrapPos();
+		ImGui::PopStyleColor();
+		ImGui::PopFont();
+		ImGui::PushTextWrapPos(0);
+		if (cmb.valid) {
+			// The combination's uncertainty in the terms that matter: mph at the posted limit.  Whole-frame rounding
+			// in the engine is on top of this, and shows on the tiles below.
+			double limit = prefs.speedLimit > 0 ? prefs.speedLimit : 25;
+			// The side panel's summary leaves the next step to the list under the picture.
+			dimText("Good to about ±%.1f%%, so ±%.1f mph at %.0f mph. %s", cmb.sigma * 100, cmb.sigma * limit, limit, list ? detail.c_str() : "");
+		}
+		else if (!detail.empty() && list) dimText("%s", detail.c_str());
+		ImGui::PopTextWrapPos();
+
+		// The counted inputs, one line each: what it is, its share of the weight as a bar and a percent, how far it sits
+		// from the result, and a button to take it out.
+		if (list && cmb.valid && ImGui::BeginTable("calinputs", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+			ImGui::TableSetupColumn("what", ImGuiTableColumnFlags_WidthStretch);
+			ImGui::TableSetupColumn("share", ImGuiTableColumnFlags_WidthFixed, px(120));
+			ImGui::TableSetupColumn("off", ImGuiTableColumnFlags_WidthFixed, px(48));
+			ImGui::TableSetupColumn("x", ImGuiTableColumnFlags_WidthFixed, px(24));
+			for (const calib::Share& sh : cmb.shares) {
+				const calib::Input* in = nullptr;
+				for (const calib::Input& e : inputs) if (e.id == sh.id) in = &e;
+				if (!in) continue;
+				ImGui::PushID(in->id.c_str());
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::AlignTextToFramePadding();
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(sh.outlier ? c::warn : c::text));
+				ImGui::Text("%s%s", sh.outlier ? ICON_WARN "  " : "", in->label.empty() ? calib::methodName(in->method) : in->label.c_str());
+				ImGui::PopStyleColor();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s: says %.1f ft of street between the speed lines, give or take %.0f%%.\nAdded %s.%s",
+						calib::methodName(in->method), in->zoneFt, in->sigma * 100, in->time.substr(0, 16).c_str(),
+						sh.outlier ? "\nWell off the others: if you doubt it, take it out." : "");
+				// Share of the weight: a bar and the percent beside it.
+				ImGui::TableNextColumn();
+				ImVec2 p = ImGui::GetCursorScreenPos();
+				float w = px(70), h = px(6), y = (ImGui::GetFrameHeight() - h) * .5f;
+				ImDrawList* dl = ImGui::GetWindowDrawList();
+				dl->AddRectFilled(p + ImVec2(0, y), p + ImVec2(w, y + h), c::bg3, h * .5f);
+				dl->AddRectFilled(p + ImVec2(0, y), p + ImVec2(std::max(h, w * float(sh.contribution)), y + h), sh.outlier ? c::warn : c::accent, h * .5f);
+				ImGui::Dummy(ImVec2(w, ImGui::GetFrameHeight()));
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its share of the say in the result: surer measurements count for more.");
+				ImGui::SameLine(0, px(8));
+				ImGui::AlignTextToFramePadding();
+				dimText("%.0f%%", sh.contribution * 100);
+				ImGui::TableNextColumn();
+				if (cmb.n >= 2) {
+					ImGui::AlignTextToFramePadding();
+					ImGui::PushStyleColor(ImGuiCol_Text, v4(sh.outlier ? c::warn : c::dim));
+					ImGui::Text("%+.0f%%", sh.offPct);
+					ImGui::PopStyleColor();
+					if (ImGui::IsItemHovered()) ImGui::SetTooltip(sh.offPct >= 0 ? "Says the street is %.1f%% longer than the combined result:\nalone, it would read speeds that much higher."
+						: "Says the street is %.1f%% shorter than the combined result:\nalone, it would read speeds that much lower.", std::fabs(sh.offPct));
+				}
+				ImGui::TableNextColumn();
+				if (ImGui::SmallButton(ICON_XMARK)) toRemove = in->id;
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Take this measurement out. You can put it back.");
+				ImGui::PopID();
+			}
+			ImGui::EndTable();
+		}
+		ImGui::PopID();
+		ImGui::Dummy(ImVec2(0, px(4)));
+	}
+
+	if (!list) return;
+	// Not counted: taken out by hand (with Put back), or made on speed lines that have moved since.
+	std::string lines = speedLinesSig();
+	int notCounted = 0;
+	for (const calib::Input& in : inputs) notCounted += in.removed || (!in.lines.empty() && in.lines != lines);
+	if (notCounted) {
+		char h[64];
+		snprintf(h, sizeof h, "Not counted (%d)###notcounted", notCounted);
+		if (ImGui::TreeNode(h)) {
+			for (const calib::Input& in : inputs) {
+				bool moved = !in.lines.empty() && in.lines != lines;
+				if (!in.removed && !moved) continue;
+				ImGui::PushID(in.id.c_str());
+				dimText("%s", in.label.empty() ? calib::methodName(in.method) : in.label.c_str());
+				ImGui::SameLine();
+				if (in.removed) { if (ImGui::SmallButton(ICON_UNDO "  Put back")) toRestore = in.id; }
+				else {
+					ImGui::PushFont(fonts.caption);
+					dimText("(other speed lines)");
+					ImGui::PopFont();
+				}
+				ImGui::PopID();
+			}
+			ImGui::TreePop();
+		}
+	}
+	if (!toRemove.empty()) {
+		setCalibrationInputRemoved(toRemove, true);
+		toast("Taken out. Under Not counted you can put it back.", c::dim, ICON_UNDO);
+	}
+	if (!toRestore.empty()) {
+		setCalibrationInputRemoved(toRestore, false);
+		toast("Put back into your calibration.", c::ok, ICON_CHECK_CIRCLE);
+	}
+}
+
 // The latest check pass: what you drove beside what the calibration says, the error, and the verdict.  A failed
 // check explains the usual causes and offers the two ways forward: calibrate again from scratch, or average the
 // two passes (when both drives were honest, the mean is a better estimate than either).
@@ -2641,23 +2884,35 @@ void App::calibrationCheckCard(float width) {
 	}
 	ImGui::PopTextWrapPos();
 	if (!k.verified) {
-		// What averaging would set, so the button says exactly what it does.
-		double second = calib::impliedFrames(k.drivenMph, k.frames, k.fps, g.CalibrationSpeed, g.CalibrationFPS);
-		int avg = std::max(1, int(std::lround((k.calFrames + second) / 2)));
+		// What adding the check pass would set: the inputs with this pass added, combined, so the button says exactly
+		// what it does.  Two honest passes end up near their mean; with more inputs the check pass is one voice of many.
+		std::vector<calib::Input> with = calibrationInputs();
+		calib::Input pass;
+		pass.method = "pass";
+		pass.dirs = g.LegalDirection == "Both" ? (k.l2r ? calib::kL2R : calib::kR2L) : calib::kBothDirs;
+		pass.zoneFt = calib::zoneFtFromPass(k.drivenMph, k.frames, k.fps);
+		pass.sigma = calib::sigmaPass(k.drivenMph, k.frames);
+		pass.lines = speedLinesSig();
+		pass.time = "preview";
+		calib::addInput(with, pass);
+		calib::Combined after = calib::combine(with, k.l2r, speedLinesSig());
+		int next = std::max(1, int(std::lround(calib::framesForZone(after.zoneFt, g.CalibrationSpeed, g.CalibrationFPS))));
 		ImGui::Dummy(ImVec2(0, px(2)));
 		float bw = (textW - px(10)) * .5f;
-		if (ghostButton(ICON_ROTATE "  Redo calibration", ImVec2(bw, 0))) {
+		if (ghostButton(ICON_ROTATE "  Drive again", ImVec2(bw, 0))) {
 			calibChecking_ = false;
 			calibPickId_ = 0;
 			lastCheck_ = CalCheck();
 		}
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive past again and calibrate from that pass.");
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Leave this pass out. Drive past again and add or check that one.\n"
+			"A measurement you doubt can be removed under Your calibration.");
 		ImGui::SameLine(0, px(10));
 		char label[64];
-		snprintf(label, sizeof label, ICON_ARROWS_LR "  Average: %d frames", avg);
+		snprintf(label, sizeof label, ICON_PLUS "  Add this pass: %d frames", next);
 		if (primaryButton(label, ImVec2(bw, 0))) averageCalibration(k);
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Average the two passes: %d frames from the first, %.1f from this one.\nThen check the average with one more pass.", k.calFrames, second);
+			ImGui::SetTooltip("Count this pass as one more measurement. VST weighs it with the %d already there\n"
+				"(%s), giving %d frames. Then check it with one more pass.", after.n - 1, calib::summary(calibrationCombined(k.l2r)).c_str(), next);
 	}
 	ImGui::EndGroup();
 	endCard();

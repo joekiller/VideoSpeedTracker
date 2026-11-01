@@ -1,4 +1,5 @@
 #include "Calibration.h"
+#include "CalEvidence.h"
 #include "UserPaths.h"
 #include <cmath>
 #include <cstdio>
@@ -14,6 +15,7 @@ namespace calib {
 static const char* kHeader = "Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, MeasuredMph, Error";
 
 std::string historyPath() { return (userpaths::configDir() / "calibration-history.csv").string(); }
+std::string inputsPath() { return (userpaths::configDir() / "calibration-inputs.json").string(); }
 
 std::string nowIso() {
 	// Local fields plus the UTC offset, the same form as the stats csv's Timestamp column.  The offset is the local

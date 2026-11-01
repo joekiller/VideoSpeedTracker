@@ -420,6 +420,16 @@ describe('POST /api/run', () => {
   });
 });
 
+/**
+ * Calibration inputs (src/Gui/CalEvidence.h): each method adds a measurement, and CalibrationFrames is their
+ * weighted combination. `added(before)` is the inputs that appeared since a status, `takeOut(list)` removes them again
+ * so a test leaves the calibration as it found it, and `framesFor(cfg, zoneFt)` is the engine's frames for a zone.
+ */
+const inputIds = (st) => new Set((st.calibration.inputs || []).map((i) => i.id));
+const added = async (ids) => { const { data: st } = await api.get('/api/status'); return st.calibration.inputs.filter((i) => !ids.has(i.id)); };
+const takeOut = async (list) => { for (const i of list) await api.post('/api/calibration/inputs', { id: i.id, removed: true }); };
+const framesFor = (cfg, zoneFt) => zoneFt / (cfg.CalibrationSpeed * 5280 / 3600) * cfg.CalibrationFPS;
+
 describe('calibration', () => {
   it('mark answers {ok, frame}; apply without a full span is {ok:false, problems}', async () => {
     const m = await api.post('/api/calibration/mark', { dir: 'R2L', edge: 'start' });
@@ -433,22 +443,35 @@ describe('calibration', () => {
     assert.ok(a.data.problems.length > 0 && a.data.problems.every(isStr));
   });
 
-  it('apply from a pass rescales CalibrationFrames<dir> and keeps CalibrationSpeed/FPS', async (ctx) => {
+  it('apply from a pass adds it to the calibration; CalibrationFrames<dir> follows the combination, CalibrationSpeed/FPS stay', async (ctx) => {
     if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
     const { data: vs } = await api.get('/api/vehicles?limit=1');
     if (!vs.length) return ctx.skip('no logged pass to calibrate from');
     const v = vs[0], key = `CalibrationFrames${v.dir}`;
     const { data: before } = await api.get('/api/config');
+    const ids = inputIds((await api.get('/api/status')).data);
+    let mine = [];
     try {
       const r = await api.post('/api/calibration/apply', { dir: v.dir, speed: 30, vehicleId: v.id });
       assert.equal(r.status, 200);
       assert.equal(r.data.ok, true, JSON.stringify(r.data.problems));
       assert.deepEqual(r.data.problems, []);
-      const want = Math.max(1, Math.round(v.frames * 30 / before.CalibrationSpeed * before.CalibrationFPS / v.fps));
-      assert.equal(r.data.config[key], want);
+      mine = await added(ids);
+      assert.equal(mine.length, 1, 'one new input');
+      assert.equal(mine[0].method, 'pass');
+      assert.ok(Math.abs(mine[0].zoneFt - 30 * 5280 / 3600 * v.frames / v.fps) < 0.01, 'the pass says v × t of street');
+      const { data: st } = await api.get('/api/status');
+      const comb = st.calibration[v.dir].combined;
+      assert.ok(comb.shares.some((x) => x.id === mine[0].id), 'it counts for its direction');
+      // The frames in force are the combination's (to the rounding of the reported zone), between what was there and
+      // what the pass alone says: it joins the earlier measurements instead of replacing them.
+      assert.ok(Math.abs(r.data.config[key] - framesFor(before, comb.zoneFt)) <= 0.5 + 0.02, `${r.data.config[key]} frames vs zone ${comb.zoneFt}`);
+      const alone = v.frames * 30 / before.CalibrationSpeed * before.CalibrationFPS / v.fps;
+      assert.ok(r.data.config[key] >= Math.min(before[key], alone) - 0.5 && r.data.config[key] <= Math.max(before[key], alone) + 0.5);
       assert.equal(r.data.config.CalibrationSpeed, before.CalibrationSpeed);
       assert.equal(r.data.config.CalibrationFPS, before.CalibrationFPS);
     } finally {
+      await takeOut(mine);
       await api.put('/api/config', { [key]: before[key] });
     }
   });
@@ -464,9 +487,10 @@ describe('calibration', () => {
     assertError(await api.post('/api/calibration/distance', 'not json'), 400, 'distance with a body that is not JSON');
   });
 
-  it('distance sets CalibrationFrames from the cones and keeps CalibrationSpeed/FPS', async (ctx) => {
+  it('distance adds the cones to the calibration and keeps CalibrationSpeed/FPS', async (ctx) => {
     if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
     const { data: before } = await api.get('/api/config');
+    const ids = inputIds((await api.get('/api/status')).data);
     try {
       // Cones 300 px apart and 10 ft apart: the zone is (speedLineRight - speedLineLeft) / 300 x 10 ft.
       const r = await api.post('/api/calibration/distance', { cones: [[400, 450], [700, 450]], feet: 10, dir: 'L2R' });
@@ -476,13 +500,69 @@ describe('calibration', () => {
       const frames = zoneFeet / (before.CalibrationSpeed * 5280 / 3600) * before.CalibrationFPS;
       assert.ok(Math.abs(r.data.zoneFeet - zoneFeet) <= 0.05 + 1e-9, `zoneFeet ${r.data.zoneFeet} vs ${zoneFeet}`);
       assert.ok(Math.abs(r.data.frames - frames) <= 0.05 + 1e-9, `frames ${r.data.frames} vs ${frames}`);
-      assert.equal(r.data.config.CalibrationFramesL2R, Math.max(1, Math.round(frames)));
-      assert.equal(r.data.config.CalibrationFramesR2L, before.CalibrationFramesR2L);
+      const mine = await added(ids);
+      assert.equal(mine.length, 1);
+      assert.equal(mine[0].method, 'cones');
+      assert.equal(mine[0].dirs, 'L2R');
+      assert.ok(Math.abs(mine[0].zoneFt - zoneFeet) <= 0.01);
+      const { data: st } = await api.get('/api/status');
+      const comb = st.calibration.L2R.combined;
+      assert.ok(Math.abs(r.data.config.CalibrationFramesL2R - framesFor(before, comb.zoneFt)) <= 0.5 + 0.02);
+      assert.equal(r.data.config.CalibrationFramesR2L, before.CalibrationFramesR2L, 'an L2R measurement leaves R2L alone');
       assert.equal(r.data.config.CalibrationSpeed, before.CalibrationSpeed);
       assert.equal(r.data.config.CalibrationFPS, before.CalibrationFPS);
     } finally {
+      await takeOut(await added(ids));
       await api.put('/api/config', { CalibrationFramesL2R: before.CalibrationFramesL2R });
     }
+  });
+
+  it('a second method adds to the first instead of replacing it, and one can be taken out and put back', async (ctx) => {
+    if (!t.mutate) return ctx.skip('changes VST.cfg; set MUTATE=1 to run against a real VST Studio');
+    const { data: before } = await api.get('/api/config');
+    const ids = inputIds((await api.get('/api/status')).data);
+    const zonePx = before.speedLineRight - before.speedLineLeft;
+    try {
+      // Take out whatever is there, so the two below are the whole calibration.
+      await takeOut((await api.get('/api/status')).data.calibration.inputs.filter((i) => !i.removed));
+      const a = await api.post('/api/calibration/distance', { cones: [[300, 450], [900, 450]], feet: 20, dir: 'both' });
+      assert.equal(a.data.ok, true, JSON.stringify(a.data.problems));
+      const b = await api.post('/api/calibration/distance', { cones: [[300, 450], [900, 450]], feet: 21, dir: 'both' });
+      assert.equal(b.data.ok, true, JSON.stringify(b.data.problems));
+      const mine = await added(ids);
+      assert.equal(mine.length, 2, 'both measurements are kept');
+      const { data: st } = await api.get('/api/status');
+      const comb = st.calibration.L2R.combined;
+      // Equal uncertainty (same spots): each has half the say, and the result is their mean, 20.5 ft of spacing.
+      assert.equal(comb.n, 2);
+      for (const sh of comb.shares) assert.ok(Math.abs(sh.contribution - 0.5) < 0.002);
+      assert.ok(Math.abs(comb.zoneFt - zonePx / 600 * 20.5) < 0.02, `zone ${comb.zoneFt}`);
+      assert.match(comb.summary, /^2 measurements (agree within|differ by) \d+%$/);
+      // Out goes the 21 ft one: the calibration is the 20 ft one alone.  Back in: the mean again.
+      const out = await api.post('/api/calibration/inputs', { id: mine[1].id, removed: true });
+      assert.equal(out.data.ok, true, JSON.stringify(out.data.problems));
+      assert.equal(out.data.calibration.L2R.combined.n, 1);
+      assert.equal(out.data.calibration.L2R.combined.summary, '1 measurement so far');
+      assert.equal(out.data.config.CalibrationFramesL2R, Math.max(1, Math.round(framesFor(before, zonePx / 600 * 20))));
+      assert.ok(out.data.calibration.inputs.find((i) => i.id === mine[1].id).removed, 'kept on record as removed');
+      const back = await api.post('/api/calibration/inputs', { id: mine[1].id, removed: false });
+      assert.equal(back.data.ok, true);
+      assert.equal(back.data.calibration.L2R.combined.n, 2);
+    } finally {
+      await takeOut(await added(ids));
+      for (const i of (await api.get('/api/status')).data.calibration.inputs.filter((x) => ids.has(x.id))) {
+        await api.post('/api/calibration/inputs', { id: i.id, removed: false });   // the ones taken out above, back in
+      }
+      await api.put('/api/config', { CalibrationFramesL2R: before.CalibrationFramesL2R, CalibrationFramesR2L: before.CalibrationFramesR2L });
+    }
+  });
+
+  it('inputs: an unknown id is {ok:false, problems}; a body that is not JSON is 400', async () => {
+    const r = await api.post('/api/calibration/inputs', { id: 'no-such-input', removed: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.ok, false);
+    assert.ok(r.data.problems.length > 0 && r.data.problems.every(isStr));
+    assertError(await api.post('/api/calibration/inputs', 'not json'), 400, 'inputs with a body that is not JSON');
   });
 
   it('apply from a vehicle that is gone is {ok:false, problems}', async () => {
@@ -524,6 +604,19 @@ describe('calibration state and checks', () => {
     for (const d of DIRS) assertCalState(st.calibration[d], `status.calibration.${d}`);
     const { data: cfg } = await api.get('/api/config');
     for (const d of DIRS) assert.equal(st.calibration[d].frames, cfg[`CalibrationFrames${d}`], `${d} frames match the config`);
+    // What the inputs add up to, per direction, and the inputs themselves (CalEvidence.h).
+    assert.ok(Array.isArray(st.calibration.inputs), 'calibration.inputs');
+    for (const i of st.calibration.inputs) {
+      assertShape(i, { id: isStr, method: isStr, methodName: isStr, label: isStr, time: isStr, dirs: (x) => ['L2R', 'R2L', 'both'].includes(x),
+        zoneFt: (x) => isNum(x) && x > 0, sigmaPct: (x) => isNum(x) && x > 0, removed: isBool, otherLines: isBool }, 'calibration input');
+    }
+    for (const d of DIRS) {
+      const k = st.calibration[d].combined;
+      assertShape(k, { summary: isStr, detail: isStr, n: isInt, agree: isBool, zoneFt: (x) => x === null || isNum(x),
+        sigmaPct: (x) => x === null || isNum(x), setAside: isInt, shares: Array.isArray }, `calibration.${d}.combined`);
+      assert.equal(k.shares.length, k.n);
+      if (k.n) assert.ok(Math.abs(k.shares.reduce((a, x) => a + x.contribution, 0) - 1) < 0.01, 'shares add up to the whole');
+    }
   });
 
   it('check refuses what it cannot measure with 200 {ok:false, problems}', async () => {
@@ -577,15 +670,22 @@ describe('calibration state and checks', () => {
     if (!vs.length) return ctx.skip('no logged pass to calibrate from');
     const v = vs[0], key = `CalibrationFrames${v.dir}`;
     const { data: before } = await api.get('/api/config');
+    let ids = null;
     try {
       await api.post('/api/calibration/check', { dir: v.dir, speed: Math.round(measured(before, v.dir, v.frames, v.fps)), vehicleId: v.id });
-      const r = await api.post('/api/calibration/apply', { dir: v.dir, speed: 30, vehicleId: v.id });
+      // A pass far off what the calibration says, so the combination's whole frames change (an input that agrees to
+      // the frame leaves the value, and its check, standing).
+      ids = inputIds((await api.get('/api/status')).data);
+      const r = await api.post('/api/calibration/apply', { dir: v.dir, speed: 60, vehicleId: v.id });
       assert.equal(r.data.ok, true, JSON.stringify(r.data.problems));
       const { data: st } = await api.get('/api/status');
       assertCalState(st.calibration[v.dir], 'after an apply');
-      assert.equal(st.calibration[v.dir].state, 'unchecked');
-      assert.ok(st.calibration[v.dir].applied, 'the apply is on record');
+      if (r.data.config[key] !== before[key]) {
+        assert.equal(st.calibration[v.dir].state, 'unchecked');
+        assert.ok(st.calibration[v.dir].applied, 'the apply is on record');
+      }
     } finally {
+      if (ids) await takeOut(await added(ids));
       await api.put('/api/config', { [key]: before[key] });
     }
   });

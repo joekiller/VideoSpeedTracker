@@ -278,3 +278,48 @@ describe('map.js reads OpenStreetMap tags', async () => {
     assert.equal(map.nearestStreet(ways, 38.01, -78.01), null, 'nothing within 30 m');
   });
 });
+
+// The demo's copy of VST Studio's calibration combining (src/Gui/CalEvidence.h), held to the same numbers as
+// tests/calibration_test.cpp so the phone's demo and the real app say the same thing.
+import * as calib from '../js/calib.js';
+
+describe('calib.js combining', () => {
+  const mk = (id, method, zoneFt, sigma, dirs = 'both', lines = 'L') => ({ id, method, zoneFt, sigma, dirs, lines, removed: false });
+  it('gives equal sigmas the plain mean and equal shares', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.03), mk('b', 'cones', 30.6, 0.03)], 'L2R', 'L');
+    assert.ok(Math.abs(c.zoneFt - 30.3) < 1e-9);
+    assert.ok(c.shares.every((s) => Math.abs(s.contribution - 0.5) < 1e-9));
+    assert.equal(calib.summary(c).summary, '2 measurements agree within 2%');
+  });
+  it('weighs a rough camera setup far below a careful pass', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.03), mk('c', 'camera', 33, 0.10)], 'L2R', 'L');
+    assert.ok(c.shares[1].contribution < 0.1 && c.zoneFt > 30 && c.zoneFt < 30.3);
+  });
+  it('widens the sigma and says they differ when two careful ones disagree', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.02), mk('b', 'car', 33, 0.02)], 'L2R', 'L');
+    assert.ok(c.birge > 2 && c.sigma > 0.04 && !c.agree);
+    assert.equal(calib.summary(c).summary, '2 measurements differ by 10%');
+  });
+  it('flags only the one that is well off the other two, and leaves out removed, other-direction and other-lines inputs', () => {
+    const v = [mk('a', 'pass', 30, 0.03), mk('b', 'cones', 30.4, 0.03), mk('x', 'car', 35, 0.03)];
+    const c = calib.combine(v, 'L2R', 'L');
+    assert.deepEqual(c.shares.map((s) => s.outlier), [false, false, true]);
+    assert.equal(calib.summary(c).summary, '3 measurements, 1 well off the others');
+    v[2].removed = true;
+    assert.equal(calib.summary(calib.combine(v, 'L2R', 'L')).summary, '2 measurements agree within 2%');
+    const w = [mk('a', 'pass', 30, 0.03, 'L2R'), mk('b', 'pass', 40, 0.03, 'R2L'), mk('c', 'cones', 31, 0.03, 'both', 'OLD')];
+    const l = calib.combine(w, 'L2R', 'L');
+    assert.equal(l.n, 1);
+    assert.equal(l.setAside, 1);
+    assert.equal(calib.combine(w, 'R2L', 'L').zoneFt, 40);
+  });
+  it('flags no single one when all three disagree', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.02), mk('b', 'cones', 33, 0.02), mk('c', 'car', 36, 0.02)], 'L2R', 'L');
+    assert.equal(c.outliers, 0);
+    assert.equal(calib.summary(c).summary, '3 measurements differ by 19%');
+  });
+  it('uses the same error models as VST Studio', () => {
+    assert.ok(Math.abs(calib.sigmaPass(15, 20) - Math.hypot(Math.hypot(0.3, 0.5) / 15, 0.41 / 20)) < 1e-12);
+    assert.ok(Math.abs(calib.framesForZone(calib.zoneFtFromPass(25, 30, 30), 25, 30) - 30) < 1e-9);
+  });
+});
