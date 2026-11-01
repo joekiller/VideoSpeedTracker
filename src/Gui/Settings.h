@@ -68,6 +68,9 @@ struct AppPrefs {
 	int planSource = 0;
 	std::string planNote, planCalSig;
 	double planCarLengths = 0;   // the last "car lengths across the picture" estimate (0 = none yet)
+	// Mark your street's "Work it out from the camera" (Perspective.h CameraSetup): the camera's height above the road
+	// and how far it is turned from square to the street (+ = toward the right).  Distance and lens come from step 2.
+	double calcHeightFt = 12, calcYawDeg = 0;
 	// The camera zone's spot on the map (degrees; 0, 0 = not set), for matching Tesla dashcam clips by GPS.
 	double siteLat = 0, siteLon = 0;
 	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config

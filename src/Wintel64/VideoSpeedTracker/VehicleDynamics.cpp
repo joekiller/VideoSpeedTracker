@@ -153,6 +153,10 @@ vector<double> getLinearFit(const std::vector<double>& x, const std::vector<doub
 // number.  Its slope (pixels per frame) gives the time between the lines to a fraction of a frame.  -1, so no speed, if fewer
 // than three were seen, they don't move the right way, or they stray from the line by more than margin(4) pixels rms.  This
 // replaces validGap(), whose entry gap here is mostly the deliberate look-ahead of a large maxDistOnEntry.
+// The fit is made in distance along the street, Globals::zoneFraction() (0 at the left line, 1 at the right), rather than
+// in raw pixels: on a street that recedes across the picture (streetEdge set, Perspective.h) a car at a steady speed
+// moves more pixels per frame at the near end than the far, and only the ground distance grows in a straight line.  With
+// no streetEdge zoneFraction() is (x - speedLineLeft) / zone width, so this is the same pixel fit as before, rescaled.
 int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
 	int first = -1, last = -1;  // the first and last front bumpers seen between the speed lines (they are in frame order)
 	for (int i = 0; i < int(seenFBPixel.size()); i++)
@@ -161,20 +165,24 @@ int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
 			last = i;
 		}
 	if (first < 0) return -1;
-	vector<double> frames, pixels;
+	const bool l2r = dir == L2R;
+	const double zonePx = double(g.speedLineRight - g.speedLineLeft);
+	vector<double> frames, along;  // frame number, and distance along the street in zone widths (zoneFraction)
 	for (int i = max(first - 1, 0); i <= min(last + 1, int(seenFBPixel.size()) - 1); i++)
 		if (seenFBPixel[i] > g.pixelLeft && seenFBPixel[i] < g.pixelRight){  // one at the edge of the box is cut off there, not a bumper
 			frames.push_back(seenFBFrame[i]);
-			pixels.push_back(seenFBPixel[i]);
+			along.push_back(g.zoneFraction(l2r, seenFBPixel[i]));
 		}
 	if (frames.size() < 3) return -1;
-	vector<double> fit = getLinearFit(frames, pixels);
-	double slope = fit[0];  // pixels per frame; + for L2R, - for R2L
-	if ((dir == L2R && slope <= 0) || (dir == R2L && slope >= 0)) return -1;
+	vector<double> fit = getLinearFit(frames, along);
+	double slope = fit[0];  // zone widths per frame; + for L2R, - for R2L
+	if ((l2r && slope <= 0) || (!l2r && slope >= 0)) return -1;
 	double sumSq = 0;
-	for (size_t i = 0; i < frames.size(); i++) sumSq += pow(pixels[i] - (slope * frames[i] + fit[1]), 2);
-	if (sqrt(sumSq / frames.size()) > g.margin(4, dir == L2R)) return -1;  // not one vehicle moving steadily: usually two merged, or a lost track picked up again
-	double zoneFrames = double(g.speedLineRight - g.speedLineLeft) / abs(slope);
+	for (size_t i = 0; i < frames.size(); i++) sumSq += pow(along[i] - (slope * frames[i] + fit[1]), 2);
+	// Not one vehicle moving steadily: usually two merged, or a lost track picked up again.  The limit is margin(4) pixels
+	// expressed in zone widths, so with no streetEdge it is exactly the old pixel test.
+	if (sqrt(sumSq / frames.size()) * zonePx > g.margin(4, l2r)) return -1;
+	double zoneFrames = 1 / abs(slope);
 	double calibrationFrames = (dir == L2R ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) * g.videoFPS / g.CalibrationFPS;
 	return int(calibrationFrames / zoneFrames * g.CalibrationSpeed + 0.5);
 }
@@ -771,4 +779,4 @@ Projection VehicleDynamics::getBestProjection(Globals& g, int frameNum){
 		return Projection(Rect(int(nextFrontBumper), nextY, int(nextRearBumper - nextFrontBumper), nextHeight), vState, estVelocity, frameNum);
 	}
 		
-};
+};

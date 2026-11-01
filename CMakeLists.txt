@@ -58,6 +58,10 @@ endif()
 add_executable(level_test tests/level_test.cpp)
 target_include_directories(level_test PRIVATE ${VST_DIR})
 target_link_libraries(level_test PRIVATE ${OpenCV_LIBS})
+# Angled lane lines and a receding street (Perspective.h, Globals::lane / vanishingX / zoneFraction): equal steps along a
+# simulated street come out as equal steps of zoneFraction, and VST.cfg's checks refuse an unusable street edge.
+add_executable(perspective_test tests/perspective_test.cpp ${VST_DIR}/Globals.cpp)
+target_include_directories(perspective_test PRIVATE ${VST_DIR})
 
 # Interactive editor that trims a VST highlights video down to the vehicles worth posting.
 add_executable(ProcessHiLites ${CMAKE_SOURCE_DIR}/src/Wintel64/ProcessHiLites/ProcessHilites.cpp)
@@ -85,6 +89,7 @@ foreach(min 0 30)
   set_tests_properties(min_logged_speed_${min} PROPERTIES FIXTURES_REQUIRED sample_run)
 endforeach()
 add_test(NAME software_level COMMAND level_test)
+add_test(NAME perspective COMMAND perspective_test)
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}
     -DVST=$<TARGET_FILE:VideoSpeedTracker>
@@ -253,7 +258,17 @@ add_test(NAME short_view_15ft
     -DFFMPEG=${FFMPEG_EXECUTABLE}
     -DFEET=15
     -P ${CMAKE_SOURCE_DIR}/tests/short_view.cmake)
-set_tests_properties(short_view short_view_15ft PROPERTIES SKIP_REGULAR_EXPRESSION "SHORT_VIEW_SKIPPED" TIMEOUT 400 RUN_SERIAL TRUE)
+# The 20 ft clip again, warped so the street runs at a slant and recedes (a camera aimed partly along it), timed with
+# angled lane lines and a street edge so short-view timing measures along the ground (Perspective.h).
+add_test(NAME receding_view
+  COMMAND ${CMAKE_COMMAND}
+    -DVST=$<TARGET_FILE:VideoSpeedTracker>
+    -DSRC=${CMAKE_SOURCE_DIR}
+    -DOUT=${CMAKE_BINARY_DIR}/test-short-view
+    -DFFMPEG=${FFMPEG_EXECUTABLE}
+    -DRECEDE=1
+    -P ${CMAKE_SOURCE_DIR}/tests/short_view.cmake)
+set_tests_properties(short_view short_view_15ft receding_view PROPERTIES SKIP_REGULAR_EXPRESSION "SHORT_VIEW_SKIPPED" TIMEOUT 400 RUN_SERIAL TRUE)
 
 # VST Studio's companion API (docs/companion-api.md), end to end: the real app under a virtual display, driven with
 # curl, run on the sample video and checked against the same baseline as sample_video_baseline. Needs bash, xvfb-run

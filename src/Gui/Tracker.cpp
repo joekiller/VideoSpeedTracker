@@ -86,6 +86,10 @@ void Tracker::worker(std::vector<Job> jobs, Options opt) {
 	vst::Hooks hooks;
 	hooks.onFrame = [this](const vst::FrameInfo& f) { onFrame(f); };
 	hooks.onVehicle = [this](const vst::VehicleEvent& e) { onVehicle(e); };
+	hooks.onAttempt = [this](const vst::AttemptEvent& a) {
+		std::lock_guard<std::mutex> l(mu_);
+		(a.timed ? slow_ : untimed_)++;
+	};
 	hooks.pollKey = [this] { return pollKey(); };
 	hooks.onSourceStatus = [this](const vst::SourceStatus& s) { onSourceStatus(s); };
 	hooks.onLog = [this](const std::string& line) {
@@ -339,12 +343,16 @@ Counts Tracker::counts() {
 		sum += v.ev.speed;
 	}
 	c.avgSpeed = c.vehicles ? sum / c.vehicles : 0;
+	c.slow = slow_;
+	c.untimed = untimed_;
+	c.tries = c.vehicles + slow_ + untimed_;
 	return c;
 }
 
 void Tracker::clearVehicles() {
 	std::lock_guard<std::mutex> l(mu_);
 	vehicles_.clear();
+	slow_ = untimed_ = 0;
 }
 
 std::vector<std::string> Tracker::logTail(size_t n) {

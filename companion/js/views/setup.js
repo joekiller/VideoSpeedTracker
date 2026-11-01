@@ -223,7 +223,7 @@ function mark({ vst, body, cfg, n }) {
   });
   svg.addEventListener('pointermove', (e) => {
     if (!active) return;
-    Object.assign(draft, applyHandle(draft, active, ...toFrame(e)));
+    Object.assign(draft, applyHandle(draft, active, ...toFrame(e), k()));
     setDirty(true);
     draw();
   });
@@ -239,9 +239,10 @@ function mark({ vst, body, cfg, n }) {
     setDirty(true);
     draw();
   };
-  $('#reset').onclick = () => { Object.assign(draft, cfg, { obstruction: [...(cfg.obstruction || [0, 0])] }); $('#obs').checked = draft.obstruction[1] > draft.obstruction[0]; setDirty(false); draw(); };
+  $('#reset').onclick = () => { Object.assign(draft, cfg, { obstruction: [...(cfg.obstruction || [0, 0])], ...(cfg.streetEdge ? { streetEdge: [...cfg.streetEdge] } : {}) }); $('#obs').checked = draft.obstruction[1] > draft.obstruction[0]; setDirty(false); draw(); };
   $('#save').onclick = async () => {
-    const keys = ['AnalysisBoxLeft', 'AnalysisBoxTop', 'AnalysisBoxWidth', 'AnalysisBoxHeight', 'speedLineLeft', 'speedLineRight', 'obstruction', 'R2LStreetY', 'L2RStreetY'];
+    const keys = ['AnalysisBoxLeft', 'AnalysisBoxTop', 'AnalysisBoxWidth', 'AnalysisBoxHeight', 'speedLineLeft', 'speedLineRight', 'obstruction',
+      'R2LStreetY', 'L2RStreetY', 'R2LStreetYRight', 'L2RStreetYRight', 'streetEdge'].filter((key) => key in draft);
     const r = await vst.putConfig(Object.fromEntries(keys.map((key) => [key, draft[key]])));
     $('#problems').textContent = r.ok ? '' : r.problems.join('. ');
     // VST saves at once, but a run in progress keeps the zones it started with (docs/companion-api.md).

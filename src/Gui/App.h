@@ -191,6 +191,12 @@ public:
 	// curb, and "Level to this line" turns cfg.g.levelDegrees by their slope; levelGrid_ shows the reference rows while
 	// the slider is being dragged (set by the inspector, read by the next frame's canvas).
 	bool levelTool_ = false, levelGrid_ = false;
+	// "Check it with a ghost car" on Mark your street: ghostCar_ draws a typical car (Canvas.h ghostCars) projected with
+	// cameraSetup(), step 2's distance and lens plus the height and angle typed on the Lane card (prefs.calc*).
+	bool ghostCar_ = false;
+	perspective::CameraSetup cameraSetup() const;
+	bool ghostGoesRight() const { return cfg.g.LegalDirection != "R2L"; }   // two-way: the → lane
+	float inspectorScroll_ = -1;   // --shots: scroll Mark your street's inspector here on its next frame (-1 = leave it)
 	ImVec2 levelDots_[2] = { { 360, 560 }, { 920, 560 } };
 	cv::Mat coneShot_[2];
 	double coneTimerAt_ = -1;

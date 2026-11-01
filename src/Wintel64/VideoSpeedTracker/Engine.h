@@ -44,6 +44,17 @@ struct VehicleEvent {
 	std::string timestamp;           // csv Timestamp: ISO 8601 local time with UTC offset when it passed, or "" if unknown
 };
 
+// A vehicle the tracker followed into the speed zone but did not log: timed but slower than minLoggedSpeed (a walker,
+// a cyclist, a car turning in), or never given a usable speed (lost in the zone, a track that didn't hold together, the
+// video ended).  Together with the VehicleEvents these are every car the tracker tried to time (the run manifest's
+// logged + belowMinSpeed + untimed; countVehicle() in videoSpeedTracker.cpp has the exact rules).
+struct AttemptEvent {
+	bool leftToRight;
+	bool timed;                      // true: timed but under minLoggedSpeed; false: no usable speed
+	int speed;                       // the speed when timed, else 0
+	int frame;                       // frame number when the tracker let it go
+};
+
 // A live source (camera or stream) stopped delivering frames and is being reopened, or has come back.  Files never
 // report this: they end at their first failed read.
 struct SourceStatus {
@@ -56,6 +67,7 @@ struct SourceStatus {
 struct Hooks {
 	std::function<void(const FrameInfo&)> onFrame;
 	std::function<void(const VehicleEvent&)> onVehicle;
+	std::function<void(const AttemptEvent&)> onAttempt;   // optional: each vehicle tried but not logged
 	// Replaces waitKey(): return a key code the engine understands (27 stops the run) or -1.  Called once per
 	// frame pair; the host can block here to pause.
 	std::function<int()> pollKey;

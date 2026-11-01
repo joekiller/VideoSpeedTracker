@@ -65,6 +65,8 @@ std::string App::zonesSignature() {
 	std::ostringstream o;
 	o << g.AnalysisBoxLeft << ',' << g.AnalysisBoxTop << ',' << g.AnalysisBoxWidth << ',' << g.AnalysisBoxHeight << ','
 	  << g.speedLineLeft << ',' << g.speedLineRight << ',' << g.R2LStreetY << ',' << g.L2RStreetY << ',' << source;
+	// Tilted lane lines extend it; a level setup keeps the signature it always had, so existing references stay valid.
+	if (g.R2LStreetYRight || g.L2RStreetYRight) o << ',' << g.R2LStreetYRight << ',' << g.L2RStreetYRight;
 	return o.str();
 }
 

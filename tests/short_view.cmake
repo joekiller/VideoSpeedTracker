@@ -66,7 +66,63 @@ endif()
 # 2.5 mph (ten times as many), which is the same calibration.
 math(EXPR calL2R "(350 * 1023 * ${W} + 559 * 640) / (559 * 1280)")
 math(EXPR calR2L "(400 * 1023 * ${W} + 559 * 640) / (559 * 1280)")
-set(CFG ${OUT}/short_view_${FEET}ft.cfg)
+# Receding street (-DRECEDE=1, 20 ft only): the same clip warped by ffmpeg's perspective filter as if the camera were
+# aimed partly along the street, so it runs at a slant and its right end recedes.  The source frame's right edge is
+# squeezed from 0..720 to 144..576 (a trapezoid whose top and bottom edges meet at x = 3200), so the right speed line is
+# 1.5 times as far away as the left and a car at a steady speed moves about 1.7 times as many pixels per frame at the
+# left end as at the right.  The config is the plain one carried through the same warp (worked out once from the
+# warp's homography; the numbers are below): speed lines 128/1151 -> 200/1199, lane lines 399/517 (+65) -> slanted,
+# the street band's row 600 (+65) as the street edge, look-ahead scaled by the left end's 1.67x stretch.  Calibration
+# is unchanged: it's the same stretch of street between the same two lines.  Measured when this was written: SE 28 of
+# 28, NW 29 of 33, |error| median 0, p90 1, max 2 mph.  The same clip with streetEdge = [0,0] (fitting in pixels) timed
+# 25 and 12, median 2, p90 4, max 6, so this test fails without the ground-plane fit (Perspective.h).
+if(RECEDE)
+  set(RCLIP ${OUT}/receding_view_1280x720_144_576.mkv)
+  if(NOT EXISTS ${RCLIP})
+    execute_process(
+      COMMAND ${FFMPEG} -v error -y -i ${CLIP} -an
+              -vf "scale=1280:720,perspective=x0=0:y0=0:x1=1280:y1=144:x2=0:y2=720:x3=1280:y3=576:sense=destination"
+              -fps_mode passthrough -c:v libx264 -preset ultrafast -crf 12 ${RCLIP}.tmp.mkv
+      RESULT_VARIABLE rc ERROR_VARIABLE err)
+    if(NOT rc EQUAL 0)
+      message(FATAL_ERROR "ffmpeg couldn't warp the receding-view clip (${rc}):\n${err}")
+    endif()
+    file(RENAME ${RCLIP}.tmp.mkv ${RCLIP})
+  endif()
+  set(CLIP ${RCLIP})
+  set(NAME short_view_${FEET}ft_receding)
+  set(CFG ${OUT}/${NAME}.cfg)
+  file(WRITE ${CFG} "# Written by tests/short_view.cmake: the 20 ft short view warped so the street recedes to the right.
+L2RDirection = \"SE\"
+R2LDirection = \"NW\"
+LegalDirection = NW
+obstruction = [0,0]
+AnalysisBoxLeft = 0
+AnalysisBoxTop = 0
+AnalysisBoxWidth = 1279
+AnalysisBoxHeight = 719
+speedLineLeft = 200
+speedLineRight = 1199
+R2LStreetY = 464
+R2LStreetYRight = 422
+L2RStreetY = 582
+L2RStreetYRight = 493
+streetEdge = [665,543]
+nextHeight = 278
+maxL2RDistOnEntry = 695
+maxR2LDistOnEntry = 695
+entryLookBack = 1279
+SLOP = 83
+largeVehicleArea = 100
+CalibrationSpeed = 2.5
+CalibrationFramesL2R = ${calL2R}
+CalibrationFramesR2L = ${calR2L}
+CalibrationFPS = 30
+subFrameTiming = 1
+")
+else()
+set(NAME short_view_${FEET}ft)
+set(CFG ${OUT}/${NAME}.cfg)
 file(WRITE ${CFG} "# Written by tests/short_view.cmake: the sample cropped to ${FEET} ft (${W} px), scaled to 1280x720.
 L2RDirection = \"SE\"
 R2LDirection = \"NW\"
@@ -92,8 +148,9 @@ CalibrationFramesR2L = ${calR2L}
 CalibrationFPS = 30
 subFrameTiming = 1
 ")
+endif()
 
-set(CSV ${OUT}/stats_short_view_${FEET}ft.csv)
+set(CSV ${OUT}/stats_${NAME}.csv)
 execute_process(
   COMMAND ${VST} --headless --input ${CLIP} --config ${CFG} --stats ${CSV}
   RESULT_VARIABLE rc OUTPUT_VARIABLE log ERROR_VARIABLE log)
@@ -242,7 +299,7 @@ if(NOT n_ww_l2r EQUAL n_SE OR NOT n_ww_r2l EQUAL 0)
 endif()
 
 # The manifest records the setting and logs as many vehicles as the csv has.
-read_manifest(${OUT}/run_short_view_${FEET}ft.json M)
+read_manifest(${OUT}/run_${NAME}.json M)
 if(NOT M_config_subFrameTiming EQUAL 1 OR NOT M_logged EQUAL n_got)
   string(APPEND failures "  manifest: subFrameTiming ${M_config_subFrameTiming} (expected 1), logged ${M_logged} (csv has ${n_got})\n")
 endif()

@@ -78,6 +78,9 @@ const std::vector<std::pair<std::string, std::function<std::string(const Globals
 		{ "SLOP", [](const Globals& g) { return std::to_string(g.SLOP); } },
 		{ "R2LStreetY", [](const Globals& g) { return std::to_string(g.R2LStreetY); } },
 		{ "L2RStreetY", [](const Globals& g) { return std::to_string(g.L2RStreetY); } },
+		{ "R2LStreetYRight", [](const Globals& g) { return std::to_string(g.R2LStreetYRight); } },
+		{ "L2RStreetYRight", [](const Globals& g) { return std::to_string(g.L2RStreetYRight); } },
+		{ "streetEdge", [](const Globals& g) { return "[" + std::to_string(g.streetEdge[0]) + "," + std::to_string(g.streetEdge[1]) + "]"; } },
 		{ "nextHeight", [](const Globals& g) { return std::to_string(g.nextHeight); } },
 		{ "minLoggedSpeed", [](const Globals& g) { return std::to_string(g.minLoggedSpeed); } },
 		{ "subFrameTiming", [](const Globals& g) { return std::to_string(g.subFrameTiming); } },
@@ -269,7 +272,7 @@ void AppPrefs::load() {
 	b("guideDone", guideDone); b("remote", remoteEnabled);
 	d("planHfov", planHfov); d("planWidth", planWidth); d("planFps", planFps); d("planShutter", planShutter);
 	d("planDist", planDist); d("planClear", planClear); d("planCalib", planCalib); d("planCarLen", planCarLen);
-	d("siteLat", siteLat); d("siteLon", siteLon);
+	d("siteLat", siteLat); d("siteLon", siteLon); d("calcHeightFt", calcHeightFt); d("calcYawDeg", calcYawDeg);
 	if (remoteToken.empty()) remoteToken = newToken();
 }
 
@@ -292,7 +295,8 @@ void AppPrefs::save() const {
 		<< "\nplanPreset = " << planPreset << "\nplanHfov = " << planHfov << "\nplanWidth = " << planWidth << "\nplanFps = " << planFps
 		<< "\nplanShutter = " << planShutter << "\nplanDist = " << planDist << "\nplanClear = " << planClear
 		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nplanSource = " << planSource
-		<< "\nplanNote = " << planNote << "\nplanCalSig = " << planCalSig << "\nplanCarLengths = " << planCarLengths << "\nzonesFor = " << zonesFor
+		<< "\nplanNote = " << planNote << "\nplanCalSig = " << planCalSig << "\nplanCarLengths = " << planCarLengths
+		<< "\ncalcHeightFt = " << calcHeightFt << "\ncalcYawDeg = " << calcYawDeg << "\nzonesFor = " << zonesFor
 		<< "\nsiteLat = " << std::setprecision(10) << siteLat << "\nsiteLon = " << siteLon << std::setprecision(6)
 		<< "\ncalibratedFor = " << calibratedFor << "\n";
 	for (auto& r : recent) out << "recent = " << r << "\n";
