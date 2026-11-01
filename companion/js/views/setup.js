@@ -16,7 +16,8 @@
  * then POST /api/calibration/check with a second one.
  */
 import { html, $, $$, icon, sign, band, arrow, clock, ago, toast, sheet, confirmSheet } from '../ui.js';
-import { zonesSvg, applyHandle, geometry, W, H, LANE } from '../overlay.js';
+import { zonesSvg, applyHandle, handlePoint, HANDLE_AXES, geometry, W, H, LANE } from '../overlay.js';
+import { frameStage, nudgePad, carRuler } from '../touch.js';
 
 const STEPS = ['Camera & spot', 'Mark the street', 'Rules of the road', 'Calibration drive'];
 // The same steps by VST Studio's numbering (1 What you need … 5 Calibrate), so the phone and the desktop always name a
@@ -79,38 +80,25 @@ function spot({ vst, body, cfg, st, n }) {
         : html`A car at ${st.speedLimit} mph spends <b>${secs.toFixed(1)} s</b> in the speed zone, which is short for whole-frame timing. That's fine: turn on short-view timing in VST Studio's site planner (step 2, one click), or widen the zone in the next step.`}</p></div>
     ${nav(n, 'Looks good')}`.__html;
   $('#refresh').onclick = () => { $('#frame').src = vst.frameUrl(); };
-  planCard(vst, $('#plan'), $('#frame'));   // loads on its own, so the step shows at once
+  planCard(vst, $('#plan'));   // loads on its own, so the step shows at once
 }
 
 const PILL = { guess: 'warn', typed: '', picture: '', calibration: 'ok' };
 const GRADE = ['ok', 'warn', 'bad'];
 
 /**
- * "Your street": the planner's verdict and where its numbers came from, the presets, a car-length ruler drawn over
- * the camera picture (slide until one block covers a car, then "Use it"), the measured numbers when a calibration
+ * "Your street": the planner's verdict and where its numbers came from, the presets, a car-length ruler over its own
+ * zoomable still from the camera (touch.js carRuler: drag the bright block onto a car, its ends to the bumpers, then
+ * "Use it"), the measured numbers when a calibration
  * has them, and the two lengths for anyone who has measured.  Every change goes to VST (PUT /api/plan), which
  * answers with the whole plan, so the card always shows what the desktop shows.
  */
-async function planCard(vst, el, frame) {
+async function planCard(vst, el) {
   let p;
   try { p = await vst.plan(); } catch { el.innerHTML = html`<p class="small muted">This VST doesn't have the site planner yet. Update VST Studio to plan from the phone.</p>`.__html; return; }
   let n = p.carLengths ?? Math.min(20, Math.max(1, Math.round(p.street.coverFt / p.typicalCarFt * 2) / 2));
-  // The ruler lives in an SVG over the frame (1280 x 720 space), so it scales with the picture.
-  const ruler = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  ruler.setAttribute('viewBox', '0 0 1280 720');
-  ruler.setAttribute('aria-hidden', 'true');
-  ruler.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
-  frame.parentElement.style.position = 'relative';
-  frame.parentElement.append(ruler);
-  const drawRuler = () => {
-    const w = 1280 / n;
-    let out = '';
-    for (let i = 0; i * w < 1280; i++) {
-      const col = i % 2 ? '#22d3ee' : '#f5a524';
-      out += `<rect x="${i * w}" y="380" width="${Math.min(w, 1280 - i * w)}" height="34" fill="${col}" fill-opacity=".5"/><line x1="${i * w}" x2="${i * w}" y1="350" y2="444" stroke="${col}" stroke-width="5"/>`;
-    }
-    ruler.innerHTML = out;
-  };
+  // touch.js carRuler, rebuilt with the card; n and where the block sits survive a re-render (e.g. after "Use it").
+  let ruler = null, rpos = null;
 
   const render = () => {
     const v = p.verdict, st = p.street;
@@ -125,15 +113,12 @@ async function planCard(vst, el, frame) {
       <h4 style="margin:16px 0 8px">Which is closest to your view?</h4>
       <div class="choice" id="presets">${p.presets.map((x) => html`<button data-k="${x.key}" aria-pressed="${st.source === 'guess' && Math.abs(st.distFt - x.distFt) < .5 && Math.abs(st.clearFt - x.clearFt) < .5}"><span><b>${x.name}</b><small>${x.hint}</small></span></button>`)}</div>
 
-      <h4 style="margin:16px 0 8px">Size it from the picture above</h4>
-      <label class="field"><span id="cars-label">${n.toFixed(1)} car lengths across</span>
-        <input type="range" id="cars" min="1" max="20" step="0.5" value="${n}" aria-describedby="cars-help"></label>
-      <p class="small muted" id="cars-help" style="margin:6px 0 8px">Slide until one coloured block is as long as a car in the picture, ideally one driving past.</p>
-      <button class="btn" id="use-cars">${icon('ruler')}Use it: about <span id="cars-ft">${(n * p.typicalCarFt).toFixed(0)}</span> ft across</button>
+      <h4 style="margin:16px 0 8px">Size it from the picture</h4>
+      <div id="ruler"></div>
 
       ${p.measured ? html`
         <div class="callout ok" style="margin-top:14px">${icon('check')}<p>Measured by ${p.measured.how}: ${p.measured.coverFt.toFixed(0)} ft across the picture, ${p.measured.clearFt.toFixed(0)} ft of it clear.
-          ${st.source !== 'calibration' ? html`<button class="btn ghost" id="use-measured" style="margin-top:8px">Use the measured numbers</button>` : ''}</p></div>`
+          ${st.source !== 'calibration' ? html`<br><button class="btn" id="use-measured" style="margin-top:8px">Use the measured numbers</button>` : ''}</p></div>`
       : html`<p class="small muted" style="margin:14px 0 0">Calibrating (step 5: a drive past, or cones or a pole) measures the street exactly, and this updates by itself.</p>`}
 
       <details style="margin-top:14px"><summary class="small">I've measured it</summary>
@@ -145,7 +130,12 @@ async function planCard(vst, el, frame) {
         <p class="small muted" style="margin:8px 0 0">No tape? One easy step is about 2.5 ft, sidewalk slabs are usually 5 ft, a parked car about 15 ft.</p>
       </details>
       <p class="small" id="plan-problems" style="color:var(--bad)"></p>`.__html;
-    drawRuler();
+    ruler?.destroy();
+    ruler = carRuler($('#ruler', el), {
+      frameUrl: () => vst.frameUrl(), n, at: rpos, carFt: p.typicalCarFt,
+      onChange: (v, pos) => { n = v; rpos = pos; },
+      onUse: (v) => send({ carLengths: v }, 'Planned from your picture. A calibration will measure it exactly.'),
+    });
     const send = async (change, said) => {
       const r = await vst.putPlan(change);
       p = r.plan;
@@ -154,13 +144,6 @@ async function planCard(vst, el, frame) {
       if (said) toast(said);
     };
     $('#presets', el).onclick = (e) => { const k = e.target.closest('[data-k]')?.dataset.k; if (k) send({ preset: k }); };
-    $('#cars', el).oninput = (e) => {
-      n = Number(e.target.value);
-      $('#cars-label', el).textContent = `${n.toFixed(1)} car lengths across`;
-      $('#cars-ft', el).textContent = (n * p.typicalCarFt).toFixed(0);
-      drawRuler();
-    };
-    $('#use-cars', el).onclick = () => send({ carLengths: n }, 'Planned from your picture. A calibration will measure it exactly.');
     const um = $('#use-measured', el);
     if (um) um.onclick = () => send({ useMeasured: true });
     $('#save-typed', el).onclick = () => send({ distFt: Number($('#dist', el).value), clearFt: Number($('#clear', el).value) }, 'Saved your numbers.');
@@ -181,13 +164,33 @@ const PARTS = {
   o1: 'Mark anything in front of the road, like a post or tree trunk, so VST knows vehicles disappear behind it.',
 };
 
+/** The parts the phone can pick and move, in the order a novice sets them; names match PARTS' words. */
+const PICK = [
+  ['tl', 'Box corner ↖', '#fff'], ['br', 'Box corner ↘', '#fff'], ['sl', 'Start line', '#fff'], ['sr', 'End line', '#fff'],
+  ['r2l', '← Wheels', LANE.R2L], ['l2r', 'Wheels →', LANE.L2R], ['o0', 'Post, left edge', '#cbd5e1'], ['o1', 'Post, right edge', '#cbd5e1'],
+];
+
+/**
+ * Mark the street. On a phone the frame is ~220 px tall, so editing works three ways, all on one selected part:
+ *   - drag on the picture: grab near a handle (the nearest one within ~32 px of the finger) and it moves by the
+ *     finger's travel, with a loupe showing it magnified; pinch, double-tap or + to zoom in first;
+ *   - pick a part from the chips under the picture (no need to hit a 9 px dot at all);
+ *   - the arrow pad moves the picked part one frame pixel per tap, faster when held.
+ * touch.js does the gestures and zoom; this view only maps a handle and a frame point to config through applyHandle.
+ */
 function mark({ vst, body, cfg, n }) {
   const draft = { ...cfg, obstruction: [...(cfg.obstruction || [0, 0])] };
   let dirty = false;
+  let sel = 'tl';
   body.innerHTML = html`
     <h1>Mark the street</h1>
-    <p class="lede">Drag the handles on the picture. Use two fingers to scroll the page if you need to.</p>
+    <p class="lede">Drag the handles on the picture, or pick a part below and use the arrows. Pinch or tap + to zoom in for a precise fit.</p>
     <div class="editor" id="ed"><img src="${vst.frameUrl()}" alt="Camera view"><svg viewBox="0 0 ${W} ${H}" id="svg"></svg></div>
+    <div class="parts" id="parts" role="group" aria-label="Part to move"></div>
+    <div class="fine">
+      <div class="grow"><b id="sel-name"></b><small id="sel-pos"></small></div>
+      <div id="pad"></div>
+    </div>
     <div class="legend">
       <span><i style="background:#fff"></i>Box &amp; speed lines</span>
       <span><i style="background:${LANE.R2L}"></i>Right-to-left wheels</span>
@@ -202,34 +205,61 @@ function mark({ vst, body, cfg, n }) {
     <div class="btn-row" style="margin-top:12px"><button class="btn" id="reset" disabled>Undo changes</button><button class="btn primary" id="save" disabled>${icon('check')}Save</button></div>
     ${nav(n)}`.__html;
 
-  const svg = $('#svg'), ed = $('#ed');
-  const k = () => W / (ed.clientWidth || 360);
-  const draw = () => { svg.innerHTML = zonesSvg(draft, { k: k(), editable: true }); };
   const setDirty = (d) => { dirty = d; $('#save').disabled = !d; $('#reset').disabled = !d; };
-
-  // Pointer drags in frame coordinates; one active handle at a time.
-  let active = null;
-  const toFrame = (e) => {
-    const r = svg.getBoundingClientRect();
-    return [(e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * H];
+  const hasObs = () => draft.obstruction[1] > draft.obstruction[0];
+  const parts = () => PICK.filter(([id]) => hasObs() || !id.startsWith('o'));
+  const paintParts = () => {
+    $('#parts').innerHTML = parts().map(([id, name, col]) => html`<button type="button" data-h="${id}" aria-pressed="${id === sel}"><i style="background:${col}"></i>${name}</button>`.__html).join('');
   };
-  svg.addEventListener('pointerdown', (e) => {
-    const h = e.target.closest('[data-h]')?.dataset.h;
-    if (!h) return;
-    active = h;
-    svg.setPointerCapture(e.pointerId);
-    $('#hint p').textContent = PARTS[h];
-    e.preventDefault();
-  });
-  svg.addEventListener('pointermove', (e) => {
-    if (!active) return;
-    Object.assign(draft, applyHandle(draft, active, ...toFrame(e), k()));
+  /** The picked part's name, where it is, and the matching hint; arrows that can't move it are disabled. */
+  const paintSel = () => {
+    const name = PICK.find(([id]) => id === sel)?.[1] || '';
+    const pt = handlePoint(draft, sel, ed.k());
+    $('#sel-name').textContent = name;
+    $('#sel-pos').textContent = pt ? `${HANDLE_AXES[sel].includes('x') ? `x ${Math.round(pt[0])}` : ''}${HANDLE_AXES[sel] === 'xy' ? ' · ' : ''}${HANDLE_AXES[sel].includes('y') ? `y ${Math.round(pt[1])}` : ''} of ${W}×${H}` : '';
+    pad.setAxes(HANDLE_AXES[sel]);
+    $('#hint p').textContent = PARTS[sel];
+  };
+  const select = (h) => {
+    sel = h;
+    $$('#parts button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.h === h));
+    $(`#parts [data-h="${h}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    paintSel();
+    ed.redraw();
+  };
+  /** Moves the picked handle to frame point pt through the same maths a drag uses. */
+  const moveTo = (h, pt) => {
+    Object.assign(draft, applyHandle(draft, h, pt[0], pt[1], ed.k()));
     setDirty(true);
-    draw();
+    paintSel();
+    ed.redraw();
+    return handlePoint(draft, h, ed.k());
+  };
+
+  const ed = frameStage($('#ed'), {
+    draw: (k) => { $('#svg').innerHTML = zonesSvg(draft, { k, editable: true, selected: sel }); },
+    press: (pt) => {
+      // The nearest handle within ~32 screen px wins, so overlapping handles (a lane dot near a speed line) are
+      // still reachable: zoom in and they separate.
+      const k = ed.k();
+      let best = null, bd = 32 * k;
+      for (const [id] of parts()) {
+        const hp = handlePoint(draft, id, k);
+        const d = hp && Math.hypot(hp[0] - pt[0], hp[1] - pt[1]);
+        if (hp && d < bd) { best = id; bd = d; }
+      }
+      if (!best) return null;
+      select(best);
+      return { at: handlePoint(draft, best, k), move: (p) => moveTo(best, p) };
+    },
   });
-  const end = () => { active = null; };
-  svg.addEventListener('pointerup', end);
-  svg.addEventListener('pointercancel', end);
+  const pad = nudgePad($('#pad'), (dx, dy) => {
+    const pt = handlePoint(draft, sel, ed.k());
+    if (pt) moveTo(sel, [pt[0] + dx, pt[1] + dy]);
+  });
+  $('#parts').onclick = (e) => { const h = e.target.closest('[data-h]')?.dataset.h; if (h) select(h); };
+  paintParts();
+  paintSel();
 
   $('#obs').onchange = (e) => {
     const g = geometry(draft);
@@ -237,9 +267,10 @@ function mark({ vst, body, cfg, n }) {
     const mid = (g.sl + g.sr) / 2 - draft.AnalysisBoxLeft;
     draft.obstruction = e.target.checked ? [Math.round(mid - 30), Math.round(mid + 30)] : [0, 0];
     setDirty(true);
-    draw();
+    paintParts();
+    select(e.target.checked ? 'o0' : sel.startsWith('o') ? 'tl' : sel);
   };
-  $('#reset').onclick = () => { Object.assign(draft, cfg, { obstruction: [...(cfg.obstruction || [0, 0])], ...(cfg.streetEdge ? { streetEdge: [...cfg.streetEdge] } : {}) }); $('#obs').checked = draft.obstruction[1] > draft.obstruction[0]; setDirty(false); draw(); };
+  $('#reset').onclick = () => { Object.assign(draft, cfg, { obstruction: [...(cfg.obstruction || [0, 0])], ...(cfg.streetEdge ? { streetEdge: [...cfg.streetEdge] } : {}) }); $('#obs').checked = hasObs(); setDirty(false); paintParts(); select(hasObs() || !sel.startsWith('o') ? sel : 'tl'); };
   $('#save').onclick = async () => {
     const keys = ['AnalysisBoxLeft', 'AnalysisBoxTop', 'AnalysisBoxWidth', 'AnalysisBoxHeight', 'speedLineLeft', 'speedLineRight', 'obstruction',
       'R2LStreetY', 'L2RStreetY', 'R2LStreetYRight', 'L2RStreetYRight', 'streetEdge'].filter((key) => key in draft);
@@ -254,10 +285,7 @@ function mark({ vst, body, cfg, n }) {
     if (await confirmSheet('Leave without saving?', 'Your changes to the zones will be lost.', 'Leave', true)) location.hash = '#/setup/3';
   });
 
-  const onResize = () => draw();
-  window.addEventListener('resize', onResize);
-  requestAnimationFrame(draw);
-  return () => window.removeEventListener('resize', onResize);
+  return () => ed.destroy();
 }
 
 // ---- 3. rules of the road -----------------------------------------------------------------------
@@ -365,10 +393,13 @@ function drive({ vst, body, cfg, st, n }) {
     <details id="cones" class="card" style="margin-top:12px"><summary><b>No car handy? Calibrate with cones or a pole</b><br><small class="muted">Stand on the street with this phone, see yourself on the camera, and set it up there.</small></summary>
       <div style="margin-top:10px">
         <div class="check"><b class="num" style="color:var(--accent)">a</b><p><b>Chalk two spots</b> 10 ft or more apart along the lane, where the cars' near wheels run. Stand a cone on each, or hold a pole (or a broom) upright on one spot, then the other.</p></div>
-        <div class="check"><b class="num" style="color:var(--accent)">b</b><p><b>Tap each spot</b> on the live picture below. Any point on an upright pole will do, so one person can tap spot 1, walk the pole to spot 2 and tap again.</p></div>
+        <div class="check"><b class="num" style="color:var(--accent)">b</b><p><b>Tap each spot</b> on the live picture below. Any point on an upright pole will do, so one person can tap spot 1, walk the pole to spot 2 and tap again. Pinch or tap + to zoom in; drag a placed spot or use the arrows to fine-tune it.</p></div>
         <div class="check"><b class="num" style="color:var(--accent)">c</b><p><b>Enter the taped distance</b> and apply. Then drive past once to check it when you can.</p></div>
         <div class="editor" id="ced" style="margin-top:10px"><span id="clive"></span><svg viewBox="0 0 ${W} ${H}" id="csvg"></svg></div>
-        <div class="seg" id="cwhich" style="margin-top:10px"><button data-v="0" aria-pressed="true">Spot 1</button><button data-v="1">Spot 2</button></div>
+        <div class="fine">
+          <div class="seg grow" id="cwhich"><button data-v="0" aria-pressed="true">Spot 1</button><button data-v="1">Spot 2</button></div>
+          <div id="cpad"></div>
+        </div>
         <label class="field" style="margin-top:10px"><span>Spots apart (ft)</span><input class="input" id="cft" type="number" inputmode="decimal" min="1" step="0.5" value="10"></label>
         <div class="seg" id="cdir" style="margin-top:10px"><button data-v="both" aria-pressed="true">Both ways</button><button data-v="R2L">← only</button><button data-v="L2R">→ only</button></div>
         <p class="small muted" id="cprev" style="margin-top:10px"></p>
@@ -490,14 +521,17 @@ function drive({ vst, body, cfg, st, n }) {
    * spot to the second, for setting up from the street with no car. Only x counts, so any point on an upright pole works.
    * The live picture plays only while the section is open, so it doesn't hold one of Studio's few stream slots.
    * Taps land in frame coordinates (1280×720, like the speed lines); each tap places the selected cone and moves the
-   * selection to the other one. The preview repeats the server's arithmetic (Calibration.h framesForDistance) so the
+   * selection to the other one. The picture is a touch.js stage: pinch or + zooms, a placed spot can be dragged (it moves
+   * by the finger's travel, so the finger doesn't hide it) and the arrows move the selected spot a pixel at a time.
+   * No loupe here: it would open a second copy of the live stream. The preview repeats the server's arithmetic (Calibration.h framesForDistance) so the
    * zone length and frames are visible before applying.
    */
   const cones = [null, null];
   let cone = 0, cdir = 'both';
   const csvg = $('#csvg');
+  let cst = null;   // the zoomable stage, created below once paintCones exists
   const paintCones = () => {
-    const g = geometry(current), k = W / ($('#ced').clientWidth || 360);
+    const g = geometry(current), k = cst ? cst.k() : W / ($('#ced').clientWidth || 360);
     const marks = cones.map((c, i) => c && html`
       <line x1="${c[0]}" y1="0" x2="${c[0]}" y2="${H}" stroke="#4ade80" stroke-width="${2 * k}" stroke-dasharray="${8 * k} ${6 * k}"/>
       <path d="M${c[0]} ${c[1] - 26 * k} L${c[0] - 12 * k} ${c[1]} L${c[0] + 12 * k} ${c[1]} Z" fill="#fb923c" stroke="#000" stroke-width="${1.5 * k}"/>
@@ -521,13 +555,30 @@ function drive({ vst, body, cfg, st, n }) {
   };
   const stopLive = () => { const m = $('#clive img, #clive video'); if (m) { m.removeAttribute('src'); m.remove(); } };
   $('#cones').ontoggle = () => { if ($('#cones').open) { live(); paintCones(); } else stopLive(); };
-  csvg.addEventListener('pointerdown', (e) => {
-    const r = csvg.getBoundingClientRect();
-    cones[cone] = [Math.round((e.clientX - r.left) / r.width * W), Math.round((e.clientY - r.top) / r.height * H)];
-    if (!cones[1 - cone]) cone = 1 - cone;
-    paintCones();
-    e.preventDefault();
+  const placeCone = (i, [fx, fy]) => { cones[i] = [Math.round(Math.max(0, Math.min(W, fx))), Math.round(Math.max(0, Math.min(H, fy)))]; };
+  cst = frameStage($('#ced'), {
+    loupe: false,
+    draw: () => paintCones(),
+    // A finger within ~32 screen px of a placed spot drags it; anywhere else a tap places the selected spot.
+    press: (pt) => {
+      const k = cst.k();
+      const i = [0, 1].map((j) => [j, cones[j] && Math.hypot(cones[j][0] - pt[0], cones[j][1] - pt[1])])
+        .filter(([, d]) => d != null && d < 32 * k).sort((a, b) => a[1] - b[1])[0]?.[0];
+      if (i == null) return null;
+      cone = i;
+      return { at: [...cones[i]], move: (p) => { placeCone(i, p); paintCones(); return cones[i]; } };
+    },
+    tap: (pt) => {
+      placeCone(cone, pt);
+      if (!cones[1 - cone]) cone = 1 - cone;
+      paintCones();
+    },
   });
+  nudgePad($('#cpad'), (dx) => {
+    if (!cones[cone]) return;
+    placeCone(cone, [cones[cone][0] + dx, cones[cone][1]]);
+    paintCones();
+  }, 'x');
   $('#cwhich').onclick = (e) => { const v = e.target.closest('[data-v]')?.dataset.v; if (v != null) { cone = Number(v); paintCones(); } };
   $('#cdir').onclick = (e) => { const v = e.target.closest('[data-v]')?.dataset.v; if (v) { cdir = v; $$('#cdir button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.v === v)); } };
   $('#cft').oninput = paintCones;
@@ -566,5 +617,5 @@ function drive({ vst, body, cfg, st, n }) {
   })();
 
   paintSpeed(); paintCal(cfg, st.calibration); paintPhase(); paintPasses();
-  return () => { vst.removeEventListener('vehicle', onVehicle); stopLive(); };
+  return () => { vst.removeEventListener('vehicle', onVehicle); stopLive(); cst.destroy(); };
 }

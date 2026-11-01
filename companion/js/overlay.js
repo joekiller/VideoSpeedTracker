@@ -99,6 +99,30 @@ export function applyHandle(c, handle, fx, fy, k = 2) {
   }
 }
 
+/**
+ * Where handle `h` is drawn, in frame coordinates (the same spots zonesSvg puts them). The phone's nudge pad and
+ * offset drags start from here and feed the moved point back through applyHandle.
+ */
+export function handlePoint(c, h, k = 2) {
+  const g = geometry(c), { x, y, w, h: bh } = g.box;
+  switch (h) {
+    case 'tl': return [x, y];
+    case 'br': return [x + w, y + bh];
+    case 'sl': return [g.sl, y + bh / 2];
+    case 'sr': return [g.sr, y + bh / 2];
+    case 'r2l': case 'l2r': {
+      const dir = h.toUpperCase(), hx = laneHandleX(g, dir, k);
+      return [hx, laneYAt(g, dir === 'R2L' ? g.r2l : g.l2r, dir === 'R2L' ? g.r2lR : g.l2rR, hx)];
+    }
+    case 'o0': return g.obs ? [g.obs[0], y + bh - 16 * k] : null;
+    case 'o1': return g.obs ? [g.obs[1], y + bh - 16 * k] : null;
+    default: return null;
+  }
+}
+
+/** Which way each handle can move: speed lines and obstruction edges slide sideways, lane lines up and down. */
+export const HANDLE_AXES = { tl: 'xy', br: 'xy', sl: 'x', sr: 'x', r2l: 'y', l2r: 'y', o0: 'x', o1: 'x' };
+
 /** Chevron arrow path pointing along `dir`, centred at (cx, cy). */
 function chevrons(cx, cy, dir, k) {
   const s = dir === 'L2R' ? 1 : -1, a = 9 * k, gap = 11 * k;
@@ -125,9 +149,10 @@ export function tracksSvg(tracks, { k = 2, speedLimit = 25, egregious = 40 } = {
 /**
  * Inner SVG markup for the zones. Options:
  *   editable - adds drag handles (data-h attributes) for Setup;
+ *   selected - the handle id picked on the phone, drawn bigger with an accent ring so it is clear what the arrows move;
  *   tracks   - live tracked boxes [{x,y,w,h,dir,speed}], coloured by speed against the limit.
  */
-export function zonesSvg(c, { k = 2, editable = false, tracks = [], speedLimit = 25, egregious = 40 } = {}) {
+export function zonesSvg(c, { k = 2, editable = false, selected = null, tracks = [], speedLimit = 25, egregious = 40 } = {}) {
   const g = geometry(c);
   const { x, y, w, h } = g.box;
   const sw = 1.6 * k;
@@ -171,12 +196,16 @@ export function zonesSvg(c, { k = 2, editable = false, tracks = [], speedLimit =
   s += tracksSvg(tracks, { k, speedLimit, egregious });
 
   if (editable) {
-    const r = 9 * k, hit = 24 * k;
-    const handle = (id, hx, hy, col = '#fff', shape = 'circle') => `<g class="handle" data-h="${id}">
+    const hit = 24 * k;
+    const handle = (id, hx, hy, col = '#fff', shape = 'circle') => {
+      const on = id === selected, r = (on ? 11 : 9) * k;
+      return `<g class="handle${on ? ' selected' : ''}" data-h="${id}">
       <circle cx="${hx}" cy="${hy}" r="${hit}" fill="transparent"/>
+      ${on ? `<circle cx="${hx}" cy="${hy}" r="${r * 1.9}" fill="none" stroke="#5eead4" stroke-width="${2.5 * k}"/>` : ''}
       ${shape === 'circle'
         ? `<circle cx="${hx}" cy="${hy}" r="${r}" fill="${col}" stroke="#0b0d10" stroke-width="${2 * k}"/>`
         : `<rect x="${hx - r * 0.7}" y="${hy - r * 1.3}" width="${r * 1.4}" height="${r * 2.6}" rx="${r * 0.6}" fill="${col}" stroke="#0b0d10" stroke-width="${2 * k}"/>`}</g>`;
+    };
     s += handle('tl', x, y);
     s += handle('br', x + w, y + h);
     s += handle('sl', g.sl, y + h / 2, '#fff', 'pill');

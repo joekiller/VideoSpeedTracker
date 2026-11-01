@@ -59,6 +59,7 @@ the folder as-is and it works on a network with no internet.
 | `js/api.js` | Client for the [companion API](../docs/companion-api.md): live HTTP, or the demo |
 | `js/demo.js` | A simulated VST that implements the same API, used by demo mode and the mock server |
 | `js/overlay.js` | Draws and edits VST's zones over a 1280x720 frame |
+| `js/touch.js` | Touch editing on the picture: pinch/double-tap zoom, offset drags with a loupe, hold-to-repeat nudge arrows, and the car-length ruler for sizing the street from a parked or passing car |
 | `js/share.js` | Opt-in sharing: pass and report cards drawn on a canvas, Web Share with download fallback |
 | `js/views/*.js` | One module per screen |
 | `sw.js`, `manifest.webmanifest`, `icons/` | Installable PWA; offline shell when served over https or localhost |
