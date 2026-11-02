@@ -10,7 +10,12 @@
 //   - a second archive with the same name gets "-2"; a copy (move = false) leaves the data folder alone;
 //   - a csv that is gone or a clip that isn't a file is skipped; a data folder that can't hold Archive/ fails cleanly;
 //   - restore() puts the Stats and HiLites files back without overwriting, and clears "moved";
-//   - review.html carries the data and can't be broken out of by a source name holding "</script>".
+//   - review.html carries the data and can't be broken out of by a source name holding "</script>";
+//   - the calibration record: calibration-passes.csv holds the user's own drives among the archived runs only (the
+//     latest use of a pass), calibration-inputs.json this config's measurements, Stats/calibration-sets.json the
+//     locked sets; read() loads all three, the report from the archive leaves the drives out, review.html shows them,
+//     and restore() adds the drives back to the config folder's file once (an archive taken to another computer);
+//   - an archive from before the record has hasPasses false; calibration-passes.csv round-trips a name with a comma.
 #include "Archive.h"
 #include "Report.h"
 #include <opencv2/core.hpp>
@@ -96,8 +101,25 @@ int main(int argc, char** argv) {
 	c.row.speed = 40; c.row.frame = 900; c.row.fps = 30;   // a recording with no time: "0:30 in video"
 	// What Results adds beyond the csv (sizes, speed trend, the user's own drive) survives the round trip.
 	a.row.lengthFt = 15.24; a.row.trend = "accelerating"; a.row.entryMph = 29; a.row.exitMph = 33; a.row.accel = 3.5; a.row.mphIn20ft = 34;
-	b.row.ownDrive = 1; b.row.drivenMph = 15;
+	b.row.ownDrive = 1; b.row.drivenMph = 15; b.row.frame = 1000; b.row.run = "stats_cam_20261103.csv";
 	req.vehicles = { a, b, c };
+	// The calibration record: b was the user's calibration drive (marked twice, at 14 then 15 mph: the latest counts), a
+	// pass in a run that isn't archived is left behind, and one measurement and one locked set go with it.
+	CalPass mine{ "2026-11-03T17:03:00", "stats_cam_20261103.csv", 1000, false, false, 14 }, again = mine, elsewhere = mine;
+	again.drivenMph = 15;
+	elsewhere.stats = "stats_other_run.csv";
+	req.passes = { mine, elsewhere, again };
+	calib::Input in;
+	in.id = "2026-11-03T17:05:00#1"; in.method = "pass"; in.label = "Drive past at 15 mph"; in.time = "2026-11-03T17:05:00";
+	in.zoneFt = 48.4; in.sigma = 0.031; in.lines = "300,900";
+	req.calInputs = { in };
+	calsets::Store frozen;
+	calsets::Set set;
+	set.id = 2; set.state = calsets::State::Locked; set.lockReason = "archived"; set.scale = { 48.4, 48.4 };
+	set.runs = { "stats_cam_20261102.csv", "stats_cam_20261103.csv" };
+	frozen.sets = { set };
+	frozen.nextId = 3;
+	req.extra = { { "Stats/calibration-sets.json", calsets::dump(frozen) } };
 
 	std::string dir, err;
 	std::vector<std::string> warnings;
@@ -107,6 +129,7 @@ int main(int argc, char** argv) {
 	CHECK_EQ(ad.filename().string(), std::string("2026-11-05_first-week-before-the-signs"));
 	CHECK(!fs::exists(ad.string() + ".partial"));
 	for (const char* f : { "archive.json", "vehicles.csv", "review.html", "VST.cfg", "calibration-history.csv",
+		"calibration-passes.csv", "calibration-inputs.json", "Stats/calibration-sets.json",
 		"Stats/stats_cam_20261102.csv", "Stats/run_cam_20261102.json", "Stats/stats_cam_20261103.csv", "Stats/run_cam_20261103.json",
 		"Stats/stats_manual_20261104120000.csv", "HiLites/Hilites_cam_20261102.mp4", "Clips/vehicle_1.mp4", "Clips/vehicle_2.mp4",
 		"Snapshots/vehicle_1.jpg" })
@@ -148,6 +171,16 @@ int main(int argc, char** argv) {
 	CHECK_EQ(info.lastPassed, std::string("2026-11-03T17:10:00"));
 	CHECK(std::find(info.files.begin(), info.files.end(), "Stats/run_cam_20261103.json") != info.files.end());
 	CHECK(std::find(info.files.begin(), info.files.end(), "archive.json") == info.files.end());
+	// The calibration record comes back with it.
+	CHECK(info.hasPasses);
+	CHECK_EQ(info.passes.size(), size_t(1));
+	if (!info.passes.empty()) CHECK(info.passes[0].stats == "stats_cam_20261103.csv" && info.passes[0].frame == 1000 && info.passes[0].drivenMph == 15 && !info.passes[0].l2r);
+	CHECK_EQ(info.inputs.size(), size_t(1));
+	if (!info.inputs.empty()) CHECK(info.inputs[0].label == "Drive past at 15 mph" && std::fabs(info.inputs[0].zoneFt - 48.4) < 1e-9);
+	CHECK_EQ(info.sets.sets.size(), size_t(1));
+	CHECK(info.setOf(info.vehicles[1]) && info.setOf(info.vehicles[1])->id == 2 && info.setOf(info.vehicles[1])->locked());
+	CHECK(!info.setOf(info.vehicles[0]));   // no run recorded (rows from before the field): no set
+	CHECK_EQ(info.vehicles[1].run, std::string("stats_cam_20261103.csv"));
 	std::string csv = slurp(ad / "vehicles.csv");
 	CHECK(csv.find("1,2026-11-02T07:05:00,31,L2R,SE,,") != std::string::npos);
 	CHECK(csv.find("2,2026-11-03T17:10:00,12,R2L,NW,yes,") != std::string::npos);
@@ -162,6 +195,13 @@ int main(int argc, char** argv) {
 	CHECK_EQ(after.all.n, 34);
 	CHECK_EQ(after.all.p85, before.all.p85);
 	CHECK_EQ(after.calEvents.size(), before.calEvents.size());
+	// With the archive's own drives left out (App::archiveReportInput), the calibration drive no longer counts as traffic.
+	for (const CalPass& p : info.passes) arch.calibrationPasses.insert(report::passKey(p.stats, p.frame));
+	report::Study noDrives = report::analyze(arch, report::Settings());
+	CHECK_EQ(noDrives.all.n, 33);
+	int drives = 0;
+	for (const report::Run& r : noDrives.runs) drives += r.calibrationDrives;
+	CHECK_EQ(drives, 1);
 	// And the live folder no longer has those runs.
 	CHECK_EQ(report::analyze(live, report::Settings()).runs.size(), size_t(0));
 
@@ -171,6 +211,10 @@ int main(int argc, char** argv) {
 	CHECK(html.find("cam<\\/script>") != std::string::npos);
 	CHECK(html.find("cam</script>") == std::string::npos);
 	CHECK(html.find("http") == std::string::npos);   // nothing external
+	CHECK(html.find("How these speeds were calibrated") != std::string::npos);
+	CHECK(html.find("\"calibrationRecord\"") != std::string::npos);
+	CHECK(html.find("\"drivenMph\":15") != std::string::npos);
+	CHECK(html.find("\"lockReason\":\"archived\"") != std::string::npos);
 
 	// A second archive with the same name and day gets "-2"; a copy leaves the data folder alone.
 	put(data / "Stats" / "stats_cam_20261110.csv", slurp(fixtures / "stats_cam_20261103.csv"));
@@ -184,6 +228,10 @@ int main(int argc, char** argv) {
 	CHECK(fs::exists(data / "Stats" / "stats_cam_20261110.csv"));
 	archive::Info info2;
 	CHECK(archive::read(dir2, info2, err) && !info2.moved);
+	CHECK(info2.hasPasses && info2.passes.empty());   // kept, with none of its runs' passes marked
+	// An archive from before the record: no calibration-passes.csv, so the app falls back to the config folder's.
+	fs::remove(fs::path(dir2) / "calibration-passes.csv");
+	CHECK(archive::read(dir2, info2, err) && !info2.hasPasses && info2.passes.empty() && info2.inputs.size() == 1);
 
 	// list(): both, newest first (same created: by folder name, so "-2" first).
 	copy.info.created = "2026-11-06T08:00:00-05:00";
@@ -234,8 +282,17 @@ int main(int argc, char** argv) {
 
 	// restore(): Stats and HiLites back into the data folder; an existing file is kept and named.
 	put(data / "Stats" / "stats_cam_20261103.csv", "user's newer file");
-	CHECK(archive::restore(dir, data.string(), err));
+	fs::path passesFile = cfgDir / "calibration-passes.csv";   // a computer that never saw these drives
+	int added = -1;
+	CHECK(archive::restore(dir, data.string(), err, passesFile.string(), &added));
 	CHECK(err.find("stats_cam_20261103.csv") != std::string::npos);
+	CHECK_EQ(added, 1);
+	std::vector<CalPass> back = calib::readPasses(passesFile.string());
+	CHECK(back.size() == 1 && back[0].stats == "stats_cam_20261103.csv" && back[0].frame == 1000 && back[0].drivenMph == 15);
+	CHECK(slurp(passesFile).rfind(calib::kPassesHeader, 0) == 0);
+	CHECK(archive::restore(dir, data.string(), err, passesFile.string(), &added));   // twice: nothing added again
+	CHECK_EQ(added, 0);
+	CHECK_EQ(calib::readPasses(passesFile.string()).size(), size_t(1));
 	CHECK_EQ(slurp(data / "Stats" / "stats_cam_20261103.csv"), std::string("user's newer file"));
 	CHECK(fs::exists(data / "Stats" / "stats_cam_20261102.csv"));
 	CHECK(fs::exists(data / "Stats" / "run_cam_20261102.json"));
@@ -243,6 +300,13 @@ int main(int argc, char** argv) {
 	CHECK(fs::exists(ad / "Stats" / "stats_cam_20261102.csv"));   // the archive keeps its copy
 	CHECK(archive::read(dir, info, err) && !info.moved);
 	CHECK_EQ(info.vehicles.size(), size_t(3));
+
+	// calibration-passes.csv: a video name holding a comma survives the round trip, and junk lines are skipped.
+	CalPass comma{ "2026-11-01T14:13:57", "stats_front, porch.csv", 42, true, true, 12.5 };
+	put(scratch / "passes.csv", std::string(calib::kPassesHeader) + "\nnot a row\n" + calib::passLine(comma));
+	std::vector<CalPass> rt = calib::readPasses((scratch / "passes.csv").string());
+	CHECK(rt.size() == 1 && rt[0].stats == "stats_front, porch.csv" && rt[0].frame == 42 && rt[0].check && rt[0].l2r && rt[0].drivenMph == 12.5
+		&& rt[0].time == "2026-11-01T14:13:57");
 
 	std::printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

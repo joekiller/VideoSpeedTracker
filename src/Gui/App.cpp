@@ -889,6 +889,7 @@ bool App::openArchive(const std::string& dir) {
 		r.mphIn20ft = v.mphIn20ft;
 		r.calKind = v.ownDrive;
 		r.drivenMph = v.drivenMph;
+		if (const calsets::Set* set = a.setOf(v)) r.setId = set->id;   // its band, from the archive's own sets
 		if (!v.snapshot.empty()) r.snapshotPath = (fs::path(a.dir) / fs::path(v.snapshot)).string();
 		if (!v.clip.empty()) r.clipPath = (fs::path(a.dir) / fs::path(v.clip)).string();
 		rows.push_back(r);
@@ -948,6 +949,7 @@ archive::Request App::archiveRequest(const std::string& name, bool move, const s
 	i.cal.calSpeed = g.CalibrationSpeed;
 	i.cal.calFps = g.CalibrationFPS;
 	i.cal.minLoggedSpeed = g.minLoggedSpeed;
+	i.cal.lines = speedLinesSig();
 	req.configFile = cfg.path();
 	if (!cfg.path().empty()) req.historyFiles.push_back((fs::path(cfg.path()).parent_path() / "calibration-history.csv").string());
 	req.historyFiles.push_back((userpaths::configDir() / "calibration-history.csv").string());
@@ -976,13 +978,20 @@ archive::Request App::archiveRequest(const std::string& name, bool move, const s
 		v.mphIn20ft = r.mphIn20ft;
 		v.ownDrive = r.calKind;
 		v.drivenMph = r.drivenMph;
+		v.run = r.statsPath.empty() ? std::string() : fs::path(r.statsPath).filename().string();
 		Vehicle tv;
 		if (r.vehicleId && tracker.vehicle(r.vehicleId, tv)) { s.snapshot = tv.snapshot; s.clipPath = tv.clipPath; }
 		req.vehicles.push_back(std::move(s));
 	}
+	// The user's own calibration and check drives (write() keeps those among these runs), so the archive still marks them
+	// and its street report still leaves them out, wherever it is opened.
+	calibrationPass("", 0);   // load calibration-passes.csv
+	for (const auto& kv : calPasses_) req.passes.push_back(kv.second);
 	// The calibration sets of those runs, frozen at the speeds they are archived with: the street report made from the
-	// archive re-times its csvs to these, so it agrees with the archived rows (archiveReportInput).
+	// archive re-times its csvs to these, so it agrees with the archived rows (archiveReportInput).  And what the
+	// calibration in force was measured from, so the reviewer can say how these speeds were calibrated.
 	if (!reviewing()) {
+		req.calInputs = calibrationInputs();
 		syncSets();
 		calsets::Store frozen;
 		for (const calsets::Set& set : sets_.sets) {
@@ -1118,8 +1127,11 @@ void App::reviewBanner(float width) {
 		if (ghostButton(ICON_UNDO "  Put back into my data")) {
 			std::string msg;
 			syncSets(true);   // sets_ as they stand before the runs come back
-			if (archive::restore(a.dir, dataDir(), msg)) {
+			int passesBack = 0;
+			if (archive::restore(a.dir, dataDir(), msg, screenshotMode ? std::string() : calib::passesPath(), &passesBack)) {
 				archive_.moved = false;
+				// Drives the config folder didn't have (an archive from another computer) are in its file now: read it again.
+				if (passesBack) { calPasses_.clear(); calPassesLoaded_ = false; }
 				// Its runs come back in the calibration sets they were archived in, locked at the speeds they had, rather
 				// than being filed afresh (which could re-time them to today's calibration).
 				for (calsets::Set set : calsets::load((fs::path(a.dir) / "Stats").string()).sets) {
@@ -1151,7 +1163,83 @@ void App::reviewBanner(float width) {
 	if (ImGui::IsItemHovered()) ImGui::SetTooltip("review.html: the same table, snapshots and clips in any web browser, no install needed.");
 	ImGui::SameLine();
 	if (ghostButton(dataset_.dir.empty() ? ICON_XMARK "  Close archive" : ICON_XMARK "  Close")) showSessionResults();
+	archiveCalibration();
 	endCard();
+}
+
+// "How these speeds were calibrated", under the review banner: the zone the archived calibration measured, the
+// calibration sets (each row's band), the user's own drives (left out of the counts), and the measurements behind
+// it, from the archive's own files (archive::Info sets, passes and inputs).  review.html shows the same.
+void App::archiveCalibration() {
+	const archive::Info& a = archive_;
+	char head[96];
+	snprintf(head, sizeof head, ICON_RULER "  How these speeds were calibrated%s###archcal",
+		a.passes.empty() ? "" : a.passes.size() == 1 ? "  \xC2\xB7  1 drive was you" : ("  \xC2\xB7  " + std::to_string(a.passes.size()) + " drives were you").c_str());
+	if (archiveCalOpen_) { ImGui::SetNextItemOpen(true); archiveCalOpen_ = false; }   // the --shots tour opens it
+	if (!ImGui::TreeNode(head)) return;
+	ImGui::PushTextWrapPos(0);
+	const archive::Calibration& k = a.cal;
+	double l2r = calib::zoneFtForFrames(k.framesL2R, k.calSpeed, k.calFps), r2l = calib::zoneFtForFrames(k.framesR2L, k.calSpeed, k.calFps);
+	// The calibration in force when archived; a locked set's speeds keep the zone it was locked at, listed with it.
+	char zone[96];
+	if (std::fabs(l2r - r2l) < 0.05) snprintf(zone, sizeof zone, "%.1f ft apart", l2r);
+	else snprintf(zone, sizeof zone, "%.1f ft apart left to right and %.1f ft right to left", l2r, r2l);
+	dimText("The camera times each car between the two speed lines, and a speed is the distance between them over that time. "
+		"The calibration in force when this was archived put them %s.%s", zone,
+		a.sets.sets.empty() ? "" : " Each calibration set below shows the distance its own speeds use.");
+	if (!a.sets.sets.empty()) {
+		sectionLabel("CALIBRATION SETS");
+		for (const calsets::Set& s : a.sets.sets) {
+			ImVec2 p = ImGui::GetCursorScreenPos();
+			float h = ImGui::GetTextLineHeight();
+			ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x, p.y + px(2)), ImVec2(p.x + px(5), p.y + h - px(2)), setColor(s.id));
+			ImGui::SetCursorScreenPos(ImVec2(p.x + px(12), p.y));
+			// describe() already says "locked" or "calibration not on record"; this adds why, in words.
+			const char* why = !s.known ? "" : !s.locked() ? "open: it followed the latest calibration until archived"
+				: s.lockReason == "view" ? "the camera view changed after it" : s.lockReason == "archived" ? "when it was archived"
+				: s.lockReason == "manual" ? "you locked it" : "";
+			ImGui::Text("%s", calsets::describe(s, s.scale).c_str());
+			if (*why) { ImGui::SameLine(); dimText("(%s)", why); }
+		}
+	}
+	sectionLabel("YOUR OWN DRIVES");
+	if (a.passes.empty())
+		dimText(a.hasPasses ? "None of these passes was marked as your own calibration or check drive."
+			: "This archive was made before VST kept your calibration drives with it. Rows already marked as yours still say so.");
+	else {
+		dimText("Passes you drove yourself to calibrate or check the camera. They are marked in the table and left out of the counts and the street report.");
+		for (const CalPass& p : a.passes) {
+			// What the camera read: the archived row of that pass, when the pass was fast enough to be logged.
+			int read = 0;
+			for (const archive::Vehicle& v : a.vehicles) if (v.run == p.stats && v.frame == p.frame) read = v.speed;
+			char camera[48];
+			if (read) snprintf(camera, sizeof camera, "camera read %d mph", read);
+			else snprintf(camera, sizeof camera, "under the logging speed");
+			ImGui::Text("%s  %s drive %s, you drove %g mph", p.check ? ICON_BULLSEYE : ICON_RULER, p.check ? "Check" : "Calibration",
+				p.l2r ? "\xE2\x86\x92" : "\xE2\x86\x90", p.drivenMph);
+			ImGui::SameLine();
+			std::string when = p.time;
+			std::replace(when.begin(), when.end(), 'T', ' ');
+			dimText("%s%s%s", camera, when.empty() ? "" : "  \xC2\xB7  ", when.c_str());
+		}
+	}
+	if (!a.inputs.empty()) {
+		sectionLabel("MEASURED FROM");
+		std::string l2rSays = archive::calibrationSummary(a, true), r2lSays = archive::calibrationSummary(a, false);
+		dimText("The calibration is the weighted middle of these, the more careful ones counting for more. %s.",
+			l2rSays == r2lSays ? l2rSays.c_str() : ("Left to right: " + l2rSays + ". Right to left: " + r2lSays).c_str());
+		for (const calib::Input& i : a.inputs) {
+			std::string role = archive::inputRole(a, i);
+			char line[320];
+			snprintf(line, sizeof line, "%s: %.1f ft, \xC2\xB1%.1f%%%s%s%s", i.label.empty() ? calib::methodName(i.method) : i.label.c_str(), i.zoneFt,
+				i.sigma * 100, i.dirs == calib::kL2R ? ", left to right" : i.dirs == calib::kR2L ? ", right to left" : "",
+				role.empty() ? "" : "  \xC2\xB7  ", role.c_str());
+			if (role.find("not counted") != std::string::npos) dimText("%s", line);
+			else ImGui::TextUnformatted(line);
+		}
+	}
+	ImGui::PopTextWrapPos();
+	ImGui::TreePop();
 }
 
 // Pulls new frames and vehicles from the tracker each GUI frame: updates textures, raises toasts for the
@@ -4798,6 +4886,13 @@ report::Input App::archiveReportInput(bool snapshots, const std::string& from, c
 	in.dataDir = a.dir;
 	in.configPath = a.configPath;   // history rows are keyed on the original path
 	in.historyFiles.push_back((fs::path(a.dir) / "calibration-history.csv").string());
+	// The user's own drives are left out as they were in the data folder: from the archive's own record, or, for an
+	// archive made before it kept one, from this computer's (runs are matched by csv name, which archiving keeps).
+	if (a.hasPasses) for (const CalPass& p : a.passes) in.calibrationPasses.insert(report::passKey(p.stats, p.frame));
+	else {
+		calibrationPass("", 0);
+		for (const auto& kv : calPasses_) in.calibrationPasses.insert(kv.first);
+	}
 	// The calibration sets it was archived with (Stats/calibration-sets.json), so the report re-times its runs the way
 	// Results showed them when they were archived.
 	for (const calsets::Set& s : calsets::load((fs::path(a.dir) / "Stats").string()).sets)

@@ -12,6 +12,7 @@
 // The per-direction state (Not calibrated / Calibrated, not checked / Verified / Check failed) is computed from
 // those rows rather than kept anywhere else, so it survives restarts and can't drift from the record.
 #pragma once
+#include "CalEvidence.h"
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -38,24 +39,9 @@ struct CalState {
 	const char* apiName() const { return kind == None ? "none" : kind == Unchecked ? "unchecked" : kind == Verified ? "verified" : "failed"; }
 };
 
-// A pass the user drove to calibrate or check, so Results can mark it ("Calibration drive, you drove 15 mph") and the
-// street report can leave it out: the person calibrating isn't traffic.  Kept in <configDir>/calibration-passes.csv
-// (Studio's own file, apart from the shared history format), one row per use:
-//
-//   PassTime, Stats, Frame, Kind, Direction, DrivenMph
-//
-// Stats (the stats csv's file name) and Frame identify the row the pass wrote, which is what a Results or report row
-// is matched on (report::passKey).  The file name, not the path, so a run set aside into Stats/Before calibration
-// still matches; re-running the same video overwrites its csv, and the same frame is then the same car.  PassTime is
-// for people reading the file.  A slow pass (under minLoggedSpeed) has no csv row and is recorded only for the record.
-struct CalPass {
-	std::string time;            // "2026-11-01T14:13:57" (local), "" when the source has no clock
-	std::string stats;           // "stats_camera0_20261101_141200.csv"
-	int frame = 0;
-	bool check = false;
-	bool l2r = true;
-	double drivenMph = 0;
-};
+// CalPass (the user's own calibration and check drives, calibration-passes.csv) is in CalEvidence.h, with the
+// reading and writing of that file, so archives (Archive.cpp) can carry and restore it too.
+
 
 namespace calib {
 

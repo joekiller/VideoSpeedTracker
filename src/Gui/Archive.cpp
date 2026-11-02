@@ -74,7 +74,8 @@ static json toJson(const Info& in) {
 			{ "wrongWay", v.wrongWay }, { "frames", v.frames }, { "area", v.area }, { "frame", v.frame }, { "large", v.large },
 			{ "flagged", v.flagged }, { "fps", v.fps }, { "source", v.source }, { "snapshot", v.snapshot }, { "clip", v.clip },
 			{ "lengthFt", std::round(v.lengthFt * 10) / 10 }, { "trend", v.trend }, { "entryMph", v.entryMph }, { "exitMph", v.exitMph },
-			{ "accel", v.accel }, { "mphIn20ft", v.mphIn20ft }, { "ownDrive", v.ownDrive }, { "drivenMph", v.drivenMph } });
+			{ "accel", v.accel }, { "mphIn20ft", v.mphIn20ft }, { "ownDrive", v.ownDrive }, { "drivenMph", v.drivenMph },
+			{ "run", v.run } });
 	const Calibration& c = in.cal;
 	return {
 		{ "format", "vst-archive" }, { "version", 1 },
@@ -82,7 +83,7 @@ static json toJson(const Info& in) {
 		{ "speedLimit", in.speedLimit }, { "wayOver", in.wayOver }, { "vst", in.vst }, { "configPath", in.configPath },
 		{ "calibration", { { "l2rCompass", c.l2rCompass }, { "r2lCompass", c.r2lCompass }, { "legal", c.legal },
 			{ "framesL2R", c.framesL2R }, { "framesR2L", c.framesR2L }, { "calSpeed", c.calSpeed }, { "calFps", c.calFps },
-			{ "minLoggedSpeed", c.minLoggedSpeed } } },
+			{ "minLoggedSpeed", c.minLoggedSpeed }, { "lines", c.lines } } },
 		{ "moved", in.moved }, { "files", in.files }, { "vehicles", vs },
 	};
 }
@@ -112,6 +113,7 @@ static void fromJson(const json& j, Info& out) {
 		k.calSpeed = num(c, "calSpeed", k.calSpeed);
 		k.calFps = num(c, "calFps", k.calFps);
 		k.minLoggedSpeed = int(num(c, "minLoggedSpeed", k.minLoggedSpeed));
+		k.lines = str(c, "lines", "");
 	}
 	out.files.clear();
 	if (j.contains("files") && j["files"].is_array())
@@ -143,6 +145,7 @@ static void fromJson(const json& j, Info& out) {
 			v.mphIn20ft = int(num(o, "mphIn20ft", 0));
 			v.ownDrive = int(num(o, "ownDrive", 0));
 			v.drivenMph = num(o, "drivenMph", 0);
+			v.run = str(o, "run", "");
 			out.vehicles.push_back(v);
 		}
 	out.firstPassed.clear();
@@ -152,6 +155,15 @@ static void fromJson(const json& j, Info& out) {
 		if (out.firstPassed.empty() || v.passed < out.firstPassed) out.firstPassed = v.passed;
 		if (out.lastPassed.empty() || v.passed > out.lastPassed) out.lastPassed = v.passed;
 	}
+}
+
+// The calibration files of an archive folder (Archive.h), into `out`.  Missing files leave their part empty.
+static void loadCalibration(const fs::path& dir, Info& out) {
+	std::error_code ec;
+	out.sets = calsets::load((dir / "Stats").string());
+	out.hasPasses = fs::is_regular_file(dir / "calibration-passes.csv", ec);
+	out.passes = out.hasPasses ? calib::readPasses((dir / "calibration-passes.csv").string()) : std::vector<CalPass>();
+	out.inputs = calib::loadInputs((dir / "calibration-inputs.json").string(), out.configPath);
 }
 
 static std::string vehiclesCsv(const Info& in) {
@@ -219,6 +231,24 @@ bool write(const Request& req, std::string& dir, std::string& error, std::vector
 			if (!copyInto(h, tmp / "calibration-history.csv", error)) return fail(error);
 			break;
 		}
+	// The user's own drives among these runs only: another run's marks mean nothing here, and a run's name is all a
+	// pass is matched on (report::passKey).  Written even when none are marked, so the reviewer can tell "none marked"
+	// from an archive made before the file existed.  A pass marked twice keeps its latest use, as Results shows it.
+	{
+		std::set<std::string> names;
+		for (const std::string& csv : req.statsCsvs) names.insert(fs::path(csv).filename().string());
+		std::vector<CalPass> mine;
+		for (const CalPass& p : req.passes) {
+			if (!names.count(p.stats)) continue;
+			mine.erase(std::remove_if(mine.begin(), mine.end(), [&](const CalPass& q) { return q.stats == p.stats && q.frame == p.frame; }), mine.end());
+			mine.push_back(p);
+		}
+		std::string text = std::string(calib::kPassesHeader) + "\n";
+		for (const CalPass& p : mine) text += calib::passLine(p);
+		if (!writeText(tmp / "calibration-passes.csv", text)) return fail("Couldn't write calibration-passes.csv in " + tmp.string());
+	}
+	if (!req.calInputs.empty() && !writeText(tmp / "calibration-inputs.json", calib::inputsJson(req.info.configPath, req.calInputs)))
+		return fail("Couldn't write calibration-inputs.json in " + tmp.string());
 
 	// Vehicles: the snapshot as a JPEG named by row number, the clip under its own name.  imencode + ofstream rather than
 	// imwrite, which can't open non-ASCII paths on Windows.
@@ -258,6 +288,7 @@ bool write(const Request& req, std::string& dir, std::string& error, std::vector
 		fs::create_directories(p.parent_path(), ec);
 		if (!writeText(p, x.second)) return fail("Couldn't write " + x.first + " in " + tmp.string());
 	}
+	loadCalibration(tmp, info);   // the sets (written with `extra`), passes and inputs, for review.html
 	if (!writeText(tmp / "review.html", reviewHtml(info))) return fail("Couldn't write review.html in " + tmp.string());
 	info.files.clear();
 	for (auto it = fs::recursive_directory_iterator(tmp, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
@@ -315,6 +346,7 @@ bool read(const std::string& path, Info& out, std::string& error) {
 	out = Info();
 	fromJson(j, out);
 	out.dir = dir.string();
+	loadCalibration(dir, out);
 	return true;
 }
 
@@ -331,8 +363,9 @@ std::vector<Info> list(const std::string& dataDir) {
 	return out;
 }
 
-bool restore(const std::string& dir, const std::string& dataDir, std::string& error) {
+bool restore(const std::string& dir, const std::string& dataDir, std::string& error, const std::string& passesFile, int* passesAdded) {
 	Info a;
+	if (passesAdded) *passesAdded = 0;
 	if (!read(dir, a, error)) return false;
 	std::error_code ec;
 	std::vector<std::string> kept;
@@ -343,6 +376,18 @@ bool restore(const std::string& dir, const std::string& dataDir, std::string& er
 		fs::create_directories(dst.parent_path(), ec);
 		if (fs::exists(dst, ec)) { kept.push_back(dst.filename().string()); continue; }
 		if (!copyInto(fs::path(a.dir) / fs::path(rel), dst, error)) return false;
+	}
+	// The runs' calibration drives go back to the config folder's record, so Results marks them and the report leaves them
+	// out again even on a computer that never saw them (a copied archive, a fresh install).  A row already there stays
+	// the only one: putting back twice adds nothing.
+	if (!passesFile.empty() && !a.passes.empty()) {
+		std::vector<CalPass> have = calib::readPasses(passesFile);
+		for (const CalPass& p : a.passes) {
+			if (std::any_of(have.begin(), have.end(), [&](const CalPass& q) { return calib::samePass(p, q); })) continue;
+			if (!calib::appendPassTo(passesFile, p, error)) return false;
+			have.push_back(p);
+			if (passesAdded) (*passesAdded)++;
+		}
 	}
 	// The archive stays complete (snapshots, clips and its own copy of every file); it just no longer stands in for them.
 	a.moved = false;
@@ -363,9 +408,56 @@ bool restore(const std::string& dir, const std::string& dataDir, std::string& er
 
 // ---- review.html -------------------------------------------------------------------------------------------
 
+std::string calibrationSummary(const Info& info, bool l2r) {
+	if (info.inputs.empty()) return "";
+	return calib::summary(calib::combine(info.inputs, l2r, info.cal.lines));
+}
+
+std::string inputRole(const Info& info, const calib::Input& in) {
+	if (in.removed) return "taken out, not counted";
+	if (!info.cal.lines.empty() && in.lines != info.cal.lines) return "made with the speed lines elsewhere, not counted";
+	// Its share in the first direction it applies to (an input for both directions weighs the same in each unless the
+	// other direction has inputs of its own; the first is the one a reader sees first).
+	calib::Combined c = calib::combine(info.inputs, in.appliesTo(true), info.cal.lines);
+	for (const calib::Share& sh : c.shares)
+		if (sh.id == in.id) {
+			char b[96];
+			snprintf(b, sizeof b, "%scounts for %d%%", sh.outlier ? "well off the others, " : "", int(std::lround(sh.contribution * 100)));
+			return b;
+		}
+	return "";
+}
+
+// What review.html's "How these speeds were calibrated" shows: the calibration in force when archived (as zone feet,
+// the street between the speed lines), each calibration set with its lock state, the user's own drives, and the
+// measurements the calibration was combined from.
+static json calibrationJson(const Info& in) {
+	const Calibration& c = in.cal;
+	json sets = json::array(), passes = json::array(), inputs = json::array();
+	for (const calsets::Set& s : in.sets.sets)
+		sets.push_back({ { "id", s.id }, { "known", s.known }, { "locked", s.locked() }, { "lockReason", s.lockReason }, { "lockedAt", s.lockedAt },
+			{ "first", s.first }, { "last", s.last }, { "runs", s.runs }, { "published", !s.published.empty() },
+			{ "zoneFt", { { "L2R", std::round(s.scale.l2r * 10) / 10 }, { "R2L", std::round(s.scale.r2l * 10) / 10 } } },
+			{ "describe", calsets::describe(s, s.scale) } });
+	for (const CalPass& p : in.passes)
+		passes.push_back({ { "time", p.time }, { "run", p.stats }, { "frame", p.frame }, { "kind", p.check ? "check" : "calibration" },
+			{ "direction", p.l2r ? "L2R" : "R2L" }, { "drivenMph", p.drivenMph } });
+	for (const calib::Input& i : in.inputs)
+		inputs.push_back({ { "label", i.label }, { "method", calib::methodName(i.method) }, { "time", i.time },
+			{ "dirs", i.dirs == calib::kL2R ? "L2R" : i.dirs == calib::kR2L ? "R2L" : "both" }, { "zoneFt", std::round(i.zoneFt * 10) / 10 },
+			{ "sigma", i.sigma }, { "removed", i.removed }, { "role", inputRole(in, i) } });
+	return { { "zoneFt", { { "L2R", std::round(calib::zoneFtForFrames(c.framesL2R, c.calSpeed, c.calFps) * 10) / 10 },
+				{ "R2L", std::round(calib::zoneFtForFrames(c.framesR2L, c.calSpeed, c.calFps) * 10) / 10 } } },
+		{ "frames", { { "L2R", c.framesL2R }, { "R2L", c.framesR2L } } }, { "calSpeed", c.calSpeed }, { "calFps", c.calFps },
+		{ "kept", in.hasPasses }, { "sets", sets }, { "passes", passes }, { "inputs", inputs },
+		{ "summary", { { "L2R", calibrationSummary(in, true) }, { "R2L", calibrationSummary(in, false) } } } };
+}
+
 std::string reviewHtml(const Info& info) {
 	// The data goes in as JSON inside a script tag; "</" is escaped so a source name can't close the tag.
-	std::string data = toJson(info).dump();
+	json withCal = toJson(info);
+	withCal["calibrationRecord"] = calibrationJson(info);
+	std::string data = withCal.dump();
 	for (size_t p = 0; (p = data.find("</", p)) != std::string::npos; p += 3) data.replace(p, 2, "<\\/");
 	std::string html = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -390,11 +482,12 @@ tr.sel td{background:color-mix(in srgb,var(--acc) 14%,transparent)}tbody tr{curs
 .det img,.det video{width:100%;border-radius:8px;background:#000}.big{font-size:44px;font-weight:700}
 #cover{display:none;margin:14px 0 4px}.badge{display:inline-flex;gap:8px;align-items:center;border-radius:999px;padding:4px 14px;font-weight:700;color:#fff;font-size:16px}
 .lead{font-size:17px;margin:8px 0 2px;max-width:60em}details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:8px 0}
-summary{cursor:pointer;font-weight:600}details table{margin:8px 0;display:block;overflow-x:auto}code{font:13px ui-monospace,Menlo,Consolas,monospace}
+summary{cursor:pointer;font-weight:600}td.band{border-left:5px solid transparent}.chip{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:baseline}details table{margin:8px 0;display:block;overflow-x:auto}code{font:13px ui-monospace,Menlo,Consolas,monospace}
 </style></head><body><main>
 <h1 id="title"></h1><div class="dim" id="sub"></div>
 <section id="cover"></section>
 <div class="tiles" id="tiles"></div>
+<details id="cal"></details>
 <div class="bar" id="filters"></div>
 <div class="wrap"><div><table><thead><tr><th data-k="n">#</th><th data-k="speed">Speed</th><th>Direction</th><th data-k="passed">Passed</th><th class="src">Source</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="det" id="det"><span class="dim">Pick a vehicle to see its snapshot and clip.</span></div></div>
@@ -414,14 +507,38 @@ document.getElementById('sub').textContent=[A.siteName,(document.getElementById(
 const T=V.filter(v=>!v.ownDrive);  // traffic: the tiles leave out the user's own calibration and check drives
 const sp=T.map(v=>v.speed).sort((a,b)=>a-b),p85=sp.length?sp[Math.ceil(.85*sp.length)-1]:0;
 const tile=(k,v,s)=>`<div class="tile"><span class="dim">${k}</span><b>${v}</b><span class="dim">${s}</span></div>`;
-document.getElementById('tiles').innerHTML=tile('Vehicles',T.length,V.length>T.length?(V.length-T.length)+' own drives left out':'')+tile('Speeding',T.filter(v=>v.speed>L).length,'over '+L+' mph')
+document.getElementById('tiles').innerHTML=tile('Vehicles',T.length,V.length>T.length?(V.length-T.length)+(V.length-T.length==1?' own drive left out':' own drives left out'):'')+tile('Speeding',T.filter(v=>v.speed>L).length,'over '+L+' mph')
  +tile('Way over',T.filter(v=>v.speed>=W).length,W+' mph or more')+tile('Wrong way',T.filter(v=>v.wrongWay).length,'')+tile('85th percentile',p85+' mph','');
+// How these speeds were calibrated: the calibration sets (the band down each row's left edge, as in Studio's Results),
+// the user's own calibration and check drives (left out of the counts above), and what the calibration was measured from.
+const K=A.calibrationRecord||{sets:[],passes:[],inputs:[],zoneFt:{}},S=K.sets||[];
+const STRIPES=['#4C8DFF','#C3CBD9','#2DD4BF','#D6C7A1'];
+const setOf=v=>v.run?S.find(s=>s.runs.includes(v.run)):null;
+const setColor=s=>!s?'transparent':!s.known?'var(--line)':STRIPES[(s.id-1)%STRIPES.length];
+const band=v=>setColor(setOf(v)),setName=v=>{const s=setOf(v);return s?s.describe:''};
+const lockWords=s=>!s.known?'':!s.locked?'open: it followed the latest calibration until archived':s.lockReason=='view'?'the camera view changed after it':s.lockReason=='archived'?'when it was archived':s.lockReason=='manual'?'you locked it':'';
+{const P=K.passes||[],I=K.inputs||[],z=K.zoneFt||{},ft=x=>x>0?x+' ft':'not set';
+ let h=`<summary>How these speeds were calibrated${P.length?' \u00b7 '+(P.length==1?'1 drive was you':P.length+' drives were you'):''}</summary><p>The camera times each car between two lines on the street, and a speed is the distance between them over that time. The calibration in force when this was archived put them `
+  +(z.L2R==z.R2L?`<b>${ft(z.L2R)}</b> apart`:`<b>${ft(z.L2R)}</b> apart left to right and <b>${ft(z.R2L)}</b> right to left`)+(S.length?'. Each calibration set below shows the distance its own speeds use.':'.')+'</p>';
+ if(S.length)h+='<p><b>Calibration sets</b> (the coloured band beside each row): runs filmed from the same camera view share one calibration.</p><ul>'
+  +S.map(s=>`<li><span class="chip" style="background:${setColor(s)}"></span>${esc(s.describe)}${lockWords(s)?' <span class="dim">('+esc(lockWords(s))+')</span>':''}${s.known?'':'. These speeds are as measured.'}</li>`).join('')+'</ul>';
+ if(P.length){const cam=p=>{const v=V.find(v=>v.run==p.run&&v.frame==p.frame);return v?v.speed+' mph':'under the logging speed'};
+  h+=`<p><b>Your own drives</b>: ${P.length==1?'this pass was':'these '+P.length+' passes were'} you, driving past to calibrate or check the camera. They are marked in the table and left out of the counts and the street report.</p>`
+  +'<table><thead><tr><th>When</th><th>What</th><th>Direction</th><th>You drove</th><th>Camera read</th></tr></thead><tbody>'
+  +P.map(p=>`<tr><td>${esc((p.time||'').replace('T',' '))}</td><td>${p.kind=='check'?'Check drive':'Calibration drive'}</td><td>${p.direction=='R2L'?'\u2190 right to left':'\u2192 left to right'}</td><td>${p.drivenMph} mph</td><td>${cam(p)}</td></tr>`).join('')+'</tbody></table>';}
+ else h+=K.kept?'<p>None of these passes was marked as your own calibration or check drive.</p>':'<p class="dim">This archive was made before VST kept a list of your own calibration drives with it. Rows already marked as yours still say so.</p>';
+ if(I.length){const sm=K.summary||{};
+  h+=`<p><b>Measured from</b>: the calibration is the weighted middle of these, the more careful ones counting for more. `
+  +(sm.L2R==sm.R2L?esc(sm.L2R||''):'Left to right: '+esc(sm.L2R||'none')+'. Right to left: '+esc(sm.R2L||'none'))+'.</p><ul>'
+  +I.map(i=>{const out=/not counted/.test(i.role||'');return `<li${out?' class="dim"':''}>${esc(i.label||i.method)}: ${i.zoneFt} ft, \u00b1${(i.sigma*100).toFixed(1)}%${i.dirs=='both'?'':i.dirs=='L2R'?', left to right':', right to left'}${i.role?' \u00b7 '+esc(i.role):''}${i.time?' <span class="dim">'+esc(i.time.slice(0,10))+'</span>':''}</li>`}).join('')+'</ul>';}
+ h+='<p class="dim">Files: <a href="calibration-history.csv">calibration-history.csv</a>'+(K.kept?', <a href="calibration-passes.csv">calibration-passes.csv</a>':'')+(I.length?', <a href="calibration-inputs.json">calibration-inputs.json</a>':'')+(S.length?', <a href="Stats/calibration-sets.json">Stats/calibration-sets.json</a>':'')+'.</p>';
+ document.getElementById('cal').innerHTML=h;}
 const F=[['All',v=>true],['Speeding',v=>v.speed>L],['Way over',v=>v.speed>=W],['Wrong way',v=>v.wrongWay]];
 let f=0,key='speed',asc=false,sel=0;
 function draw(){
  document.getElementById('filters').innerHTML=F.map((x,i)=>`<button class="${i==f?'on':''}" onclick="f=${i};draw()">${x[0]}</button>`).join('');
  const r=V.filter(F[f][1]).sort((a,b)=>{const x=a[key],y=b[key];return (x<y?-1:x>y?1:0)*(asc?1:-1)});
- document.getElementById('rows').innerHTML=r.map(v=>`<tr class="${v.n==sel?'sel':''}" onclick="pick(${v.n})"><td>${v.n}</td>`
+ document.getElementById('rows').innerHTML=r.map(v=>`<tr class="${v.n==sel?'sel':''}" onclick="pick(${v.n})"><td class="band" style="border-left-color:${band(v)}" title="${esc(setName(v))}">${v.n}</td>`
   +`<td><span class="pill" style="background:${col(v)}">${v.speed} mph</span></td><td>${v.direction=='R2L'?'←':'→'} ${esc(v.compass)}${v.wrongWay?' <span class="pill" style="background:var(--wrong)">wrong way</span>':''}${v.ownDrive?' <span class="pill" style="background:var(--acc)">'+(v.ownDrive==2?'check':'calibration')+'</span>':''}</td>`
   +`<td>${esc(when(v))}</td><td class="dim src">${esc(v.source)}${v.flagged?' ⚠':''}</td></tr>`).join('');
 }

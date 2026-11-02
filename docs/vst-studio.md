@@ -557,8 +557,19 @@ archive's own. **Close archive** goes back to this session. For an archive kept 
 neighbour's copy), use **Open > An archive folder somewhere else**, or start Studio with
 `VSTStudio --review <folder>`.
 
+**How these speeds were calibrated**, under the banner, opens to show what the archive carries about its calibration:
+the distance between the speed lines that the calibration in force put them, each calibration set with why it is
+locked (each row wears its set's band, as in Results), the passes you drove yourself with the speed you drove and what
+the camera read, and the measurements the calibration was combined from with how much each counted. Those drives stay
+left out of the totals and of **Make report** on the archive, on any computer. **Put back into my data** also adds
+them back to the config folder's `calibration-passes.csv` if it doesn't have them (an archive brought from another
+computer), so Results keeps marking them. Archives made before VST kept these files say so, and their rows keep the
+marks they had.
+
+![An archive's calibration: sets, your own drives and the measurements](images/studio/10c-archive-calibration.jpg)
+
 You don't need Studio to look at one: each archive has a `review.html` that opens in any web browser (**Open in
-browser** on the banner, or double-click it), with the same table, filters, snapshots and clips. Its snapshots are
+browser** on the banner, or double-click it), with the same table, filters, snapshots and clips, and the same **How these speeds were calibrated**. Its snapshots are
 not blurred, so share the folder only with people you'd show the street to.
 
 An archive is a folder `<data folder>/Archive/<YYYY-MM-DD>_<name>/` laid out like the data folder:
@@ -569,6 +580,9 @@ An archive is a folder `<data folder>/Archive/<YYYY-MM-DD>_<name>/` laid out lik
 | `vehicles.csv` | the vehicles as a spreadsheet: time, speed, direction, wrong way, size, snapshot and clip |
 | `review.html` | the browser viewer |
 | `VST.cfg`, `calibration-history.csv` | the setup and calibration record as they were |
+| `calibration-passes.csv` | which of these passes were your own calibration and check drives, so they stay marked and left out of the counts (header only when none were) |
+| `calibration-inputs.json` | the measurements the calibration was combined from (drive past, cones, a known car...) |
+| `Stats/calibration-sets.json` | the calibration sets of these runs, locked at the speeds they were archived with |
 | `Stats/`, `HiLites/` | the stats csvs, run manifests and highlights videos |
 | `Snapshots/`, `Clips/` | each vehicle's picture (`vehicle_<row>.jpg`) and clip |
 
