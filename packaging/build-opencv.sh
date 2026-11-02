@@ -31,7 +31,8 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) extra+=(-A x64 -DBUILD_WITH_STATIC_CRT=OFF -DCMAKE_ASM_COMPILER=CMAKE_ASM_COMPILER-NOTFOUND) ;;
 esac
 
-cmake -S "$work/src" -B "$work/build" "${extra[@]}" \
+# ${extra[@]+...}: macOS's bash 3.2 treats an empty array as unbound under set -u.
+cmake -S "$work/src" -B "$work/build" ${extra[@]+"${extra[@]}"} \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
   -DBUILD_SHARED_LIBS=OFF \
   -DBUILD_LIST=core,imgproc,geometry,imgcodecs,videoio,highgui \
