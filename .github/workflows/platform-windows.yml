@@ -1,0 +1,43 @@
+name: windows
+
+# A pull request's Windows check: release.yml's own windows job (MSVC build against main's cached static OpenCV 5,
+# ctest, the zip, and the Inno Setup installer built, installed, started and uninstalled), so Windows-only breaks
+# (MSVC's missing standard headers, windows.h macros, #ifdef _WIN32 code such as the camera lister, packaging/windows)
+# show up on the PR instead of on main. No signing and no publishing: there's no tag and no secrets are passed.
+#
+# Runs only for files the Windows package builds from; Mac-only sources (*.mm) and packaging don't start it. Like
+# build.yml, a PR that doesn't touch these gets no run at all, so don't make it a required check.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/platform-windows.yml
+      - .github/workflows/release.yml
+      - CMakeLists.txt
+      - bin/**
+      - cmake/**
+      - packaging/build-opencv.sh
+      - packaging/windows/**
+      - sampleData/**
+      - src/**
+      - '!src/**/*.mm'
+      - tests/**
+
+# A new push to the PR cancels its running check.
+concurrency:
+  group: platform-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    with:
+      linux: false
+      macos: false
+    # A called workflow may only ask for what its caller grants, and GitHub checks every job in it, including the
+    # tag-only publish jobs that a PR skips. So this grants what release.yml's jobs declare; on a PR no step that uses
+    # the write scopes runs (publish needs a tag, signing needs a tag and secrets), and fork PRs get a read-only token
+    # whatever is asked for.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write

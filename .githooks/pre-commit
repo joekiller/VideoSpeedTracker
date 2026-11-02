@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Local gate before each commit. CI no longer builds pull requests across every platform; the full release matrix
-# (Linux x6, Windows, macOS) runs after merge to main, so this hook is what keeps a broken change off a PR.
+# Local gate before each commit. Pull requests get Linux, Windows and macOS checks, but the hook catches a break in
+# seconds instead of a CI round trip; the Linux .deb matrix still runs only after merge to main.
 #
 # Install once per clone:   git config core.hooksPath .githooks
 # Skip once:                git commit --no-verify     (or VST_HOOK_SKIP=1 git commit ...)
