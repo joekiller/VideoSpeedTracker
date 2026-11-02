@@ -237,8 +237,8 @@ only).
 ### Pre-commit hook and CI
 
 Pull requests get a Linux job (`.github/workflows/build.yml`) plus Windows and macOS checks
-(`platform-windows.yml`, `platform-macos.yml`) that run the release workflow's own Windows and macOS builds, tests
-and packaging, unsigned. Each runs only when the PR touches files that platform builds from. The eight Linux `.deb`
+(`windows.yml`, `macos.yml`), the same builds, tests and packaging the release workflow runs for those platforms,
+unsigned. Each runs only when the PR touches files that platform builds from. The eight Linux `.deb`
 packages are built only after a merge to main. Catch what you can before committing by turning on the repo's hook once per clone:
 
 ```
