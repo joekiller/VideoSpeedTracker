@@ -339,6 +339,10 @@ struct DemoScript {
 			if (frames == 20) shot("10-archive.png");
 			if (frames == 21) {
 				ImGui::ClosePopupToLevel(0, true);
+				// One pass marked as the user's own calibration drive (in memory only, as the tour writes nothing), so the
+				// archive carries a drive and 10c shows it.
+				std::vector<Vehicle> vs = app.tracker.vehiclesSince(0);
+				if (!vs.empty()) app.markCalibrationPass(vs.front(), false, 25);
 				size_t n = app.rows.size();
 				std::string dir, err;
 				if (!archive::write(app.archiveRequest("First week, before the signs", false), dir, err)) fail("archiving the session: " + err);
@@ -353,7 +357,10 @@ struct DemoScript {
 				}
 			}
 			if (frames == 25) app.toasts_.clear();
-			if (frames == 40) { shot("10b-archive-review.png"); next(); }
+			if (frames == 40) shot("10b-archive-review.png");
+			// The banner's "How these speeds were calibrated", opened: the sets, the user's own drives, the measurements.
+			if (frames == 41) app.archiveCalOpen_ = true;
+			if (frames == 60) { shot("10c-archive-calibration.png"); next(); }
 			break;
 		default:
 			done = true;

@@ -34,6 +34,25 @@
 #include <string>
 #include <vector>
 
+// A pass the user drove to calibrate or check, so Results can mark it ("Calibration drive, you drove 15 mph") and the
+// street report can leave it out: the person calibrating isn't traffic.  Kept in <configDir>/calibration-passes.csv
+// (Studio's own file, apart from the shared history format), one row per use:
+//
+//   PassTime, Stats, Frame, Kind, Direction, DrivenMph
+//
+// Stats (the stats csv's file name) and Frame identify the row the pass wrote, which is what a Results or report row
+// is matched on (report::passKey).  The file name, not the path, so a run set aside into Stats/Before calibration
+// still matches; re-running the same video overwrites its csv, and the same frame is then the same car.  PassTime is
+// for people reading the file.  A slow pass (under minLoggedSpeed) has no csv row and is recorded only for the record.
+struct CalPass {
+	std::string time;            // "2026-11-01T14:13:57" (local), "" when the source has no clock
+	std::string stats;           // "stats_camera0_20261101_141200.csv"
+	int frame = 0;
+	bool check = false;
+	bool l2r = true;
+	double drivenMph = 0;
+};
+
 namespace calib {
 
 constexpr double kFtPerSecPerMph = 5280.0 / 3600.0;
@@ -154,5 +173,17 @@ bool saveInputs(const std::string& path, const std::string& configPath, const st
 bool addInput(std::vector<Input>& inputs, Input in);
 // A fresh id for an input: the time plus a counter, unique within `inputs`.
 std::string newInputId(const std::vector<Input>& inputs, const std::string& time);
+// `configPath`'s inputs alone, as a file of its own in the same format (an archive's calibration-inputs.json).
+std::string inputsJson(const std::string& configPath, const std::vector<Input>& inputs);
+
+// ---- calibration-passes.csv (CalPass) at any path: the config folder's (Calibration.cpp passesPath) or an archive's
+
+extern const char* const kPassesHeader;   // "PassTime, Stats, Frame, Kind, Direction, DrivenMph"
+std::string passLine(const CalPass& p);   // one row, "\n"-terminated
+std::vector<CalPass> readPasses(const std::string& path);   // every row, oldest first; header and unreadable lines skipped
+// Appends one row, writing the header first when the file is new.  false with `err` if it can't.
+bool appendPassTo(const std::string& path, const CalPass& p, std::string& err);
+// The same pass (one stats csv row) used the same way: what an archive's put-back checks before adding a row again.
+inline bool samePass(const CalPass& a, const CalPass& b) { return a.stats == b.stats && a.frame == b.frame && a.check == b.check; }
 
 }  // namespace calib

@@ -379,6 +379,7 @@ private:
 	void archiveDialog();
 	void openMenu();
 	void reviewBanner(float width);
+	void archiveCalibration();          // the banner's "How these speeds were calibrated" (archive_'s sets, passes, inputs)
 	archive::Request archiveRequest(const std::string& name, bool move, const std::vector<ResultRow>* from = nullptr);
 	// Calibration sets in Results (Sets.cpp): the colour band down each row's left edge, the set bar above the table
 	// (Lock, Unlock, Publish, Remove, check against today's calibration), and the Publish and Remove dialogs.
@@ -462,6 +463,7 @@ private:
 	// Appends one stats csv's rows (labelled `label` in the Source column) to `rows`; false with a toast if unreadable.
 	bool appendStatsRows(const std::string& path, const std::string& label, int* skipped);
 	bool openArchiveDialog_ = false;    // open "Archive these results" on the next Results frame (the --shots tour)
+	bool archiveCalOpen_ = false;       // open an archive's "How these speeds were calibrated" on the next frame (the tour)
 	int selectedRow_ = -1;
 	int calibMode_ = 0;
 	int calibDir_ = 0;

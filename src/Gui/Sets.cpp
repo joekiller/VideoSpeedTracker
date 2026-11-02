@@ -169,7 +169,8 @@ void App::applySets() {
 ImU32 App::setColor(int setId) const {
 	// By set number, not position: removing or archiving a set never repaints the others, and consecutive numbers
 	// (sets are numbered as they're made) always get different colours.
-	const calsets::Set* s = setId ? sets_.find(setId) : nullptr;
+	// An open archive's rows wear the bands of the sets it was archived with (archive::Info::sets), not today's.
+	const calsets::Set* s = !setId ? nullptr : reviewing() ? archive_.sets.find(setId) : sets_.find(setId);
 	if (!s) return 0;
 	return !s->known ? c::faint : kStripes[(s->id - 1) % std::size(kStripes)];
 }
@@ -183,7 +184,11 @@ void App::setStripe(const ResultRow& r, float rowH) {
 	ImVec2 a(p.x - st.CellPadding.x, p.y - st.CellPadding.y), b(a.x + px(5), a.y + std::max(rowH, ImGui::GetFrameHeight() + 2 * st.CellPadding.y));
 	ImGui::GetWindowDrawList()->AddRectFilled(a, b, col);
 	if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(a, ImVec2(b.x + px(3), b.y))) {
-		if (const calsets::Set* s = sets_.find(r.setId)) {
+		if (reviewing()) {
+			// Archived sets are frozen: they show the zone feet they were archived at.  Nothing to pick (no set bar).
+			if (const calsets::Set* s = archive_.sets.find(r.setId)) ImGui::SetTooltip("%s", calsets::describe(*s, s->scale).c_str());
+		}
+		else if (const calsets::Set* s = sets_.find(r.setId)) {
 			ImGui::SetTooltip("%s", calsets::describe(*s, calsets::shownScale(*s, currentView(), currentScale())).c_str());
 			if (ImGui::IsMouseClicked(0)) selectedSet_ = s->id;
 		}
@@ -773,6 +778,7 @@ bool App::publishCorrected(const dataset::Info& old, const dataset::Calibration&
 	req.info.from = "Correction of " + old.id;
 	req.configFile = (fs::path(old.dir) / "VST.cfg").string();
 	req.historyFiles = { (fs::path(old.dir) / "calibration-history.csv").string() };
+	req.passes = a.passes;   // the user's own drives stay marked in the correction (its sets and inputs are the new calibration's)
 	std::error_code ec;
 	for (fs::directory_iterator it(fs::path(old.dir) / "Stats", ec), end; !ec && it != end; it.increment(ec))
 		if (it->path().extension() == ".csv") req.statsCsvs.push_back(it->path().string());

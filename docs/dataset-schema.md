@@ -14,7 +14,7 @@ double-click `review.html`, which works offline in any browser.
 |---|---|---|---|
 | `dataset.json` | once, when published | yes | What the dataset is: name, site, dates, calibration and summary ([below](#datasetjson)) |
 | `points.csv` | once | yes | One row per car, with the exact time it took to cross the zone ([below](#pointscsv)) |
-| `archive.json`, `vehicles.csv`, `Stats/`, `VST.cfg`, `Snapshots/`, `Clips/`, `HiLites/` | once | yes | The same layout as an archive (see [vst-studio.md](vst-studio.md#archive-a-dataset-and-review-it-later)): the original stats csvs, run manifests, the config, and pictures |
+| `archive.json`, `vehicles.csv`, `Stats/`, `VST.cfg`, `calibration-history.csv`, `calibration-passes.csv`, `calibration-inputs.json`, `Snapshots/`, `Clips/`, `HiLites/` | once | yes | The same layout as an archive (see [vst-studio.md](vst-studio.md#archive-a-dataset-and-review-it-later)): the original stats csvs, run manifests, the config, the calibration record (which passes were the publisher's own drives, and what the calibration was measured from), and pictures. A correction carries the original's `calibration-passes.csv` |
 | `SHA256SUMS` | once | (is the list) | `sha256sum` format: one `<hex>  <path>` line per file above |
 | `status.json` | after each re-check | no | Every re-check so far and the current status ([below](#statusjson)) |
 | `checks/<date>_<hhmm>.csv` | one per re-check | no | Every car's speed before and after that re-check ([below](#checks)) |

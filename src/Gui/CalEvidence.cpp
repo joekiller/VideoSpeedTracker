@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -165,6 +166,23 @@ std::vector<Input> loadInputs(const std::string& path, const std::string& config
 	return out;
 }
 
+static json inputsList(const std::vector<Input>& inputs) {
+	json list = json::array();
+	for (const Input& in : inputs) {
+		json e{ { "id", in.id }, { "method", in.method }, { "label", in.label }, { "time", in.time }, { "dirs", dirsName(in.dirs) },
+			{ "zoneFt", std::round(in.zoneFt * 1000) / 1000 }, { "sigma", std::round(in.sigma * 10000) / 10000 }, { "lines", in.lines } };
+		if (in.removed) e["removed"] = true;
+		list.push_back(e);
+	}
+	return list;
+}
+
+std::string inputsJson(const std::string& configPath, const std::vector<Input>& inputs) {
+	json j{ { "version", 1 }, { "configs", json::object() } };
+	j["configs"][canonical(configPath)] = inputsList(inputs);
+	return j.dump(1, '\t') + "\n";
+}
+
 bool saveInputs(const std::string& path, const std::string& configPath, const std::vector<Input>& inputs, std::string& err) {
 	json j = readFile(path);
 	if (!j.contains("configs") || !j["configs"].is_object()) j["configs"] = json::object();
@@ -174,14 +192,7 @@ bool saveInputs(const std::string& path, const std::string& configPath, const st
 	std::vector<std::string> stale;
 	for (auto& [key, list] : j["configs"].items()) if (canonical(key) == want) stale.push_back(key);
 	for (const std::string& k : stale) j["configs"].erase(k);
-	json list = json::array();
-	for (const Input& in : inputs) {
-		json e{ { "id", in.id }, { "method", in.method }, { "label", in.label }, { "time", in.time }, { "dirs", dirsName(in.dirs) },
-			{ "zoneFt", std::round(in.zoneFt * 1000) / 1000 }, { "sigma", std::round(in.sigma * 10000) / 10000 }, { "lines", in.lines } };
-		if (in.removed) e["removed"] = true;
-		list.push_back(e);
-	}
-	j["configs"][want] = list;
+	j["configs"][want] = inputsList(inputs);
 
 	std::error_code ec;
 	fs::create_directories(fs::path(path).parent_path(), ec);
@@ -218,6 +229,58 @@ std::string newInputId(const std::vector<Input>& inputs, const std::string& time
 		std::string id = time + "#" + std::to_string(k);
 		if (std::none_of(inputs.begin(), inputs.end(), [&](const Input& in) { return in.id == id; })) return id;
 	}
+}
+
+// ---- calibration-passes.csv ---------------------------------------------------------------------------------------
+
+const char* const kPassesHeader = "PassTime, Stats, Frame, Kind, Direction, DrivenMph";
+
+static std::string trimmed(const std::string& s) {
+	size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
+	return a == std::string::npos ? "" : s.substr(a, b - a + 1);
+}
+
+std::string passLine(const CalPass& p) {
+	char mph[32];
+	snprintf(mph, sizeof mph, "%g", p.drivenMph);   // shortest plain form: 15, 12.5
+	return p.time.substr(0, 19) + ", " + p.stats + ", " + std::to_string(p.frame) + ", " + (p.check ? "check" : "apply") + ", "
+		+ (p.l2r ? "L2R" : "R2L") + ", " + mph + "\n";
+}
+
+bool appendPassTo(const std::string& path, const CalPass& p, std::string& err) {
+	std::error_code ec;
+	fs::create_directories(fs::path(path).parent_path(), ec);
+	bool fresh = !fs::exists(path, ec) || fs::file_size(path, ec) == 0;
+	std::ofstream f(path, std::ios::app | std::ios::binary);
+	if (!f) { err = "Can't write " + path; return false; }
+	if (fresh) f << kPassesHeader << "\n";
+	f << passLine(p);
+	f.flush();
+	if (!f) { err = "Can't write " + path; return false; }
+	return true;
+}
+
+std::vector<CalPass> readPasses(const std::string& path) {
+	std::vector<CalPass> out;
+	std::ifstream f(path, std::ios::binary);
+	for (std::string line; std::getline(f, line);) {
+		std::vector<std::string> raw, parts;
+		std::stringstream ss(line);
+		for (std::string p; std::getline(ss, p, ',');) { raw.push_back(p); parts.push_back(trimmed(p)); }
+		// Counted from both ends: a video's name (in Stats) may itself hold commas.
+		size_t n = parts.size();
+		if (n < 6 || (parts[n - 3] != "apply" && parts[n - 3] != "check")) continue;   // the header, or junk
+		CalPass p;
+		p.time = parts[0];
+		for (size_t i = 1; i + 4 < n; i++) p.stats += (i > 1 ? "," : "") + raw[i];
+		p.stats = trimmed(p.stats);
+		p.check = parts[n - 3] == "check";
+		p.l2r = parts[n - 2] == "L2R";
+		try { p.frame = std::stoi(parts[n - 4]); p.drivenMph = std::stod(parts[n - 1]); }
+		catch (...) { continue; }
+		out.push_back(p);
+	}
+	return out;
 }
 
 }  // namespace calib

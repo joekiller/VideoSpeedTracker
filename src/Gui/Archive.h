@@ -12,6 +12,11 @@
 //   review.html                a self-contained viewer: table, filters, snapshots and clips, no install needed
 //   VST.cfg                    the config the runs used, as it was when archived
 //   calibration-history.csv    the calibration history, as it was
+//   calibration-passes.csv     the user's own calibration and check drives among these runs (Results' "calibration" and
+//                              "check" marks, which the report leaves out); header only when none were marked
+//   calibration-inputs.json    the measurements the calibration in force was combined from (CalEvidence.h), for this
+//                              config only; absent when none were on record
+//   Stats/calibration-sets.json  the calibration sets of these runs, locked at the speeds they were archived with
 //   Stats/                     the stats csvs and their run_<stem>.json manifests
 //   HiLites/                   each run's Hilites_<stem>.mp4, when one was made
 //   Clips/                     each vehicle's short clip
@@ -21,11 +26,20 @@
 // so a full disk or a crash never leaves a half archive that looks whole  ->  only then, when Request::move is set,
 // the originals are removed from the data folder ("archive away": This session, Results' Open and the street report
 // start fresh)  ->  read() loads archive.json back for the reviewer  ->  list() finds every archive, newest first  ->
-// restore() puts the Stats and HiLites files back into the data folder (never over a file that is already there) and
-// marks the archive as no longer moved.  The archive itself is kept: it still holds the snapshots and clips.
+// restore() puts the Stats and HiLites files back into the data folder (never over a file that is already there), adds
+// the archive's calibration drives back to the config folder's calibration-passes.csv when they aren't there already
+// (an archive carried to another computer keeps its marks), and marks the archive as no longer moved.  The archive
+// itself is kept: it still holds the snapshots and clips.
+//
+// Calibration: read() also loads the three calibration files above into Info (sets, passes, inputs), so the reviewer
+// can say how the speeds were calibrated and which passes were the user's own, and the report made from the archive
+// leaves those passes out exactly as the data folder's report did.  An archive made before these files existed has
+// none of them (hasPasses false): its rows still carry ownDrive, and the app falls back to the config folder's file.
 //
 // No ImGui and no tracker: tests/archive_test.cpp drives it with fixture files.
 #pragma once
+#include "CalEvidence.h"
+#include "CalSets.h"
 #include <opencv2/core.hpp>
 #include <string>
 #include <utility>
@@ -53,6 +67,7 @@ struct Vehicle {
 	double accel = 0;                     // mph per second, + speeding up
 	int ownDrive = 0;                     // 1: the user's own calibration drive, 2: their check drive; left out of the counts
 	double drivenMph = 0;                 // for those, the speed they said they drove
+	std::string run;                      // the stats csv it came from, by file name (its calibration set); "" in older archives
 };
 
 // The calibration and directions the runs used, for the report's runs that have no manifest of their own.
@@ -62,6 +77,7 @@ struct Calibration {
 	int framesL2R = 35, framesR2L = 40;
 	double calSpeed = 25, calFps = 30;
 	int minLoggedSpeed = 18;
+	std::string lines;                    // the speed lines' signature (App::speedLinesSig): inputs on other lines didn't count
 };
 
 struct Info {
@@ -81,6 +97,12 @@ struct Info {
 	// A published dataset (Dataset.h): its dataset.json plus status, as one JSON object, which review.html shows as the
 	// cover (badge, plain summary, how we know, the numbers).  "" for a plain archive.  Not stored in archive.json.
 	std::string dataset;
+	// The calibration files (see the layout above), loaded by read() and write() from the folder, not from archive.json.
+	calsets::Store sets;                  // Stats/calibration-sets.json
+	std::vector<CalPass> passes;          // calibration-passes.csv
+	std::vector<calib::Input> inputs;     // calibration-inputs.json, configPath's entry
+	bool hasPasses = false;               // calibration-passes.csv is there (archives before it have none)
+	const calsets::Set* setOf(const Vehicle& v) const { return v.run.empty() ? nullptr : sets.ofRun(v.run); }
 };
 
 // One vehicle to archive: its row, plus where its picture and clip come from.
@@ -97,6 +119,10 @@ struct Request {
 	std::string configFile;               // VST.cfg to copy ("" or missing = none)
 	std::vector<std::string> historyFiles;// calibration-history.csv candidates; the first that exists is copied
 	std::vector<Source> vehicles;
+	// The user's own calibration and check drives on record (any runs: write() keeps those of statsCsvs), and the
+	// calibration inputs for info.configPath (empty = none on record, no calibration-inputs.json).
+	std::vector<CalPass> passes;
+	std::vector<calib::Input> calInputs;
 	bool move = true;                     // take the stats csvs, manifests, highlights and clips out of the data folder
 	// Publishing (Dataset.h) uses the same writer: another folder under dataDir, extra files written inside before the
 	// folder is renamed into place, and SHA256SUMS over every file except review.html (rewritten as checks are added)
@@ -124,12 +150,22 @@ std::vector<Info> list(const std::string& dataDir);
 
 // Puts a moved archive's Stats and HiLites files back into dataDir.  A file of the same name already there is kept and
 // its archived copy left where it is (named in error, which is then a warning: the return value is still true).
-bool restore(const std::string& dir, const std::string& dataDir, std::string& error);
+// passesFile: the config folder's calibration-passes.csv, which gets the archive's passes it doesn't already have
+// ("" = leave it alone); passesAdded (optional) counts them, so the app knows to reload its marks.
+bool restore(const std::string& dir, const std::string& dataDir, std::string& error, const std::string& passesFile = "",
+	int* passesAdded = nullptr);
 
 // The run manifest and highlights video that go with a stats csv: stats_<stem>.csv -> run_<stem>.json beside it, and
 // <data>/HiLites/Hilites_<stem>.mp4 (the tracker's naming, Tracker.cpp).
 std::string manifestFor(const std::string& csv);
 std::string highlightsFor(const std::string& csv);
+
+// How the archived calibration came out of its inputs, for the reviewer and review.html (CalEvidence's combine on the
+// archive's speed lines): one direction's verdict, "3 measurements agree within 2%" ("" when there are no inputs), and
+// one input's part in it, "counts for 34%", "well off the others, counts for 4%", "made with the speed lines
+// elsewhere, not counted", "taken out, not counted".
+std::string calibrationSummary(const Info& info, bool l2r);
+std::string inputRole(const Info& info, const calib::Input& in);
 
 // The self-contained browser viewer, as written to review.html.
 std::string reviewHtml(const Info& info);
