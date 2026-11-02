@@ -1,7 +1,7 @@
 # Notes for Claude sessions
 
-- Pull requests get build.yml's Linux job plus the Windows and macOS checks (platform-windows.yml, platform-macos.yml,
-  which run release.yml's own windows/macos jobs, unsigned), each path-filtered; the multi-distro .deb matrix runs
+- Pull requests get build.yml's Linux job plus the Windows and macOS checks (windows.yml, macos.yml: the same files
+  release.yml calls for its Windows and Mac packages, unsigned on PRs), each path-filtered; the multi-distro .deb matrix runs
   after merge. Wait for the Windows and macOS checks before calling a change to their code done. Before pushing a
   change to `src/`, `tests/`, `CMakeLists.txt` or `companion/`, run `.githooks/pre-commit` (or
   `git config core.hooksPath .githooks` so it runs on every commit). The C++ part needs OpenCV:

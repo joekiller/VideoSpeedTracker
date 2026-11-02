@@ -1,0 +1,204 @@
+name: Windows
+
+# Windows build, tests and packages: MSVC against a cached static OpenCV 5, ctest, the zip, and the Inno Setup
+# installer built, installed, started and uninstalled. One file serves both uses, so a pull request checks exactly
+# what a release builds:
+#   - pull requests run it directly, only when they touch files the Windows package builds from (Mac-only *.mm
+#     sources and packaging don't start it), so Windows-only breaks (MSVC's missing standard headers, windows.h
+#     macros, #ifdef _WIN32 code, packaging/windows) show up on the PR. It reuses main's OpenCV cache (~4 min).
+#   - release.yml calls it for main pushes, tags and manual runs. Only a tag build signs (Azure Artifact Signing in
+#     the `release` environment); a PR has no tag, so nothing is signed or published.
+# A PR that touches none of these files gets no run at all, so don't make it a required check.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows.yml
+      - CMakeLists.txt
+      - bin/**
+      - cmake/**
+      - packaging/build-opencv.sh
+      - packaging/windows/**
+      - sampleData/**
+      - src/**
+      - '!src/**/*.mm'
+      - tests/**
+  # release.yml calls this for every main push, tag and manual run, passing its version.
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# A new push to a PR cancels its running check. Called from release.yml the run belongs to the release, whose own
+# concurrency group applies; this group (named after this file, not the release) never matches the release's.
+concurrency:
+  group: windows-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build + tests + installer
+    runs-on: windows-2022
+    # Tag builds run in the `release` environment, so their OIDC subject is
+    # repo:<owner>/<repo>:environment:release, the one subject Azure's federated credential has to match
+    # (a Tag credential would need one per tag name). Other builds use no environment and don't sign.
+    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
+    permissions:
+      contents: read
+      id-token: write      # OIDC login to Azure for Artifact Signing
+    env:
+      # The release passes its version (1.2.3, or 0.0.0~abc1234 off a tag); a pull request's build is 0.0.0~pr<number>.
+      VST_VERSION: ${{ inputs.version || format('0.0.0~pr{0}', github.event.pull_request.number) }}
+      # Authenticode signing runs on tag builds once the Azure Artifact Signing secrets/variables are set
+      # (see docs/code-signing.md); without them the zip ships unsigned as before. Main and manual
+      # builds are never published, and their OIDC subjects don't match the tag-scoped federated credential.
+      SIGN_WINDOWS: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      # Static OpenCV 5; videoio loads FFmpeg from OpenCV's prebuilt opencv_videoio_ffmpeg plugin DLL.
+      - name: Cache OpenCV
+        id: opencv-cache
+        uses: actions/cache@v6
+        with:
+          path: C:\opencv
+          key: opencv-5.0.0-windows-x64-${{ hashFiles('packaging/build-opencv.sh') }}
+      - name: Build OpenCV
+        if: steps.opencv-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: packaging/build-opencv.sh C:/opencv
+      - name: Locate the FFmpeg plugin
+        run: |
+          $dll = Get-ChildItem C:\opencv -Recurse -File -Filter 'opencv_videoio_ffmpeg*_64.dll' | Select-Object -First 1
+          if (-not $dll) { throw "opencv_videoio_ffmpeg DLL not found under C:\opencv" }
+          "FFMPEG_DLL=$($dll.FullName)" | Out-File -Append $env:GITHUB_ENV
+          $dll.DirectoryName | Out-File -Append $env:GITHUB_PATH
+      - name: Build
+        run: |
+          # OpenCV's Windows config picks shared libs unless told otherwise. The -D values are quoted
+          # because pwsh splits an unquoted 0.0.0~sha at the first dot.
+          cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH=C:/opencv -DOpenCV_STATIC=ON "-DVST_VERSION=${{ env.VST_VERSION }}"
+          # --parallel lets MSBuild build independent projects at once; /MP (CMakeLists.txt) parallelizes inside each.
+          cmake --build build --config Release --parallel
+      - name: Sample video regression test
+        run: ctest --test-dir build -C Release --output-on-failure -j $env:NUMBER_OF_PROCESSORS
+      - name: Stage package
+        run: |
+          $name = "VideoSpeedTracker-${{ env.VST_VERSION }}-windows-x64"
+          "PKG_NAME=$name" | Out-File -Append $env:GITHUB_ENV
+          # The install step adds OpenCV's LICENSE and third-party notices (incl. FFmpeg's LGPL-2.1
+          # for the plugin DLL) under licenses/opencv.
+          cmake --install build --config Release --prefix "pkg/$name"
+          Copy-Item $env:FFMPEG_DLL "pkg/$name"
+          if (-not (Test-Path "pkg/$name/licenses/opencv/LICENSE")) { throw "OpenCV LICENSE missing from the package" }
+          Get-ChildItem "pkg/$name/licenses/opencv"
+      - name: Azure login
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          # The signing identity only holds a role on the Artifact Signing account, not on a subscription,
+          # so az sees no subscriptions; signing needs just the token, not a subscription context.
+          allow-no-subscriptions: true
+      # Signs only our exes; the OpenCV DLLs are third-party and the MSVC runtime is Microsoft-signed.
+      - name: Authenticode-sign the executables
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\pkg\${{ env.PKG_NAME }}
+          files-folder-filter: exe
+          # Shown as the program name (and its link) in the UAC prompt instead of the bare file name.
+          description: VideoSpeedTracker
+          description-url: https://github.com/joekiller/VideoSpeedTracker
+          # azure/login leaves an Azure CLI session; skip the environment credential that DefaultAzureCredential
+          # would otherwise try first.
+          exclude-environment-credential: true
+          # Signing runs only on tags, and a tag can restore only its own or main's caches, so the action's
+          # cache of its tools (saved under this tag) would never be read again. The tools stay on disk for the
+          # installer's signing step below either way.
+          cache-dependencies: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Zip
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path "pkg/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
+          Get-ChildItem "pkg/$env:PKG_NAME" | Format-Table Mode, Length, Name -AutoSize
+          Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" |
+            Format-Table Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } }, Path -AutoSize
+          Get-Item "dist/$env:PKG_NAME.zip" | Format-Table Length, Name -AutoSize
+      # The installer (packaging/windows/vst-setup.iss) wraps the same, already signed, files. Inno Setup 6 comes
+      # with the windows-2022 image. Its version resource needs digits only, so a 0.0.0~sha build is 0.0.0.
+      - name: Build the installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 isn't installed on this runner" }
+          $ver = "${{ env.VST_VERSION }}"
+          $numeric = ($ver -split '[^0-9.]')[0]
+          & $iscc /Qp "/DSourceDir=$PWD\pkg\$env:PKG_NAME" "/DAppVersion=$ver" "/DNumericVersion=$numeric" "/DOutputDir=$PWD\installer" packaging\windows\vst-setup.iss
+          if ($LASTEXITCODE) { throw "ISCC failed ($LASTEXITCODE)" }
+          Get-ChildItem installer
+      - name: Authenticode-sign the installer
+        if: env.SIGN_WINDOWS == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\installer
+          files-folder-filter: exe
+          description: VideoSpeedTracker setup
+          description-url: https://github.com/joekiller/VideoSpeedTracker
+          exclude-environment-credential: true
+          cache-dependencies: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      # Install silently for the current user into a scratch folder, check the files, the Start-menu shortcut and
+      # that VST Studio starts, then uninstall and check it's gone (and that it left the user's config alone).
+      - name: Test the installer
+        run: |
+          $setup = Get-ChildItem installer\*-setup.exe | Select-Object -First 1
+          $dir = "$env:RUNNER_TEMP\vst-install"
+          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$env:RUNNER_TEMP\setup.log`"" -Wait -PassThru
+          if ($p.ExitCode) { Get-Content "$env:RUNNER_TEMP\setup.log"; throw "setup exited with $($p.ExitCode)" }
+          foreach ($f in 'VSTStudio.exe', 'VideoSpeedTracker.exe', 'ProcessHiLites.exe', 'VST.cfg', 'LICENSE.txt', 'sample\manual_20160130172251.avi', 'companion\index.html') {
+            if (-not (Test-Path "$dir\$f")) { throw "$f wasn't installed" }
+          }
+          if (-not (Get-ChildItem "$dir\opencv_videoio_ffmpeg*.dll")) { throw "the FFmpeg plugin wasn't installed" }
+          $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\VST Studio.lnk"
+          if (-not (Test-Path $lnk)) { throw "no Start-menu shortcut at $lnk" }
+          $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+          if ($sc.TargetPath -ne "$dir\VSTStudio.exe") { throw "the shortcut points at $($sc.TargetPath)" }
+          if ($sc.WorkingDirectory -ne $env:USERPROFILE) { throw "the shortcut starts in $($sc.WorkingDirectory), not the home folder" }
+          # The GUI has no window to show on a runner, but it must at least load (all DLLs present) and stay up.
+          $app = Start-Process "$dir\VSTStudio.exe" -WorkingDirectory $env:USERPROFILE -PassThru
+          Start-Sleep -Seconds 5
+          if ($app.HasExited -and $app.ExitCode -eq -1073741515) { throw "VSTStudio.exe is missing a DLL" }
+          if (-not $app.HasExited) { Stop-Process $app -Force }
+          New-Item -ItemType Directory -Force "$env:APPDATA\VideoSpeedTracker" | Out-Null
+          "kept" | Out-File "$env:APPDATA\VideoSpeedTracker\uninstall-test.txt"
+          Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          # The uninstaller hands off to a copy of itself in %TEMP%, so wait for the files to go.
+          for ($i = 0; $i -lt 30 -and (Test-Path "$dir\VSTStudio.exe"); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$dir\VSTStudio.exe") { throw "uninstall left VSTStudio.exe behind" }
+          if (Test-Path $lnk) { throw "uninstall left the Start-menu shortcut" }
+          if (-not (Test-Path "$env:APPDATA\VideoSpeedTracker\uninstall-test.txt")) { throw "uninstall removed the user's config folder" }
+          Copy-Item $setup.FullName dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-windows-x64
+          path: dist/*
+          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
+          compression-level: 0 # .deb/.zip/.tar.gz are compressed already; deflating them again only costs time
