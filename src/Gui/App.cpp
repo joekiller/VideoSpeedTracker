@@ -3263,8 +3263,9 @@ void App::pageCalibrate() {
 			for (auto it = vs.rbegin(); it != vs.rend(); ++it) {
 				ImGui::PushID(it->id);
 				char label[200];
-				snprintf(label, sizeof label, "%s  %d frames  measured %d mph%s  %s%s",
-					it->ev.leftToRight ? "L→R" : "L←R", it->frames(), it->ev.speed, it->belowMin ? " · slow" : "",
+				// The direction as the lane labels on the picture show it: the arrow and its compass heading ("← NW").
+				snprintf(label, sizeof label, "%s %s  %d frames  measured %d mph%s  %s%s",
+					it->ev.leftToRight ? "→" : "←", (it->ev.leftToRight ? cfg.g.L2RDirection : cfg.g.R2LDirection).c_str(), it->frames(), it->ev.speed, it->belowMin ? " · slow" : "",
 					it->time.substr(11).c_str(), it->id == calibAppliedId_ ? "  · calibrated from" : "");
 				if (ImGui::Selectable(label, calibPickId_ == it->id)) calibPickId_ = it->id;
 				if (it->belowMin && ImGui::IsItemHovered())
