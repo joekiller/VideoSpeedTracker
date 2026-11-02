@@ -107,6 +107,8 @@ export class Vst extends EventTarget {
     return this.request('GET', `/api/vehicles${q.size ? `?${q}` : ''}`);
   }
   vehicle(id) { return this.request('GET', `/api/vehicles/${id}`); }
+  /** Calibration sets, oldest first (GET /api/sets); 404 from a VST Studio that predates saved runs. */
+  sets() { return this.request('GET', '/api/sets'); }
   run(action) { return this.request('POST', '/api/run', { action }); }
   /** Step 2's site planner: the street, where its numbers came from, and the verdict (docs: GET/PUT /api/plan). */
   plan() { return this.request('GET', '/api/plan'); }

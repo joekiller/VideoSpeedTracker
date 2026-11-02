@@ -162,6 +162,15 @@ public:
 	bool syncSets(bool force = false);
 	void applySets();
 	const calsets::Set* setOfRow(const ResultRow& r) const;
+	const calsets::Store& sets() const { return sets_; }   // as syncSets() last left it
+	// applySets()' core for any rows, not just Results' own: each row gets its set and is re-timed to that set's
+	// calibration (an archive's frozen speeds aside, which only Results knows to skip).  Call syncSets() first.
+	void retimeRows(std::vector<ResultRow>& out);
+	// One stats csv already read (readStatsCsv, calsets::readRun: file work that needn't be on the GUI thread) into rows
+	// shaped like Results' own, one per StatsRow in order, labelled `label`.  appendStatsRows() and the companion API's
+	// saved passes (GET /api/vehicles?scope=saved) both build rows this way, so the phone and Results agree.
+	void rowsFromStats(const std::vector<StatsRow>& stats, const calsets::RunInfo& run, const std::string& path,
+		const std::string& label, std::vector<ResultRow>& out);
 	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
 	// Adds a check pass to the calibration as one more input (the failed-check card's "Add this pass"), so the
 	// calibration becomes the weighted combination of every pass instead of either one.

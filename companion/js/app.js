@@ -28,7 +28,7 @@ let unseen = 0;
 
 const ROUTES = [
   [/^#\/live$/, live, 'live'],
-  [/^#\/passes(?:\/(\d+))?$/, passes, 'passes'],
+  [/^#\/passes(?:\/(\d+)|\/saved\/([^/]+)\/(-?\d+))?$/, passes, 'passes'],   // by id (this session) or by run + frame (saved)
   [/^#\/stats$/, stats, 'stats'],
   [/^#\/setup(?:\/(\d))?$/, setup, 'setup'],
   [/^#\/system$/, system, 'system'],

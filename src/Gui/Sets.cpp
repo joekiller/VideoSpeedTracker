@@ -148,12 +148,17 @@ const calsets::Set* App::setOfRow(const ResultRow& r) const {
 void App::applySets() {
 	if (reviewing()) return;   // an archive's speeds are as it froze them
 	syncSets();
+	retimeRows(rows);
+	sizeRows();
+}
+
+void App::retimeRows(std::vector<ResultRow>& out) {
 	const calsets::View now = currentView();
 	const calsets::Scale nowFt = currentScale();
 	// The run being written now has no set yet; its rows wear the stripe of the open set on today's view, which it joins.
 	int openHere = 0;
 	for (const calsets::Set& s : sets_.sets) if (s.known && !s.locked() && s.view.same(now)) openHere = s.id;
-	for (ResultRow& r : rows) {
+	for (ResultRow& r : out) {
 		const calsets::Set* set = setOfRow(r);
 		r.setId = set ? set->id : (!r.statsPath.empty() && r.vehicleId ? openHere : 0);
 		calsets::Scale shown = set ? calsets::shownScale(*set, now, nowFt) : calsets::Scale();
@@ -163,7 +168,6 @@ void App::applySets() {
 		if (r.measured.trend) { r.entryMph = t.entryMph; r.exitMph = t.exitMph; r.mphIn20ft = t.mphIn20ft; r.accel = t.accel; }
 		r.adjusted = t.adjusted;
 	}
-	sizeRows();
 }
 
 ImU32 App::setColor(int setId) const {

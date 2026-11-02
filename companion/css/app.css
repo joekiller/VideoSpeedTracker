@@ -197,6 +197,7 @@ p { margin: 0 0 12px; color: var(--text-2); text-wrap: pretty; }   /* no one-wor
 .item .label { flex: 1; min-width: 0; }
 .item .label b { display: block; font-weight: 600; overflow-wrap: anywhere; }   /* a long file name wraps instead of running under the value */
 .item .label small { display: block; color: var(--muted); font-size: 13px; }
+.item .label small.file { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .item .value { color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; flex: none; }
 
 .pill {
@@ -279,9 +280,45 @@ p { margin: 0 0 12px; color: var(--text-2); text-wrap: pretty; }   /* no one-wor
 @keyframes fresh { 0% { border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); } }
 .pass .meta { min-width: 0; }
 .pass .meta b { display: block; font-size: 15px; }
+.pass .pill { white-space: nowrap; }
 .pass .meta small { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; flex-wrap: wrap; margin-top: 4px; }
 .pass .thumb { width: 104px; height: 58px; border-radius: 10px; object-fit: cover; background: var(--surface-3); }
 @media (max-width: 380px) { .pass { grid-template-columns: 64px 1fr; } .pass .thumb { display: none; } }
+.pass .thumb.none { display: grid; place-items: center; color: var(--muted); }
+@media (max-width: 380px) { .pass .thumb.none { display: none; } }
+.pass .thumb.none svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: .7; }
+
+/* Calibration sets (history.js): the band down a pass's left edge, coloured by set number as in VST Studio's Results
+   (src/Gui/Sets.cpp kStripes), and the chips that pick one set.  The colour never stands alone: the chip and the
+   pass detail name the set and its state in words. */
+:root { --set-0: #4c8dff; --set-1: #c3cbd9; --set-2: #2dd4bf; --set-3: #d6c7a1; --set-unknown: #5a6478; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --set-0: #2f6fe0; --set-1: #7c8799; --set-2: #0f8f84; --set-3: #9c8550; --set-unknown: #8a94a6; } }
+.set-s0 { --band: var(--set-0); } .set-s1 { --band: var(--set-1); } .set-s2 { --band: var(--set-2); } .set-s3 { --band: var(--set-3); }
+.set-unknown { --band: var(--set-unknown); }
+.pass.set-band, .list > .item.set-band { position: relative; overflow: hidden; }
+.pass.set-band::before, .list > .item.set-band::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--band); }
+.seg.scope { margin: 4px 0 4px; }
+.sets { margin: 10px 0 2px; padding: 12px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--line); }
+.sets-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.sets-head .kicker { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.sets-help { font-size: 13px; color: var(--text-2); }
+.sets-help summary { cursor: pointer; color: var(--accent); font-weight: 600; min-height: 32px; display: flex; align-items: center; justify-content: flex-end; }
+.sets-help[open] { flex-basis: 100%; }
+.sets-help[open] summary { justify-content: flex-start; }
+.sets-help p { margin: 4px 0 8px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px 0 10px; border-radius: 10px; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--line-strong); font-size: 14px; font-weight: 650; color: var(--text);
+}
+.chip[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+.chip i { width: 5px; height: 20px; border-radius: 3px; background: var(--band); }
+.chip small { font-size: 12px; font-weight: 600; color: var(--muted); }
+.chip-icon svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; display: block; }
+.sets-line { margin: 10px 0 0; font-size: 13px; line-height: 1.45; }
+.detail .media .no-media { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 16px 24px; text-align: center; color: #aab2bd; background: #14171c; }
+.detail .media .no-media svg { width: 34px; height: 34px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.detail .media .no-media p { margin: 0; font-size: 14px; max-width: 34ch; }
 .arrow { display: inline-flex; width: 18px; height: 18px; }
 .arrow svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 

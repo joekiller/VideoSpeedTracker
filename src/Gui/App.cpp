@@ -686,8 +686,15 @@ bool App::appendStatsRows(const std::string& path, const std::string& label, int
 	std::vector<StatsRow> stats;
 	std::string err;
 	if (!readStatsCsv(path, stats, err, skipped)) { toast(err, c::bad, ICON_WARN); return false; }
+	rowsFromStats(stats, calsets::readRun(path), path, label, rows);
+	return true;
+}
+
+// `run` is the manifest beside the csv: the zone feet this run was measured with, which retimeRows() rescales from.
+void App::rowsFromStats(const std::vector<StatsRow>& stats, const calsets::RunInfo& run, const std::string& path,
+	const std::string& label, std::vector<ResultRow>& out) {
 	const Globals& g = cfg.g;
-	const calsets::RunInfo run = calsets::readRun(path);   // the zone feet this run was measured with
+	out.reserve(out.size() + stats.size());
 	for (const StatsRow& s : stats) {
 		ResultRow r;
 		r.source = label;
@@ -705,7 +712,6 @@ bool App::appendStatsRows(const std::string& path, const std::string& label, int
 		// The Timestamp column says when this vehicle passed; drop its UTC offset to match session rows ("yyyy-mm-ddThh:mm:ss").
 		// Older csvs only have Date/Time, which for Foscam recordings is when the recording started.
 		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
-		r.statsPath = path;
 		if (const CalPass* p = calibrationPass(path, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
 		r.trend = s.trend;
 		r.entryMph = s.entryMph;
@@ -715,9 +721,8 @@ bool App::appendStatsRows(const std::string& path, const std::string& label, int
 		r.measured = { s.speed, s.zoneSeconds, !s.trend.empty(), s.entryMph, s.exitMph, s.mphIn20ft, s.accel };
 		r.thenFt = run.known ? run.scale.of(r.l2r) : 0;
 		r.widthPx = s.lengthPx;
-		rows.push_back(r);
+		out.push_back(r);
 	}
-	return true;
 }
 
 void App::loadResultsCsv(const std::string& path) {
