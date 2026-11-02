@@ -8,12 +8,10 @@
 # assets are uploaded to it, replacing any with the same name.
 #
 # Main pushes that touch the build run everything except the publish step, so a broken platform shows up
-# before the tag does (main's run also keeps the OpenCV caches warm). Pull requests don't run the Linux .deb matrix
-# (build.yml's single Linux job covers Linux), but they do run this workflow's own windows and macos jobs:
-# platform-windows.yml and platform-macos.yml call it (workflow_call) with linux: false and the other platform off,
-# each only when the PR touches files that platform builds. Same steps as a release, so a PR's Windows or Mac result
-# is the release's, without signing (no tag, no secrets passed) and without publishing (no tag). To run the full
-# matrix on a branch anyway, start this workflow by hand (Actions > release > Run workflow, or
+# before the tag does (main's run also keeps the OpenCV caches warm). The Windows and macOS jobs live in windows.yml
+# and macos.yml, which this calls; pull requests run those two files directly (path-filtered, unsigned), so a PR's
+# Windows or Mac check is the release's own build. Pull requests don't run this workflow or its Linux .deb matrix
+# (build.yml's single Linux job covers Linux). To run the full matrix on a branch anyway, start this workflow by hand (Actions > release > Run workflow, or
 # `gh workflow run release.yml --ref <branch>`); a manual run on a tag also publishes.
 #
 # Every package holds VideoSpeedTracker, ProcessHiLites and the VST Studio desktop app (VSTStudio) plus
@@ -53,6 +51,8 @@ on:
     # Only what changes a package or its tests; docs and the companion don't.
     paths:
       - .github/workflows/release.yml
+      - .github/workflows/windows.yml
+      - .github/workflows/macos.yml
       - CMakeLists.txt
       - bin/**
       - cmake/**
@@ -61,27 +61,13 @@ on:
       - src/**
       - tests/**
   workflow_dispatch:
-  # Pull requests' Windows and Mac checks (platform-windows.yml, platform-macos.yml). Each input turns one platform's
-  # build job off; push and manual runs have no inputs, so `inputs.<platform> != false` is true and everything runs.
-  workflow_call:
-    inputs:
-      linux:
-        type: boolean
-        default: true
-      windows:
-        type: boolean
-        default: true
-      macos:
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
-# A newer push to the same branch supersedes its running build; tag builds always finish. github.workflow is the
-# caller's name when called, so a PR's Windows and Mac runs (same ref) don't cancel each other.
+# A newer push to the same branch supersedes its running build; tag builds always finish.
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
@@ -117,7 +103,6 @@ jobs:
 
   linux:
     needs: meta
-    if: inputs.linux != false
     name: linux ${{ matrix.distro }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.image }}
@@ -194,307 +179,26 @@ jobs:
 
   windows:
     needs: meta
-    if: inputs.windows != false
-    runs-on: windows-2022
-    # Tag builds run in the `release` environment, so their OIDC subject is
-    # repo:<owner>/<repo>:environment:release, the one subject Azure's federated credential has to match
-    # (a Tag credential would need one per tag name). Other builds use no environment and don't sign.
-    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
+    uses: ./.github/workflows/windows.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+    # Tag builds sign in the `release` environment (windows.yml enters it); its secrets come from there, and the
+    # repository-level ones are passed for the rest.
+    secrets: inherit
     permissions:
       contents: read
       id-token: write      # OIDC login to Azure for Artifact Signing
-    env:
-      # Authenticode signing runs on tag builds once the Azure Artifact Signing secrets/variables are set
-      # (see docs/code-signing.md); without them the zip ships unsigned as before. Main and manual
-      # builds are never published, and their OIDC subjects don't match the tag-scoped federated credential.
-      SIGN_WINDOWS: ${{ github.ref_type == 'tag' && secrets.AZURE_CLIENT_ID != '' && vars.AZURE_SIGNING_ACCOUNT != '' }}
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - uses: actions/checkout@v7
-      # Static OpenCV 5; videoio loads FFmpeg from OpenCV's prebuilt opencv_videoio_ffmpeg plugin DLL.
-      - name: Cache OpenCV
-        id: opencv-cache
-        uses: actions/cache@v6
-        with:
-          path: C:\opencv
-          key: opencv-5.0.0-windows-x64-${{ hashFiles('packaging/build-opencv.sh') }}
-      - name: Build OpenCV
-        if: steps.opencv-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: packaging/build-opencv.sh C:/opencv
-      - name: Locate the FFmpeg plugin
-        run: |
-          $dll = Get-ChildItem C:\opencv -Recurse -File -Filter 'opencv_videoio_ffmpeg*_64.dll' | Select-Object -First 1
-          if (-not $dll) { throw "opencv_videoio_ffmpeg DLL not found under C:\opencv" }
-          "FFMPEG_DLL=$($dll.FullName)" | Out-File -Append $env:GITHUB_ENV
-          $dll.DirectoryName | Out-File -Append $env:GITHUB_PATH
-      - name: Build
-        run: |
-          # OpenCV's Windows config picks shared libs unless told otherwise. The -D values are quoted
-          # because pwsh splits an unquoted 0.0.0~sha at the first dot.
-          cmake -S . -B build -A x64 -DCMAKE_PREFIX_PATH=C:/opencv -DOpenCV_STATIC=ON "-DVST_VERSION=${{ needs.meta.outputs.version }}"
-          # --parallel lets MSBuild build independent projects at once; /MP (CMakeLists.txt) parallelizes inside each.
-          cmake --build build --config Release --parallel
-      - name: Sample video regression test
-        run: ctest --test-dir build -C Release --output-on-failure -j $env:NUMBER_OF_PROCESSORS
-      - name: Stage package
-        run: |
-          $name = "VideoSpeedTracker-${{ needs.meta.outputs.version }}-windows-x64"
-          "PKG_NAME=$name" | Out-File -Append $env:GITHUB_ENV
-          # The install step adds OpenCV's LICENSE and third-party notices (incl. FFmpeg's LGPL-2.1
-          # for the plugin DLL) under licenses/opencv.
-          cmake --install build --config Release --prefix "pkg/$name"
-          Copy-Item $env:FFMPEG_DLL "pkg/$name"
-          if (-not (Test-Path "pkg/$name/licenses/opencv/LICENSE")) { throw "OpenCV LICENSE missing from the package" }
-          Get-ChildItem "pkg/$name/licenses/opencv"
-      - name: Azure login
-        if: env.SIGN_WINDOWS == 'true'
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          # The signing identity only holds a role on the Artifact Signing account, not on a subscription,
-          # so az sees no subscriptions; signing needs just the token, not a subscription context.
-          allow-no-subscriptions: true
-      # Signs only our exes; the OpenCV DLLs are third-party and the MSVC runtime is Microsoft-signed.
-      - name: Authenticode-sign the executables
-        if: env.SIGN_WINDOWS == 'true'
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
-          files-folder: ${{ github.workspace }}\pkg\${{ env.PKG_NAME }}
-          files-folder-filter: exe
-          # Shown as the program name (and its link) in the UAC prompt instead of the bare file name.
-          description: VideoSpeedTracker
-          description-url: https://github.com/joekiller/VideoSpeedTracker
-          # azure/login leaves an Azure CLI session; skip the environment credential that DefaultAzureCredential
-          # would otherwise try first.
-          exclude-environment-credential: true
-          # Signing runs only on tags, and a tag can restore only its own or main's caches, so the action's
-          # cache of its tools (saved under this tag) would never be read again. The tools stay on disk for the
-          # installer's signing step below either way.
-          cache-dependencies: false
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-      - name: Zip
-        run: |
-          New-Item -ItemType Directory dist | Out-Null
-          Compress-Archive -Path "pkg/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
-          Get-ChildItem "pkg/$env:PKG_NAME" | Format-Table Mode, Length, Name -AutoSize
-          Get-AuthenticodeSignature "pkg/$env:PKG_NAME/*.exe" |
-            Format-Table Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } }, Path -AutoSize
-          Get-Item "dist/$env:PKG_NAME.zip" | Format-Table Length, Name -AutoSize
-      # The installer (packaging/windows/vst-setup.iss) wraps the same, already signed, files. Inno Setup 6 comes
-      # with the windows-2022 image. Its version resource needs digits only, so a 0.0.0~sha build is 0.0.0.
-      - name: Build the installer
-        run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { throw "Inno Setup 6 isn't installed on this runner" }
-          $ver = "${{ needs.meta.outputs.version }}"
-          $numeric = ($ver -split '[^0-9.]')[0]
-          & $iscc /Qp "/DSourceDir=$PWD\pkg\$env:PKG_NAME" "/DAppVersion=$ver" "/DNumericVersion=$numeric" "/DOutputDir=$PWD\installer" packaging\windows\vst-setup.iss
-          if ($LASTEXITCODE) { throw "ISCC failed ($LASTEXITCODE)" }
-          Get-ChildItem installer
-      - name: Authenticode-sign the installer
-        if: env.SIGN_WINDOWS == 'true'
-        uses: azure/artifact-signing-action@v2
-        with:
-          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
-          files-folder: ${{ github.workspace }}\installer
-          files-folder-filter: exe
-          description: VideoSpeedTracker setup
-          description-url: https://github.com/joekiller/VideoSpeedTracker
-          exclude-environment-credential: true
-          cache-dependencies: false
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-      # Install silently for the current user into a scratch folder, check the files, the Start-menu shortcut and
-      # that VST Studio starts, then uninstall and check it's gone (and that it left the user's config alone).
-      - name: Test the installer
-        run: |
-          $setup = Get-ChildItem installer\*-setup.exe | Select-Object -First 1
-          $dir = "$env:RUNNER_TEMP\vst-install"
-          $p = Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", "/LOG=`"$env:RUNNER_TEMP\setup.log`"" -Wait -PassThru
-          if ($p.ExitCode) { Get-Content "$env:RUNNER_TEMP\setup.log"; throw "setup exited with $($p.ExitCode)" }
-          foreach ($f in 'VSTStudio.exe', 'VideoSpeedTracker.exe', 'ProcessHiLites.exe', 'VST.cfg', 'LICENSE.txt', 'sample\manual_20160130172251.avi', 'companion\index.html') {
-            if (-not (Test-Path "$dir\$f")) { throw "$f wasn't installed" }
-          }
-          if (-not (Get-ChildItem "$dir\opencv_videoio_ffmpeg*.dll")) { throw "the FFmpeg plugin wasn't installed" }
-          $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\VST Studio.lnk"
-          if (-not (Test-Path $lnk)) { throw "no Start-menu shortcut at $lnk" }
-          $sc = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-          if ($sc.TargetPath -ne "$dir\VSTStudio.exe") { throw "the shortcut points at $($sc.TargetPath)" }
-          if ($sc.WorkingDirectory -ne $env:USERPROFILE) { throw "the shortcut starts in $($sc.WorkingDirectory), not the home folder" }
-          # The GUI has no window to show on a runner, but it must at least load (all DLLs present) and stay up.
-          $app = Start-Process "$dir\VSTStudio.exe" -WorkingDirectory $env:USERPROFILE -PassThru
-          Start-Sleep -Seconds 5
-          if ($app.HasExited -and $app.ExitCode -eq -1073741515) { throw "VSTStudio.exe is missing a DLL" }
-          if (-not $app.HasExited) { Stop-Process $app -Force }
-          New-Item -ItemType Directory -Force "$env:APPDATA\VideoSpeedTracker" | Out-Null
-          "kept" | Out-File "$env:APPDATA\VideoSpeedTracker\uninstall-test.txt"
-          Start-Process "$dir\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
-          # The uninstaller hands off to a copy of itself in %TEMP%, so wait for the files to go.
-          for ($i = 0; $i -lt 30 -and (Test-Path "$dir\VSTStudio.exe"); $i++) { Start-Sleep -Seconds 1 }
-          if (Test-Path "$dir\VSTStudio.exe") { throw "uninstall left VSTStudio.exe behind" }
-          if (Test-Path $lnk) { throw "uninstall left the Start-menu shortcut" }
-          if (-not (Test-Path "$env:APPDATA\VideoSpeedTracker\uninstall-test.txt")) { throw "uninstall removed the user's config folder" }
-          Copy-Item $setup.FullName dist/
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dist-windows-x64
-          path: dist/*
-          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
-          compression-level: 0 # .deb/.zip/.tar.gz are compressed already; deflating them again only costs time
 
   # macOS builds alongside the others but doesn't gate the release: GitHub's macOS pool is small and
   # its runners can sit queued far longer, so publish goes ahead without it and macos-release adds the
   # tarball and checksum to the existing release afterwards. Uploading runs on Linux, so the macOS
   # runner (billed at 10x) is held only for the build itself.
-  # macos-latest follows GitHub's current Apple-silicon image, so macOS retirements need no edits here (the
-  # package is built against Homebrew's OpenCV of the day either way). Linux and Windows stay pinned: their
-  # .deb dependencies and MSVC toolset are tied to the image.
   macos:
     needs: meta
-    if: inputs.macos != false
-    runs-on: macos-latest
-    # The Apple secrets live in the `release` environment, which only tag builds enter (same rule as windows);
-    # without it secrets.* resolve empty and SIGN_MACOS is false even on a tag.
-    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
-    env:
-      HOMEBREW_NO_AUTO_UPDATE: 1
-      HOMEBREW_NO_INSTALL_CLEANUP: 1
-      # Not HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: Homebrew answers it with a ##[warning] annotation on every run.
-      # Developer ID signing + notarization runs on tag builds once the Apple secrets are set (see
-      # docs/code-signing.md); without them the binaries keep the linker's ad-hoc signature.
-      # Unpublished main and manual builds skip it rather than wait on Apple's notary service.
-      SIGN_MACOS: ${{ github.ref_type == 'tag' && secrets.MACOS_CERT_P12_BASE64 != '' && secrets.APPLE_TEAM_ID != '' }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install OpenCV
-        # Homebrew has no retry option, so a failed bottle download gets two more tries.
-        run: for i in 1 2 3; do brew install opencv && exit 0; sleep $((i * 15)); done; exit 1
-      - name: Build
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix opencv)" \
-                -DVST_VERSION=${{ needs.meta.outputs.version }}
-          cmake --build build -j"$(sysctl -n hw.ncpu)"
-      - name: Sample video regression test
-        run: ctest --test-dir build --output-on-failure -j"$(sysctl -n hw.ncpu)"
-      # Links against Homebrew's OpenCV dylibs rather than bundling them (that would drag in
-      # FFmpeg and most of its codec stack), so the archive is for machines with Homebrew.
-      - name: Stage package
-        run: |
-          name="VideoSpeedTracker-${{ needs.meta.outputs.version }}-macos-arm64"
-          echo "PKG_NAME=$name" >> "$GITHUB_ENV"
-          cmake --install build --prefix "pkg/$name"
-          printf 'Requires Homebrew OpenCV 5:  brew install opencv\n' > "pkg/$name/REQUIREMENTS.txt"
-          # VST Studio ships as VSTStudio.app: Gatekeeper won't pass a double-clicked bare executable even when it's
-          # notarized, and only a bundle can carry a stapled ticket. Its resources (companion, sample, VST.cfg
-          # template) go inside the bundle, because a quarantined app is translocated alone on first launch; the
-          # command-line tools beside it find the sample there too (userpaths::installedFile).
-          app="pkg/$name/VSTStudio.app/Contents"
-          mkdir -p "$app/MacOS" "$app/Resources"
-          mv "pkg/$name/VSTStudio" "$app/MacOS/"
-          mv "pkg/$name/companion" "pkg/$name/sample" "$app/Resources/"
-          cp "pkg/$name/VST.cfg" "$app/Resources/"
-          sed 's/@VERSION@/${{ needs.meta.outputs.version }}/g' packaging/macos-Info.plist > "$app/Info.plist"
-          plutil -lint "$app/Info.plist"
-          iconset="$RUNNER_TEMP/VSTStudio.iconset"
-          mkdir -p "$iconset"
-          for s in 16 32 128 256; do
-            sips -z $s $s packaging/vst-studio.png --out "$iconset/icon_${s}x${s}.png" >/dev/null
-            if [ $s -le 128 ]; then
-              sips -z $((s * 2)) $((s * 2)) packaging/vst-studio.png --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
-            fi
-          done
-          iconutil -c icns "$iconset" -o "$app/Resources/VSTStudio.icns"
-          # Seal the bundle (Info.plist and resources) with an ad-hoc signature; tag builds re-sign it below.
-          codesign --force --sign - "pkg/$name/VSTStudio.app"
-      # Hardened runtime is required for notarization; the entitlements let it load Homebrew's
-      # OpenCV dylibs, which aren't signed by our team, and use the camera. The ticket is stapled to
-      # VSTStudio.app so it opens offline; the bare command-line tools can't be stapled, so Gatekeeper
-      # looks theirs up online the first time they run.
-      - name: Sign and notarize
-        if: env.SIGN_MACOS == 'true'
-        env:
-          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
-          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          kc_pass="$(uuidgen)"
-          security create-keychain -p "$kc_pass" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$kc_pass" "$keychain"
-          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain"
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"   # the disk image is signed with it after packaging
-          # Signing the bundle signs Contents/MacOS/VSTStudio and seals Info.plist and Resources with it.
-          for exe in VideoSpeedTracker ProcessHiLites VSTStudio.app; do
-            codesign --force --timestamp --options runtime \
-              --entitlements packaging/macos-entitlements.plist \
-              --sign "Developer ID Application" --keychain "$keychain" "pkg/$PKG_NAME/$exe"
-            codesign --verify --deep --strict --verbose=2 "pkg/$PKG_NAME/$exe"
-          done
-          ditto -c -k --keepParent "pkg/$PKG_NAME" "$RUNNER_TEMP/notarize.zip"
-          # notarytool exits 0 on an Invalid verdict too, so check the status it reports.
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait --output-format json \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" | tee "$RUNNER_TEMP/notary.json"
-          grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary.json"
-          xcrun stapler staple "pkg/$PKG_NAME/VSTStudio.app"
-          # What a user's Mac will decide: the app must read "accepted, source=Notarized Developer ID". The tools'
-          # verdict depends on an online ticket lookup, so it's printed for the log rather than gating the release.
-          spctl --assess --type execute --verbose=4 "pkg/$PKG_NAME/VSTStudio.app"
-          for exe in VideoSpeedTracker ProcessHiLites; do
-            spctl --assess --type install --verbose=4 "pkg/$PKG_NAME/$exe" || true
-          done
-      # The disk image is built from the already signed and stapled files, so the app inside it opens
-      # offline; Applications is a symlink to drag VSTStudio.app onto (it carries everything it needs).
-      - name: Tar and disk image
-        run: |
-          name="$PKG_NAME"
-          mkdir dist
-          tar -C pkg -czf "dist/$name.tar.gz" "$name"
-          otool -L "pkg/$name/VideoSpeedTracker"
-          dmgroot="$RUNNER_TEMP/dmgroot"
-          ditto "pkg/$name" "$dmgroot"
-          ln -s /Applications "$dmgroot/Applications"
-          hdiutil create -volname "VideoSpeedTracker ${{ needs.meta.outputs.version }}" -srcfolder "$dmgroot" \
-            -fs HFS+ -format UDZO -ov "dist/$name.dmg"
-      # A second notarization, of the image itself, so its ticket can be stapled to the .dmg too.
-      - name: Sign and notarize the disk image
-        if: env.SIGN_MACOS == 'true'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          dmg="dist/$PKG_NAME.dmg"
-          codesign --force --timestamp --sign "Developer ID Application" --keychain "$KEYCHAIN" "$dmg"
-          xcrun notarytool submit "$dmg" --wait --output-format json \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" | tee "$RUNNER_TEMP/notary-dmg.json"
-          grep -q '"status" *: *"Accepted"' "$RUNNER_TEMP/notary-dmg.json"
-          xcrun stapler staple "$dmg"
-          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
-          security delete-keychain "$KEYCHAIN"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: dist-macos-arm64
-          path: dist/*
-          retention-days: 7    # tag builds publish to the release; the artifact is only a hand-off
-          compression-level: 0 # .deb/.zip/.tar.gz are compressed already; deflating them again only costs time
+    uses: ./.github/workflows/macos.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+    secrets: inherit
 
   publish:
     needs: [meta, linux, windows]

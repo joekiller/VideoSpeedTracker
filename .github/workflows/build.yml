@@ -1,7 +1,7 @@
 name: build
 
 # Pull requests' Linux check: a single Linux build and test job against the distro's OpenCV. Windows and macOS get
-# their own checks (platform-windows.yml, platform-macos.yml); the Linux .deb matrix (release.yml) runs after merge,
+# their own checks (windows.yml, macos.yml); the Linux .deb matrix (release.yml) runs after merge,
 # on main, and locally .githooks/pre-commit runs the same build and tests before each commit. Pushes to main and pull requests only: a push to a PR branch used to
 # start a second, identical run next to the pull_request one.
 #
