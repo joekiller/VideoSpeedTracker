@@ -46,6 +46,7 @@ struct AppPrefs {
 	std::string siteName = "My street";
 	int speedLimit = 25;
 	int egregious = 35;
+	int calibTarget = 0;   // the drive-by calibration's target speed the user picked (mph); 0: the posted limit
 	bool realtime = true;
 	bool highlights = true;
 	int hlMin = 35, hlMax = 100, hlArea = 100;
@@ -79,13 +80,25 @@ struct AppPrefs {
 	// Mark your street's "Work it out from the camera" (Perspective.h CameraSetup): the camera's height above the road
 	// and how far it is turned from square to the street (+ = toward the right).  Distance and lens come from step 2.
 	double calcHeightFt = 12, calcYawDeg = 0;
+	// Mark your street's parking lane (ParkingLane.h): rows of a line on the parked cars' wheel centres at frame x 0 and
+	// 1280 (0, 0 = no parking lane), and how far beyond the moving cars it is if measured (ft; 0 = from the picture).
+	double parkY0 = 0, parkY1 = 0, parkFt = 0;
 	// The camera zone's spot on the map (degrees; 0, 0 = not set), for matching Tesla dashcam clips by GPS.
 	double siteLat = 0, siteLon = 0;
 	// Setup progress for the side rail: the source whose zones were checked on the Zones page, and the config
 	// a calibration was applied to.  A step counts as done only for the camera/config it was done for.
 	std::string zonesFor, calibratedFor;
+	// The picture's size ("1280x720") when Mark your street was last shown with valid zones: a later mode of another
+	// shape (4:3 against 16:9) moves the marks' vertical positions, so the Connect and Mark pages say so (Webcam.h changeNote).
+	std::string zonesFrame;
 	std::string calibratedLines;   // speedLineLeft,speedLineRight,AnalysisBoxWidth when calibrated (App::speedLinesSig)
+	// Pick your spot's distance came from the user (typed, the map, step 4's "to the lane"), so a calibration keeps it
+	// and works out the lens's field of view from the measured picture width instead (App::syncPlanFromCalibration).
+	bool planDistMeasured = false;
 	bool planConfirmed = false;    // Pick your spot has been saved at least once: step 2's check in the rail
+	// The page on screen when Studio last closed (App::pageKey: "guide2" for Pick your spot, "results", ...), so it
+	// reopens where the user left off.  "" = before this existed: What you need, or Connect the camera once past it.
+	std::string lastPage;
 
 	void load();
 	void save() const;

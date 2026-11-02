@@ -26,11 +26,13 @@
 #                                                per-user or all-users, signed like the exes (packaging/windows)
 #   VideoSpeedTracker-<ver>-windows-x64.zip      exes (static OpenCV) + FFmpeg plugin/MSVC runtime DLLs
 #                                                and their licenses
-#   VideoSpeedTracker-<ver>-macos-arm64.dmg      VSTStudio.app (drag to Applications) + the command-line tools;
+#   VideoSpeedTracker-<ver>-macos-arm64.dmg      just VSTStudio.app (drag to Applications); the command-line tools,
+#                                                cfg templates, docs and licenses are inside the bundle;
 #                                                signed, notarized and stapled on tags
-#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   the same files; both need `brew install opencv` (Homebrew's 5.x)
-# Linux and Windows build OpenCV from source with packaging/build-opencv.sh; the install is
-# cached per platform, so only the first run (or a change to that script) pays for the build.
+#   VideoSpeedTracker-<ver>-macos-arm64.tar.gz   the same app. Self-contained (static OpenCV, FFmpeg dylibs in
+#                                                Contents/Frameworks); macOS 13 or later, no Homebrew needed
+# Every platform builds OpenCV from source with packaging/build-opencv.sh (macOS also FFmpeg, build-ffmpeg.sh); the
+# install is cached per platform, so only the first run (or a change to that script) pays for the build.
 #   SHA256SUMS                                   sha256 of every package above
 #   SHA256SUMS.sigstore.json                     Sigstore bundle signing SHA256SUMS (offline verification)
 # Chain of custody (README "Verifying a download"): each package gets a GitHub artifact attestation, i.e.

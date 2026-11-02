@@ -24,6 +24,9 @@
 	<string>@VERSION@</string>
 	<key>CFBundleVersion</key>
 	<string>@VERSION@</string>
+	<!-- release.yml compiles FFmpeg, OpenCV and VST for this release (MACOSX_DEPLOYMENT_TARGET); keep the two equal. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>NSHighResolutionCapable</key>

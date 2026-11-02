@@ -56,7 +56,7 @@ describe('overlay.js handlePoint', () => {
   const cfg = {
     AnalysisBoxLeft: 100, AnalysisBoxTop: 200, AnalysisBoxWidth: 1000, AnalysisBoxHeight: 200,
     speedLineLeft: 200, speedLineRight: 800, R2LStreetY: 80, L2RStreetY: 140, R2LStreetYRight: 0, L2RStreetYRight: 0,
-    obstruction: [300, 360],
+    obstruction: [300, 360], parkingLane: [300, 340],
   };
   it('puts handles where zonesSvg draws them', () => {
     assert.deepEqual(handlePoint(cfg, 'tl'), [100, 200]);
@@ -66,6 +66,17 @@ describe('overlay.js handlePoint', () => {
     assert.equal(handlePoint(cfg, 'r2l')[1], 280);
     assert.equal(handlePoint(cfg, 'o0')[0], 400);
     assert.equal(handlePoint({ ...cfg, obstruction: [0, 0] }, 'o0'), null);
+    // The parking lane's ends sit 40 px in from the frame's edges, on the line (whole-frame rows at x 0 and 1280).
+    assert.deepEqual(handlePoint(cfg, 'pkl'), [40, 301.25]);
+    assert.deepEqual(handlePoint(cfg, 'pkr'), [1240, 338.75]);
+    assert.equal(handlePoint({ ...cfg, parkingLane: [0, 0] }, 'pkl'), null);
+  });
+  it('tilts the parking lane about its other end, and snaps it level within 2 px', () => {
+    const moved = { ...cfg, ...applyHandle(cfg, 'pkl', 40, 330) };
+    near(handlePoint(moved, 'pkl')[1], 330, 0.51);
+    near(handlePoint(moved, 'pkr')[1], 338.75, 0.51);
+    const level = applyHandle(cfg, 'pkr', 1240, 302.5);
+    assert.equal(level.parkingLane[0], level.parkingLane[1]);
   });
   it('round-trips through applyHandle, so a one-pixel nudge moves a handle one pixel', () => {
     for (const h of Object.keys(HANDLE_AXES)) {

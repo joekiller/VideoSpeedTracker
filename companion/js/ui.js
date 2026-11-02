@@ -51,6 +51,9 @@ const ICONS = {
   compass: '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
   gauge: '<path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 18 4.5-6"/>',
   report: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+  trendUp: '<path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  trendDown: '<path d="m3 7 6 6 4-4 8 8"/><path d="M15 17h6v-6"/>',
+  flat: '<path d="M4 12h16"/>',
 };
 export const icon = (name) => raw(`<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`);
 
@@ -76,8 +79,25 @@ export function passPills(v, limit) {
   if (v.wrongWay) p.push(html`<span class="wrongway">WRONG WAY</span>`);
   if (v.egregious) p.push(html`<span class="pill bad">Way too fast</span>`);
   else if (v.speeding) p.push(html`<span class="pill warn">+${v.speed - limit} over</span>`);
+  const t = trendOf(v);
+  if (t && t.kind !== 'steady') p.push(html`<span class="pill ${t.cls}" title="${t.label}">${icon(t.icon)}${v.trend.entry}→${v.trend.exit}</span>`);
   if (v.large) p.push(html`<span class="pill">Large</span>`);
   return p;
+}
+
+/**
+ * How a pass's speed trend (the API's `trend`, VST's SpeedTrend.h) reads: slowing down is good news (green), steady
+ * is neutral, speeding up a warning and rapidly speeding up red. `kind` is the API's word; null when VST couldn't tell.
+ */
+export const TREND = {
+  decelerating: { cls: 'ok', icon: 'trendDown', label: 'Slowing down' },
+  steady: { cls: '', icon: 'flat', label: 'Steady' },
+  accelerating: { cls: 'warn', icon: 'trendUp', label: 'Speeding up' },
+  rapid: { cls: 'bad', icon: 'trendUp', label: 'Rapidly speeding up' },
+};
+export function trendOf(v) {
+  const t = v?.trend && TREND[v.trend.kind];
+  return t ? { kind: v.trend.kind, ...t } : null;
 }
 
 // ---- time -------------------------------------------------------------------------------------

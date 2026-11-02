@@ -94,6 +94,10 @@ def main():
         f = os.path.realpath(os.path.join(e["directory"], e["file"]))
         if f in seen or not f.startswith(src + os.sep) or f.startswith(build + os.sep) or "/_deps/" in f:
             continue
+        # Objective-C++ (the macOS camera lister) never meets windows.h, and the shim's `interface` macro would break
+        # every @interface in the SDK headers it includes.
+        if f.endswith((".mm", ".m")):
+            continue
         cmd = e["arguments"][0] if "arguments" in e else shlex.split(e["command"])[0]
         if os.path.basename(cmd).lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
             skip("MSVC builds see the real windows.h")

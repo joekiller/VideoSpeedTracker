@@ -10,6 +10,7 @@
 #pragma once
 #include <functional>
 #include <opencv2/core.hpp>
+#include "SpeedTrend.h"
 #include <string>
 #include <vector>
 
@@ -42,6 +43,9 @@ struct VehicleEvent {
 	int startPixel, endPixel;        // front bumper x at the two speed lines, analysis-box coordinates
 	int area;
 	std::string timestamp;           // csv Timestamp: ISO 8601 local time with UTC offset when it passed, or "" if unknown
+	int width = 0;                   // the vehicle's side-on length in pixels (VehicleDynamics::getLengthPx); csv LengthPx
+	SpeedTrend trend;                // entry and exit speed, acceleration class, speed 20 ft on (csv EntryMph..MphIn20ft)
+	double zoneSeconds = 0;          // seconds between the speed lines (VehicleDynamics::getZoneSeconds; csv ZoneSeconds), 0 = unknown
 };
 
 // A vehicle the tracker followed into the speed zone but did not log: timed but slower than minLoggedSpeed (a walker,
@@ -53,6 +57,13 @@ struct AttemptEvent {
 	bool timed;                      // true: timed but under minLoggedSpeed; false: no usable speed
 	int speed;                       // the speed when timed, else 0
 	int frame;                       // frame number when the tracker let it go
+	// When timed, the same measurement a VehicleEvent carries, so a host can still calibrate from a slow pass (a
+	// calibration drive at 10 or 15 mph on a quiet street is timed but under the default minLoggedSpeed of 18).
+	// Zero and "" when untimed.
+	int startFrame = 0, endFrame = 0;   // frames at the two speed lines
+	int startPixel = 0, endPixel = 0;   // front bumper x at the two speed lines, analysis-box coordinates
+	std::string timestamp;              // as VehicleEvent::timestamp
+	std::string compass;                // as VehicleEvent::compass
 };
 
 // A live source (camera or stream) stopped delivering frames and is being reopened, or has come back.  Files never

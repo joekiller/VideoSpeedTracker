@@ -10,6 +10,25 @@ if(NOT rc EQUAL 0)
 endif()
 find_program(VST NAMES VideoSpeedTracker PATHS ${OUT}/prefix/bin ${OUT}/prefix NO_DEFAULT_PATH REQUIRED)
 
+# macOS: installed programs load their dylibs (VST's own FFmpeg build) through @executable_path/../Frameworks, the
+# app bundle's layout (CMAKE_INSTALL_RPATH), which the release job fills when it stages VSTStudio.app. Do the same
+# here: copy every dylib found on the build-tree executable's LC_RPATH dirs into Frameworks beside the installed
+# executable's folder. A build against Homebrew's absolute install names finds nothing to copy and needs none.
+if(APPLE)
+  find_program(BUILT NAMES VideoSpeedTracker PATHS ${BUILD} ${BUILD}/bin NO_DEFAULT_PATH REQUIRED)
+  execute_process(COMMAND otool -l ${BUILT} OUTPUT_VARIABLE loads)
+  string(REGEX MATCHALL "path [^\n]+ \\(offset" rpaths "${loads}")
+  get_filename_component(frameworks "${VST}/../../Frameworks" ABSOLUTE)
+  file(MAKE_DIRECTORY ${frameworks})
+  foreach(r ${rpaths})
+    string(REGEX REPLACE "^path (.+) \\(offset$" "\\1" dir "${r}")
+    file(GLOB dylibs "${dir}/*.dylib")
+    if(dylibs)
+      file(COPY ${dylibs} DESTINATION ${frameworks} FOLLOW_SYMLINK_CHAIN)
+    endif()
+  endforeach()
+endif()
+
 file(MAKE_DIRECTORY ${OUT}/home ${OUT}/cwd)
 execute_process(
   COMMAND ${CMAKE_COMMAND} -E env HOME=${OUT}/home --unset=XDG_CONFIG_HOME --unset=XDG_DATA_HOME

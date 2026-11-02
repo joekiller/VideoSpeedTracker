@@ -101,8 +101,8 @@ built from the CMake sources against OpenCV 5 by `.github/workflows/release.yml`
 | Debian 12 / 13, Raspberry Pi OS (64-bit), Ubuntu 24.04 / 26.04 — amd64 and arm64 | `videospeedtracker_<ver>_<distro>_<arch>.deb` | `sudo apt install ./videospeedtracker_*.deb` (OpenCV is built in; apt pulls in FFmpeg and GTK) |
 | Windows x64 | `VideoSpeedTracker-<ver>-windows-x64-setup.exe` | run it: installs for you (no admin prompt) or for everyone, adds **VST Studio** to the Start menu, and uninstalls from Settings › Apps. Your config and results stay put across upgrades and uninstalls |
 | Windows x64, portable | `VideoSpeedTracker-<ver>-windows-x64.zip` | unzip anywhere; OpenCV is built in, the FFmpeg and MSVC runtime DLLs sit next to the exes |
-| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.dmg` | `brew install opencv`, open the disk image and drag **VSTStudio.app** to Applications; the command-line tools are in the image too |
-| macOS, archive | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | the same files: `brew install opencv`, untar, open **VSTStudio.app** |
+| macOS (Apple silicon) | `VideoSpeedTracker-<ver>-macos-arm64.dmg` | open the disk image and drag **VSTStudio.app** onto Applications. That one app is everything (macOS 13 or later, nothing else to install): the command-line tools, templates and docs are inside it ([below](#macos-command-line-tools)) |
+| macOS, archive | `VideoSpeedTracker-<ver>-macos-arm64.tar.gz` | the same app: untar, move **VSTStudio.app** to Applications and open it |
 
 Every package includes the 2016 sample video and a `VST.cfg` set up for it. Open **VST Studio** first: it starts on
 the sample and walks you through your own camera. On the command line, the first thing to run is
@@ -141,7 +141,8 @@ sha256sum -c SHA256SUMS --ignore-missing        # macOS: shasum -a 256 -c SHA256
 The `.deb` files have no separate GPG signature: apt checks signatures on repositories, not on a `.deb` installed
 from a file, so the attestation is the Linux signature (see [docs/code-signing.md](docs/code-signing.md#linux-and-checksums-build-provenance)).
 These attestations are not Windows Authenticode or Apple notarization; tag releases carry those separately (below).
-To check a macOS download yourself, in the opened disk image or untarred folder:
+To check a macOS download yourself, in the opened disk image or untarred folder (checking the app covers the
+command-line tools inside it, which are signed and notarized with it):
 
 ```
 spctl -a -t open --context context:primary-signature -vv VideoSpeedTracker-*.dmg   # the image: Notarized Developer ID
@@ -179,12 +180,37 @@ per-user data folder, so running from the unzipped Windows folder (where the tem
 
 Each run prints the config file it used.
 
+### macOS command-line tools
+
+The macOS download is a single `VSTStudio.app`; opening it starts VST Studio. The command-line programs and the
+files that ship with them live inside the bundle (Finder: right-click VSTStudio.app › Show Package Contents):
+
+| | |
+|---|---|
+| `VSTStudio.app/Contents/MacOS/` | `VideoSpeedTracker`, `ProcessHiLites` (and `VSTStudio` itself) |
+| `VSTStudio.app/Contents/Frameworks/` | the FFmpeg libraries all three load (LGPL 2.1, built by `packaging/build-ffmpeg.sh`) |
+| `VSTStudio.app/Contents/Resources/` | `VST.cfg` and `ProcessHiLites.cfg` templates, `README.md`, `GETTING-STARTED.md`, `LICENSE.txt`, `licenses/`, the sample video and the phone companion |
+
+To run them by name, link them into a folder on your `PATH` (they still find their templates, the sample and their
+libraries through the link):
+
+```
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/VSTStudio.app/Contents/MacOS/{VideoSpeedTracker,ProcessHiLites} /usr/local/bin/
+VideoSpeedTracker --demo
+```
+
+Don't edit the templates inside the app: that breaks its signature, and an update replaces them anyway. Each program
+copies its template to `~/Library/Application Support/VideoSpeedTracker` the first time it runs, and that copy is
+the one to edit.
+
 ### Licenses
 
-VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. The Linux and Windows packages link OpenCV
-(Apache 2.0) and its bundled third-party code statically, and the Windows zip also ships OpenCV's FFmpeg plugin
-(LGPL 2.1); their license texts are in `licenses/opencv` (Windows) or `/usr/share/doc/videospeedtracker/opencv`
-(Linux). FFmpeg and GTK on Linux, and OpenCV on macOS, come from apt or Homebrew with their own licenses.
+VST is BSD 3-Clause ([LICENSE](LICENSE)); every package includes it. Every package links OpenCV (Apache 2.0) and its
+bundled third-party code statically. The Windows zip also ships OpenCV's FFmpeg plugin and the macOS app ships the
+FFmpeg libraries in `Contents/Frameworks` (both LGPL 2.1, dynamically loaded). License texts are in
+`licenses/opencv` (Windows), `VSTStudio.app/Contents/Resources/licenses/{opencv,ffmpeg}` (macOS) or
+`/usr/share/doc/videospeedtracker/opencv` (Linux). FFmpeg and GTK on Linux come from apt with their own licenses.
 
 The original 2016 Win7 x64 executables and OpenCV 2.4.11 DLLs that used to live in `bin/` have been removed; they are
 still in the git history before the release workflow was added. Every package contains `VideoSpeedTracker`, the
@@ -286,8 +312,8 @@ measured speeds. If a video doesn't report a frame rate, VST assumes `Calibratio
 Each vehicle VST measures is one row of `stats_<name>.csv`:
 
 ```
-Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp
-20160130, 172251, 348, NW, 290, 320, 30, 878, 317, 561, 63, , 33, , 2016-01-30T17:23:02-05:00
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx, ZoneSeconds
+20160130, 172251, 348, NW, 290, 320, 30, 878, 317, 561, 63, , 33, , 2016-01-30T17:23:02-05:00, 34, 32, -2.0, decelerating, 31, 182, 0.9871
 ```
 
 | Column | Meaning |
@@ -302,6 +328,18 @@ Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, 
 | estSpeed | estimated speed, MPH |
 | Flag | `*****` when the speed is implausible (more than 20 MPH over the egregious bound): check it by eye. Otherwise empty. |
 | Timestamp | when the vehicle passed, ISO 8601 local time with the UTC offset, e.g. `2026-10-30T14:03:22-04:00`. Empty when unknown. |
+| EntryMph, ExitMph | speed at the first and second speed line, MPH; they average estSpeed |
+| AccelMphPerSec | acceleration through the zone, MPH per second, + speeding up |
+| Trend | `decelerating` (-2 or less), `steady`, `accelerating` (+2 to +6) or `rapid` (+6 or more) |
+| MphIn20ft | the speed 20 ft past the second line at that acceleration (the exit speed when steady; 0 if it would stop) |
+| LengthPx | the vehicle's side-on length in analysis-box pixels (median box, less what frame differencing adds); VST Studio shows it in feet with the calibration |
+| ZoneSeconds | seconds the front bumper took between the speed lines, to 0.1 ms; estSpeed is the zone length over this, so VST Studio can re-time every car exactly when the same view is calibrated again |
+
+The five trend columns are empty when VST couldn't tell (too few or too ragged sightings). How they're measured, the thresholds
+and how much noise a 14-20 ft view leaves: [docs/speed-trend.md](docs/speed-trend.md).
+
+ZoneSeconds is the exact time between the speed lines, which lets VST Studio re-time past cars when you recalibrate the
+same view, and lets anyone recompute a published dataset's speeds: [docs/dataset-schema.md](docs/dataset-schema.md).
 
 Where the time comes from depends on the source, and VST says which in its log when it starts each video:
 
@@ -313,12 +351,15 @@ Where the time comes from depends on the source, and VST says which in its log w
   the modified time is in the future or before 2000, or the video doesn't report its length and frame rate, the time
   is left blank.
 
-Earlier versions wrote the Flag column only when it was set, and had no Timestamp column; VST Studio's **Open CSV**
-reads both versions. Spreadsheets that read columns by position are unaffected: the first 13 are unchanged.
+Earlier versions wrote the Flag column only when it was set, had no Timestamp column, and (before v1.10) ended at
+Timestamp; VST Studio's **Open** and the street report read every version. Spreadsheets that read columns by
+position are unaffected: the first 15 are unchanged.
 
 Only vehicles timed at `minLoggedSpeed` or faster get a row. This optional `VST.cfg` key is in MPH; the default is 18,
 the value that was hard-coded before v1.2. Slower ones, such as walkers, cyclists and cars turning into a driveway, are
-counted in the run manifest instead. Set it to 0 to log every timed vehicle:
+counted in the run manifest instead. VST Studio sets it from the posted limit on slower streets, 5 mph under it (a
+15 mph street logs from 10), so legal traffic isn't dropped; it never raises it above 18, and a value you set by hand
+in Run settings stays. Set it to 0 to log every timed vehicle:
 
 ```
 minLoggedSpeed = 0
@@ -416,16 +457,27 @@ A Pi camera is live like a USB camera: times come from the Pi's clock (keep it o
 stops VST reconnects as described above. `VST_RPICAM_VID` names a different program to run instead of `rpicam-vid`;
 the tests use it to stand in a recording for the camera.
 
-A USB camera (`--input 0`) is asked for 1280x720 at 60 fps in MJPG, the mode most webcams need for 60 fps over USB 2;
-one without it uses its nearest mode. Its shutter is then fixed at 1/1000 s, like a Pi camera's, so cars stay sharp and
+A USB camera (`--input 0`) is opened in the best mode for timing that its driver lists: VST asks the system for every
+size, frame rate and format the camera offers (V4L2 on Linux, Media Foundation on Windows, AVFoundation on macOS) and
+picks frames first (60 fps or more at 720p or better, then 60 fps at 480p, then 30 fps at HD), then 16:9, then the size
+nearest 720p, then MJPG before raw. No list of camera models is involved: a webcam VST has never heard of gets the same
+treatment. Where the modes can't be listed, it asks for 1280x720 at 60 fps in MJPG and takes the camera's nearest. A
+choice of your own goes in the name, the way a Pi camera's settings do: `--input "0?w=1920&h=1080&fps=30&fmt=MJPG&shutter=1000"`
+(`shutter=0` for automatic). In VST Studio the camera menu lists cameras by name, and **Settings** on the camera card
+shows every mode the camera lists, VST's pick and why. Changing them reconnects the camera and keeps your marks, distance
+and calibration: those belong to the camera, not to its mode. A mode of another shape (4:3 instead of 16:9) is the one
+change that moves the picture under your marks, and VST says so rather than changing anything. On Linux VST also tells
+automatic exposure not to lower the frame rate (`exposure_auto_priority`). A small registry in `Webcam.cpp` recognizes
+some common webcams, phone webcam apps and virtual cameras by USB id or name, for hints such as a lens's field of view
+in step 2; it never overrides what the camera itself reports. Its shutter is then fixed at 1/1000 s, like a Pi camera's, so cars stay sharp and
 a webcam can't slow to 30 fps in shade while still reporting 60 (speeds are counted in frames). If the picture is too
 dark at 1/1000 s VST tries 1/500 and 1/250 s, and puts the camera back on automatic if none is bright enough. This works
 on Linux (V4L2) and Windows (Media Foundation, DirectShow); macOS doesn't let VST set it, so lock exposure in the
 camera's own app there. The log says what happened, and whether the camera sent fewer frames than it reported.
 `VST_CAMERA_SHUTTER_US` sets a different shutter in microseconds, or `0` to leave it automatic.
 
-On **Connect the camera**, *Check what this camera can do* tries a USB camera at 720p and 1080p, 30 and 60 fps, times
-what it really sends and lists the settings its driver takes. *Report this camera* then opens a new GitHub issue in the
+On **Connect the camera**, *Check what this camera can do* tries a USB camera at 720p and 1080p, 30 and 60 fps (and at
+VST's pick), times what it really sends, lists the settings its driver takes and every mode its driver lists. *Report this camera* then opens a new GitHub issue in the
 browser with those details filled in (no pictures, no file paths), for adding support for a camera that doesn't work
 well. Nothing is sent unless you submit the issue. Video files and stream URLs are decoded on the graphics chip when it has a video
 decoder (Intel Quick Sync, VA-API, D3D11), which takes most of the work off the CPU; without one VST decodes in software

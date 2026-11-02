@@ -82,6 +82,11 @@
   .rec small { color: var(--muted); }
   .empty { color: var(--muted); }
   .note { font-size: 14px; color: var(--muted); }
+  .seg { display: flex; padding: 3px; gap: 3px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line); margin-top: 10px; }
+  .seg button { flex: 1; min-height: 44px; border: 0; border-radius: 9px; background: none; color: var(--text-2); font: 600 16px var(--font); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .seg button:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+  .target { color: var(--text-2); font-weight: 600; margin-top: 10px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -95,12 +100,19 @@
   <section class="card gauge" aria-live="polite">
     <div class="speed" id="speed">–</div>
     <div class="unit">mph, from GPS</div>
+    <div class="target" id="target"></div>
     <div class="pill warn" id="fix">GPS off</div>
     <div class="stats" id="stats" hidden>
       <div><b id="dur">0:00</b><span>recording</span></div>
       <div><b id="count">0</b><span>GPS fixes</span></div>
       <div><b id="dist">0</b><span>metres</span></div>
     </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin-top:0">Target speed</h2>
+    <p class="note" style="margin-top:6px">Any steady speed calibrates equally well, so pick one that's comfortable on your street; the posted limit is a good choice. The phone reads what you actually drove, so you needn't hit it exactly.</p>
+    <div class="seg" id="targets" role="group" aria-label="Target speed in mph"></div>
   </section>
 
   <button class="btn primary" id="record" type="button">Start recording</button>
@@ -110,7 +122,7 @@
     <h2 style="margin-top:0">How to calibrate with it</h2>
     <ol>
       <li>Start VST tracking at home, then start recording here <strong>before you set off</strong>. Leave this screen open; a passenger or a phone mount is safest.</li>
-      <li>Drive past the camera at a steady speed. Once each way on a two-way street.</li>
+      <li>Drive past the camera at a steady speed, near your target. Once each way on a two-way street.</li>
       <li>Stop recording and save the file to the computer running VST Studio (AirDrop, email, a USB cable or a shared folder).</li>
       <li>On VST Studio's Calibrate page, pick your pass and press <strong>Read my speed from a dashcam clip or ride-along</strong>.</li>
     </ol>
@@ -125,8 +137,37 @@
 <script type="module">
 const KEY_LIST = 'vst-ride-recordings';   // finished recordings: [{ name, csv, fixes, seconds }]
 const KEY_LIVE = 'vst-ride-live';         // the one in progress, saved as it grows
+const KEY_TARGET = 'vst-ride-target';    // the target speed picked last time (mph)
 const MPH = 2.2369362920544;
 const $ = (id) => document.getElementById(id);
+
+// The drive's target speed: only guidance, since the recording keeps the real GPS speed and VST Studio calibrates
+// from that.  The same chips as VST Studio and the companion (10, 15, 20, 25); a link from the companion's Calibrate
+// step passes its target as ?target=, otherwise the last pick on this phone, else 20 (a typical residential limit).
+const PRESETS = [10, 15, 20, 25];
+const fromLink = Number(new URLSearchParams(location.search).get('target'));
+let target = fromLink >= 5 && fromLink <= 80 ? Math.round(fromLink) : Number(localStorage.getItem(KEY_TARGET)) || 20;
+const presets = PRESETS.includes(target) ? PRESETS : [...PRESETS, target].sort((a, b) => a - b);
+
+function paintTargets() {
+  $('targets').replaceChildren(...presets.map((m) => {
+    const b = Object.assign(document.createElement('button'), { type: 'button', textContent: String(m) });
+    b.setAttribute('aria-pressed', m === target);
+    b.onclick = () => { target = m; try { localStorage.setItem(KEY_TARGET, String(m)); } catch { /* private mode */ } paintTargets(); };
+    return b;
+  }));
+  $('target').textContent = `Target ${target} mph`;
+}
+
+// Live, against the target: within 2 mph (VST's verified band) reads as on target.  Colour and words both, so it
+// works at a glance from a phone mount and without colour.
+function paintPace(mph) {
+  const el = $('target');
+  if (mph == null || watch == null) { el.textContent = `Target ${target} mph`; el.style.color = ''; return; }
+  const off = mph - target;
+  el.textContent = Math.abs(off) <= 2 ? `On target (${target} mph)` : off > 0 ? `Ease off: target ${target} mph` : `A little faster: target ${target} mph`;
+  el.style.color = Math.abs(off) <= 2 ? 'var(--ok)' : 'var(--warn)';
+}
 
 let watch = null, lock = null, fixes = [], started = 0, tick = null;
 
@@ -161,6 +202,7 @@ function showFix(f) {
   const prev = fixes.at(-2);
   if (v == null && prev && f.t > prev.t) v = metres(prev, f) / ((f.t - prev.t) / 1000);
   $('speed').textContent = v == null ? '–' : Math.round(v * MPH);
+  paintPace(v == null ? null : v * MPH);
 }
 
 function showStats() {
@@ -216,6 +258,7 @@ function stop() {
   $('stats').hidden = true;
   $('speed').textContent = '–';
   showFix(null);
+  paintPace(null);
   if (fixes.length < 3) { $('msg').textContent = 'Nothing recorded: no GPS fixes came in.'; return; }
   const list = load(KEY_LIST, []);
   list.unshift({ name: fileName(fixes[0].t), csv: toCsv(fixes), fixes: fixes.length, seconds: Math.round((fixes.at(-1).t - fixes[0].t) / 1000) });
@@ -257,6 +300,7 @@ function render() {
 }
 
 $('record').onclick = () => (watch == null ? start() : stop());
+paintTargets();
 render();
 // A recording cut off by a reload or a closed tab carries on where it stopped.
 const live = load(KEY_LIVE, null);

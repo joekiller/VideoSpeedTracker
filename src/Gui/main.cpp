@@ -5,6 +5,7 @@
 //   VSTStudio --shots DIR           documentation mode: fresh preferences, the bundled sample video, a scripted
 //                                   tour of every page, a PNG of each in DIR, then exit (works under Xvfb); exits
 //                                   non-zero if a step timed out or no vehicles were tracked
+//   VSTStudio --review FOLDER       open an archived dataset (Archive.h) straight in Results, read-only
 //   VSTStudio --write-icon FILE     write the app icon as a 256x256 PNG (packaging/vst-studio.png)
 #include "App.h"
 #include "Canvas.h"
@@ -14,6 +15,7 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
+#include <imgui_internal.h>   // ClosePopupToLevel, for the tour's archive step
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
@@ -152,11 +154,21 @@ struct DemoScript {
 				app.inspectorScroll_ = 1000;
 			}
 			if (frames == 80) shot("04d-zones-ghost.png");
-			if (frames == 81) { app.ghostCar_ = false; app.inspectorScroll_ = 0; app.player.seek(2186); }
+			// A parking lane on the far side, 40 px above the lane line, with the ghost car's camera still typed in (so the
+			// card says how far beyond the lane that is).
+			if (frames == 81) {
+				app.ghostCar_ = false;
+				app.player.seek(2186);
+				const Globals& g = app.cfg.g;
+				app.prefs.parkY0 = app.prefs.parkY1 = g.AnalysisBoxTop + g.R2LStreetY - 40;
+				app.inspectorScroll_ = 1500;
+			}
+			if (frames == 100) shot("04e-zones-parking.png");
+			if (frames == 101) { app.prefs.parkY0 = app.prefs.parkY1 = 0; app.inspectorScroll_ = 0; }
 			// Back on Pick your spot with a picture: the "Zero in on it" card's car-length ruler over the sample.
-			if (frames == 82) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
-			if (frames == 101) shot("02b-zero-in.png");
-			if (frames == 103) next();
+			if (frames == 102) { app.page = Page::Guide; app.guideStep_ = 1; app.prefs.planCarLengths = 4.5; app.showZeroIn_ = true; }
+			if (frames == 121) shot("02b-zero-in.png");
+			if (frames == 123) next();
 			break;
 		case 4:
 			if (frames == 1) { app.prefs.realtime = false; app.prefs.showMotion = true; app.startTracking(); }
@@ -264,31 +276,84 @@ struct DemoScript {
 			}
 			if (frames == 40) shot("07c-calibrate-check-failed.png");
 			if (frames == 60) shot("07b-calibrate-check.png");
-			// Two cones, one at each white line, on the sample's right-to-left lane (~200 px for 10 ft there, so the
-			// 559 px zone is about 28 ft).
+			// Two cones, one at each white line, on the sample's right-to-left lane, 45 ft apart (the sample's own
+			// calibration says the zone is 43 to 49 ft, and the ghost car about 47).
 			if (frames == 61) {
 				const Globals& g = app.cfg.g;
 				app.calibChecking_ = false;
 				app.lastCheck_ = CalCheck();   // the check card belongs to the shots above
 				app.calibMode_ = 2;
-				app.coneFt_ = 28;
+				app.coneFt_ = 45;
 				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(g.AnalysisBoxLeft + (i ? g.speedLineRight : g.speedLineLeft)); app.coneY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
 			}
+			// Added to the calibration: it joins the sample's own calibration (seeded as "Earlier calibration") in the
+			// Your calibration card instead of replacing it.
+			if (frames == 62) {
+				const Globals& g = app.cfg.g;
+				double markPx = std::fabs(app.coneX_[1] - app.coneX_[0]);
+				app.applyDistanceCalibration(true, true, calib::framesForDistance(markPx, app.coneFt_, g.speedLineRight - g.speedLineLeft, g.CalibrationSpeed,
+					g.CalibrationFPS), "the cones", "cones", calib::sigmaCones(markPx), "Cones or pole, 45 ft apart");
+			}
+			if (frames == 65) app.toasts_.clear();
 			if (frames == 80) shot("07d-calibrate-cones.png");
-			// Known car: a parked Camry's bumpers ~250 px apart, 7 ft beyond the lane, as on a narrow one-way street.
+			// Known car: a Camry parked on the far side, its wheel centres ~150 px apart on a parking lane drawn 40 px above
+			// the lane line, with the sample's camera (the ghost car's numbers) so the page reads Parked and scales it.
 			if (frames == 81) {
 				const Globals& g = app.cfg.g;
 				app.calibMode_ = 3;
+				app.carWheels_ = true;
 				app.carModel_ = 3;
-				app.carFt_ = calib::kKnownCars[3].inches / 12;
+				app.carFt_ = calib::kKnownCars[3].wheelbaseIn / 12;
+				app.prefs.planDist = kGhostDistFt / plan::kFt;
+				app.prefs.calcHeightFt = kGhostHeightFt;
+				app.prefs.planHfov = kGhostHfov;
+				app.prefs.parkY0 = app.prefs.parkY1 = g.AnalysisBoxTop + g.R2LStreetY - 40;
+				for (int i = 0; i < 2; i++) { app.carX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 170 + 150 * i); app.carY_[i] = float(app.prefs.parkY0); }
 				app.carParked_ = true;
-				for (int i = 0; i < 2; i++) { app.carX_[i] = float(g.AnalysisBoxLeft + g.speedLineLeft + 150 + 250 * i); app.carY_[i] = float(g.AnalysisBoxTop + g.R2LStreetY); }
 			}
+			// And added: three measurements now (the sample's own, the cones, the car), each with its share.
+			if (frames == 82) {
+				const Globals& g = app.cfg.g;
+				double laneFt = app.prefs.planDist * plan::kFt;   // as the Known car card reads it
+				calib::CarSpot spot = app.carSpot(true);
+				double markPx = std::fabs(app.carX_[1] - app.carX_[0]);
+				app.applyDistanceCalibration(true, true, calib::framesForDistance(markPx * app.carScale(true), app.carFt_, g.speedLineRight - g.speedLineLeft,
+					g.CalibrationSpeed, g.CalibrationFPS), "the car's wheelbase", "car", calib::sigmaCar(markPx, true, laneFt, spot.parkedFt), "Toyota Camry 2018-2024, parked");
+			}
+			if (frames == 85) app.toasts_.clear();
 			if (frames == 100) { shot("07e-calibrate-car.png"); next(); }
 			break;
 		case 9:
 			if (frames == 1) { app.page = Page::Companion; app.setRemote(true); }
 			if (frames == 20) { shot("08-companion.png"); next(); }
+			break;
+		case 10:
+			// Archive the session: the dialog, then (a copy, so the tracked vehicles stay for the checks at exit) the archive
+			// itself, opened read-only in Results with its snapshots read back from disk.
+			if (frames == 1) {
+				app.setRemote(false);
+				app.page = Page::Results;
+				app.showSessionResults();
+				app.openArchiveDialog_ = true;
+			}
+			if (frames == 20) shot("10-archive.png");
+			if (frames == 21) {
+				ImGui::ClosePopupToLevel(0, true);
+				size_t n = app.rows.size();
+				std::string dir, err;
+				if (!archive::write(app.archiveRequest("First week, before the signs", false), dir, err)) fail("archiving the session: " + err);
+				else if (!app.openArchive(dir)) fail("opening the archive just written");
+				else {
+					int snaps = 0;
+					for (const ResultRow& r : app.rows) snaps += !r.snapshotPath.empty();
+					if (app.rows.size() != n || snaps == 0) fail("the archive came back with " + std::to_string(app.rows.size()) + " of " + std::to_string(n) + " vehicles and " + std::to_string(snaps) + " snapshots");
+					int best = 0;
+					for (size_t i = 0; i < app.rows.size(); i++) if (app.rows[i].speed > app.rows[best].speed) best = int(i);
+					app.selectedRow_ = app.rows.empty() ? -1 : best;
+				}
+			}
+			if (frames == 25) app.toasts_.clear();
+			if (frames == 40) { shot("10b-archive-review.png"); next(); }
 			break;
 		default:
 			done = true;
@@ -297,14 +362,15 @@ struct DemoScript {
 };
 
 int main(int argc, char** argv) {
-	std::string shotsDir, configArg;
+	std::string shotsDir, configArg, reviewArg;
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
 		if (a == "--shots" && i + 1 < argc) shotsDir = argv[++i];
 		else if (a == "--config" && i + 1 < argc) configArg = argv[++i];
+		else if (a == "--review" && i + 1 < argc) reviewArg = argv[++i];
 		else if (a == "--write-icon" && i + 1 < argc) { cv::imwrite(argv[++i], makeIcon(256)); return 0; }
 		else if (a == "--help" || a == "-h") {
-			std::printf("Usage: VSTStudio [--config VST.cfg] [--shots DIR] [--write-icon FILE]\n");
+			std::printf("Usage: VSTStudio [--config VST.cfg] [--review ARCHIVE-FOLDER] [--shots DIR] [--write-icon FILE]\n");
 			return 0;
 		}
 	}
@@ -350,6 +416,7 @@ int main(int argc, char** argv) {
 	app.screenshotMode = shots;
 	app.persist = !shots;   // a documentation run must not overwrite the user's preferences
 	app.init(shots, configArg);
+	if (!reviewArg.empty() && !shots) app.openArchive(reviewArg);
 	DemoScript script{ app, shotsDir };
 	if (shots) {
 		fs::create_directories(shotsDir);

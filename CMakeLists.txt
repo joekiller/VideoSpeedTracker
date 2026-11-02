@@ -22,6 +22,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Warnings as errors in our own code (not fetched dependencies) on GCC and Clang. The PR check turns it on, so a new
 # warning fails the pull request instead of piling up in release logs on main.
 option(VST_WERROR "Treat compiler warnings in VST's own sources as errors (GCC/Clang)" OFF)
+# macOS release: VSTStudio.app carries its FFmpeg dylibs (packaging/build-ffmpeg.sh, install names @rpath/...) in
+# Contents/Frameworks, and all three programs sit in Contents/MacOS, so installed executables look there. Set before
+# any target so each one picks it up. Libraries with absolute install names (Homebrew's, in a developer build) ignore
+# it, and build-tree executables keep CMake's own build rpath, so ctest finds the libraries where they were built.
+if(APPLE)
+  set(CMAKE_INSTALL_RPATH "@executable_path/../Frameworks")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,6 +55,20 @@ target_include_directories(vst_common PUBLIC ${COMMON_DIR})
 if(WIN32)
   target_link_libraries(vst_common PUBLIC shell32 ole32)
 endif()
+# USB cameras as the system lists them (Webcam.h): names, every mode the driver offers, and the mode VST picks for
+# timing.  Linux uses V4L2 ioctls, Windows Media Foundation, macOS AVFoundation (WebcamMac.mm); no OpenCV.
+if(APPLE)
+  enable_language(OBJCXX)
+  add_library(vst_webcam STATIC ${VST_DIR}/Webcam.cpp ${VST_DIR}/WebcamList.cpp ${VST_DIR}/WebcamMac.mm)
+  target_link_libraries(vst_webcam PUBLIC "-framework AVFoundation" "-framework CoreMedia" "-framework Foundation")
+else()
+  add_library(vst_webcam STATIC ${VST_DIR}/Webcam.cpp ${VST_DIR}/WebcamList.cpp)
+endif()
+target_include_directories(vst_webcam PUBLIC ${VST_DIR})
+if(WIN32)
+  target_link_libraries(vst_webcam PUBLIC mfplat mf mfuuid ole32)
+endif()
+
 add_executable(VideoSpeedTracker
   ${VST_DIR}/videoSpeedTracker.cpp
   ${VST_DIR}/Globals.cpp
@@ -57,7 +78,7 @@ add_executable(VideoSpeedTracker
   ${VST_DIR}/PiCamera.cpp
   ${VST_DIR}/FrameInput.cpp)
 target_include_directories(VideoSpeedTracker PRIVATE ${VST_DIR})
-target_link_libraries(VideoSpeedTracker PRIVATE vst_common ${OpenCV_LIBS})
+target_link_libraries(VideoSpeedTracker PRIVATE vst_common vst_webcam ${OpenCV_LIBS})
 # Keep a*b+c as two roundings everywhere. GCC on arm64 and Clang fuse them into FMA by default,
 # which nudges tracked pixel positions by one and makes speeds differ from the x86 baseline.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -73,7 +94,7 @@ target_link_libraries(level_test PRIVATE ${OpenCV_LIBS})
 # VideoCapture, a photo, a pushed feed) read through the port alone.
 add_executable(frame_input_test tests/frame_input_test.cpp ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
 target_include_directories(frame_input_test PRIVATE ${VST_DIR})
-target_link_libraries(frame_input_test PRIVATE ${OpenCV_LIBS})
+target_link_libraries(frame_input_test PRIVATE vst_webcam ${OpenCV_LIBS})
 # Angled lane lines and a receding street (Perspective.h, Globals::lane / vanishingX / zoneFraction): equal steps along a
 # simulated street come out as equal steps of zoneFraction, and VST.cfg's checks refuse an unusable street edge.
 add_executable(perspective_test tests/perspective_test.cpp ${VST_DIR}/Globals.cpp)
@@ -84,7 +105,7 @@ target_include_directories(perspective_test PRIVATE ${VST_DIR})
 add_executable(ProcessHiLites ${CMAKE_SOURCE_DIR}/src/Wintel64/ProcessHiLites/ProcessHilites.cpp
   ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
 target_include_directories(ProcessHiLites PRIVATE ${VST_DIR})
-target_link_libraries(ProcessHiLites PRIVATE vst_common ${OpenCV_LIBS})
+target_link_libraries(ProcessHiLites PRIVATE vst_common vst_webcam ${OpenCV_LIBS})
 
 enable_testing()
 add_test(NAME sample_video_baseline
@@ -107,9 +128,30 @@ foreach(min 0 30)
       -P ${CMAKE_SOURCE_DIR}/tests/min_logged_speed.cmake)
   set_tests_properties(min_logged_speed_${min} PROPERTIES FIXTURES_REQUIRED sample_run)
 endforeach()
+# A speed line on the analysis box's edge (a box drawn hard against the side of the picture), on each side in turn,
+# and 100 px in from it (a car first seen just before the line):
+# a full pass over the sample each, timed against the same baseline (tests/flush_zone.cmake).
+foreach(side left left100 right)
+  add_test(NAME flush_zone_${side}
+    COMMAND ${CMAKE_COMMAND}
+      -DVST=$<TARGET_FILE:VideoSpeedTracker>
+      -DSRC=${CMAKE_SOURCE_DIR}
+      -DOUT=${CMAKE_BINARY_DIR}/test-flush-zone
+      -DSIDE=${side}
+      -P ${CMAKE_SOURCE_DIR}/tests/flush_zone.cmake)
+endforeach()
 add_test(NAME software_level COMMAND level_test)
+add_executable(webcam_test tests/webcam_test.cpp ${VST_DIR}/FrameInput.cpp ${VST_DIR}/PiCamera.cpp)
+target_include_directories(webcam_test PRIVATE ${VST_DIR})
+target_link_libraries(webcam_test PRIVATE vst_webcam ${OpenCV_LIBS})
+add_test(NAME webcam COMMAND webcam_test)
 add_test(NAME frame_input COMMAND frame_input_test ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/test-frame-input)
 add_test(NAME perspective COMMAND perspective_test)
+# Speed trend (SpeedTrend.h): entry and exit speed, the acceleration class and the speed 20 ft on, from exact and noisy
+# simulated passes through 14 and 20 ft zones at 30 and 60 fps.  Header only, no OpenCV.
+add_executable(speed_trend_test tests/speed_trend_test.cpp)
+target_include_directories(speed_trend_test PRIVATE ${VST_DIR})
+add_test(NAME speed_trend COMMAND speed_trend_test)
 add_test(NAME config_parsing
   COMMAND ${CMAKE_COMMAND}
     -DVST=$<TARGET_FILE:VideoSpeedTracker>
@@ -199,6 +241,13 @@ if(TARGET vst_report)
   add_test(NAME street_report
     COMMAND report_test ${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/report-test)
 
+  # Archived datasets (src/Gui/Archive.cpp): archiving the report fixtures away and back, reading the archive, the
+  # street report made from an archive folder, and the browser viewer (review.html) it writes.
+  add_executable(archive_test tests/archive_test.cpp)
+  target_link_libraries(archive_test PRIVATE vst_report)
+  add_test(NAME archived_datasets
+    COMMAND archive_test ${CMAKE_SOURCE_DIR}/tests ${CMAKE_BINARY_DIR}/archive-test)
+
   # Unattended-run health (src/Gui/Health.cpp): pruning video to the disk budget, the "camera moved" check on
   # frames of the sample video, and the daily health.csv row.
   add_executable(health_test tests/health_test.cpp)
@@ -212,6 +261,24 @@ if(TARGET vst_report)
   target_link_libraries(plan_test PRIVATE vst_report)
   add_test(NAME site_planner COMMAND plan_test)
 
+  # Reopening VST Studio (src/Gui/Resume.cpp): the remembered camera comes back at launch, steps 3 and 4 keep their
+  # checks while it reconnects, and Results finds every saved run in <data>/Stats, newest first.
+  add_executable(resume_test tests/resume_test.cpp)
+  target_link_libraries(resume_test PRIVATE vst_report)
+  add_test(NAME reopen_studio COMMAND resume_test ${CMAKE_BINARY_DIR}/resume-test)
+
+  # Calibration sets (src/Gui/CalSets.cpp): runs from one view share a set that follows today's calibration, a run from
+  # a new view locks the old set, and past speeds are re-timed exactly from ZoneSeconds.
+  add_executable(calsets_test tests/calsets_test.cpp)
+  target_link_libraries(calsets_test PRIVATE vst_report)
+  add_test(NAME calibration_sets COMMAND calsets_test ${CMAKE_BINARY_DIR}/calsets-test)
+
+  # Published datasets (src/Gui/Dataset.cpp): schema, SHA256SUMS, and re-checking against a newer calibration with the
+  # equivalence test that marks a dataset still accurate, under review or tainted.
+  add_executable(dataset_test tests/dataset_test.cpp)
+  target_link_libraries(dataset_test PRIVATE vst_report)
+  add_test(NAME published_datasets COMMAND dataset_test ${CMAKE_BINARY_DIR}/dataset-test)
+
   # Calibrating from a Tesla dashcam clip (src/Gui/DashCam.cpp): reads per-frame speed from synthetic TeslaCam MP4s
   # and picks a pass's speed out of them.
   add_executable(dashcam_test tests/dashcam_test.cpp)
@@ -220,10 +287,12 @@ if(TARGET vst_report)
     COMMAND dashcam_test ${CMAKE_BINARY_DIR}/dashcam-test)
 
   # Distance calibration (src/Gui/Calibration.h): cones/pole spacing and a known car's length, with the depth
-  # correction for a car parked beyond the traffic lane checked against a pinhole camera.  Header only.
+  # correction for a car parked beyond the traffic lane checked against a pinhole camera; and combining every
+  # method's measurement into one calibration (src/Gui/CalEvidence.h), with its file round trip.
   add_executable(calibration_test tests/calibration_test.cpp)
-  target_include_directories(calibration_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Gui)
-  add_test(NAME distance_calibration COMMAND calibration_test)
+  target_link_libraries(calibration_test PRIVATE vst_report)
+  target_include_directories(calibration_test PRIVATE ${CMAKE_SOURCE_DIR}/src/Gui ${VST_DIR})
+  add_test(NAME distance_calibration COMMAND calibration_test ${CMAKE_BINARY_DIR}/calibration-test)
 endif()
 
 # Live-stream reconnect: ffmpeg serves the sample as an HTTP stream that drops out and comes back
@@ -314,10 +383,16 @@ if(Python3_Interpreter_FOUND AND NOT MSVC)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/portability_check.py ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
   set_tests_properties(portability_windows_macros PROPERTIES SKIP_REGULAR_EXPRESSION "PORTABILITY_CHECK_SKIPPED")
 endif()
+# Standard names used without their header (std::max with only <cmath>): libstdc++ forgives it, MSVC doesn't.
+# A text scan of src/ and tests/, so it also covers Windows- and macOS-only code (tests/std_headers_check.py).
+if(Python3_Interpreter_FOUND)
+  add_test(NAME std_headers_included
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/std_headers_check.py ${CMAKE_SOURCE_DIR})
+endif()
 
 if(VST_WERROR AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_engine vst_report VSTStudio level_test frame_input_test
-      perspective_test report_test health_test plan_test dashcam_test calibration_test engine_reconnect_test)
+  foreach(t VideoSpeedTracker ProcessHiLites vst_common vst_webcam webcam_test vst_engine vst_report VSTStudio level_test frame_input_test
+      perspective_test speed_trend_test report_test health_test plan_test resume_test dashcam_test calibration_test engine_reconnect_test)
     if(TARGET ${t})
       target_compile_options(${t} PRIVATE -Werror)
     endif()

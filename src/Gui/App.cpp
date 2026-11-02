@@ -4,6 +4,7 @@
 #include "App.h"
 #include "Canvas.h"
 #include "Icons.h"
+#include "Resume.h"
 #include "Server.h"
 #include "Theme.h"
 #include "UserPaths.h"
@@ -13,6 +14,8 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <opencv2/imgcodecs.hpp>
 #include <random>
 
 namespace fs = std::filesystem;
@@ -77,6 +80,23 @@ static const char* pageSubtitle(Page p) {
 
 static double now() { return glfwGetTime(); }
 
+// AppPrefs::lastPage: the page (and for the Guide, which of its two steps) as a word, so a reordered Page enum can't
+// reopen Studio on the wrong page.
+static const char* const kPageKeys[] = { "guide", "source", "zones", "calibrate", "live", "results", "companion" };
+static_assert(sizeof kPageKeys / sizeof kPageKeys[0] == size_t(Page::Count), "a key for every page");
+
+static std::string pageKey(Page p, int guideStep) {
+	if (p == Page::Guide) return guideStep > 0 ? "guide2" : "guide";
+	return int(p) >= 0 && p < Page::Count ? kPageKeys[int(p)] : "";
+}
+
+static bool pageFromKey(const std::string& key, Page& p, int& guideStep) {
+	if (key == "guide2") { p = Page::Guide; guideStep = 1; return true; }
+	for (int i = 0; i < int(Page::Count); i++)
+		if (key == kPageKeys[i]) { p = Page(i); guideStep = 0; return true; }
+	return false;
+}
+
 // ======================================================================================================
 // Lifecycle
 // ======================================================================================================
@@ -93,11 +113,19 @@ void App::init(bool fresh, const std::string& configPath) {
 	std::string cfgPath = configPath.empty() ? prefs.configPath : configPath;
 	if (configPath.empty() && (cfgPath.empty() || !fs::exists(cfgPath))) cfgPath = userpaths::resolveConfig("VST.cfg");
 	if (!cfgPath.empty() && !loadConfig(cfgPath)) toast(cfg.error, c::bad, ICON_WARN);
+	// Reopen where the user left off: the page they were on, and the source they last connected.  Every kind of
+	// source comes back (resume::reopenAtLaunch); a camera or stream connects in the background, the header says
+	// "Connecting to Camera 0…", and if it doesn't answer frame() says the setup is safe and how to reconnect.
+	// Before, cameras were skipped here, which unchecked steps 3 and 4 and made a reopened Studio look new.
 	page = prefs.guideDone ? Page::Source : Page::Guide;
-	if (!prefs.lastSource.empty() && classifySource(prefs.lastSource) != SourceInfo::Camera
-		&& (classifySource(prefs.lastSource) == SourceInfo::Stream || fs::exists(prefs.lastSource)))
-		openSource(prefs.lastSource);
+	if (!fresh) pageFromKey(prefs.lastPage, page, guideStep_);
+	SourceInfo::Kind lastKind = classifySource(prefs.lastSource);
+	bool isPath = lastKind == SourceInfo::File || lastKind == SourceInfo::Image;
+	std::error_code ec;
+	if (resume::reopenAtLaunch(prefs.lastSource, isPath, isPath && fs::exists(prefs.lastSource, ec)) && openSource(prefs.lastSource))
+		resumedSource_ = prefs.lastSource;
 	if (prefs.remoteEnabled) setRemote(true);
+	listUsbCameras();
 #ifndef _WIN32
 	if (!picam::findTool().empty())
 		piListing_ = std::async(std::launch::async, [] { bool ok = false; std::string error; return picam::list(ok, error); });
@@ -137,6 +165,9 @@ bool App::loadConfig(const std::string& path) {
 	if (tracker.running()) { toast("Stop tracking before switching configs", c::warn, ICON_WARN); return false; }
 	if (!cfg.load(path)) return false;
 	prefs.configPath = path;
+	// A config still on the engine's default 18 on a slower street (set before minLoggedSpeed followed the limit):
+	// bring it in line once, so legal traffic at 12-17 mph on a 15 mph street is logged.  Autosave writes it.
+	if (cfg.g.minLoggedSpeed == calib::kDefaultMinLogged) cfg.g.minLoggedSpeed = calib::minLoggedForLimit(prefs.speedLimit);
 	return true;
 }
 
@@ -148,8 +179,11 @@ bool App::saveConfig() {
 	return true;
 }
 
+// Judged on the connected source, or the remembered one while it's unplugged or reconnecting (resume::setupSource), so
+// the check doesn't vanish because a camera is a moment late.
 bool App::zonesDone() {
-	return !source.empty() && prefs.zonesFor == source && cfg.problems().empty();
+	// By device, not by name: "0" and "0?w=1920&h=1080" are the same camera, so a mode change keeps step 4 done.
+	return resume::zonesStepDone(frameio::deviceKey(resume::setupSource(source, prefs.lastSource)), frameio::deviceKey(prefs.zonesFor), cfg.problems().empty());
 }
 
 bool App::calibrationDone() {
@@ -221,6 +255,7 @@ std::string App::findSample() {
 // fails, frame() clears it again and says why, rather than leaving the old picture or a stale name behind.
 bool App::openSource(const std::string& path) {
 	if (tracker.running()) { toast("Stop tracking before changing the source", c::warn, ICON_WARN); return false; }
+	resumedSource_.clear();   // a source picked this launch (init() sets it again for the one it reopens)
 	if (!player.open(path)) { toast(player.error, c::bad, ICON_WARN); source.clear(); return false; }
 	source = path;
 	// A Pi camera reopened from Recent brings its settings back into the camera card's settings popup.
@@ -230,6 +265,9 @@ bool App::openSource(const std::string& path) {
 		piSettings_ = pi;
 		for (int i = 0; i < int(piCams_.size()); i++) if (piCams_[i].index == pi.camera) piChoice_ = i;
 	}
+	// A USB camera, likewise: the menu and its settings popup follow the camera being opened.
+	webcam::Settings usb;
+	if (webcam::parse(path, usb)) { usbSettings_ = usb; cameraIndex_ = usb.camera; piChoice_ = -1; }
 	if (player.opening()) pendingRecent_ = path;   // remembered once it answers (frame())
 	else rememberSource(path);
 	return true;
@@ -239,6 +277,11 @@ bool App::openSource(const std::string& path) {
 void App::rememberSource(const std::string& path) {
 	pendingRecent_.clear();
 	prefs.lastSource = path;
+	// One Recent entry per camera: a camera reopened with other settings replaces its old entry rather than adding one.
+	if (frameio::isCamera(frameio::classify(path))) {
+		const std::string key = frameio::deviceKey(path);
+		prefs.recent.erase(std::remove_if(prefs.recent.begin(), prefs.recent.end(), [&](const std::string& r) { return r != path && frameio::deviceKey(r) == key; }), prefs.recent.end());
+	}
 	prefs.addRecent(path);
 }
 
@@ -287,7 +330,7 @@ void App::startTracking() {
 	liveTexSerial_ = fedSerial_ = -1;
 	runLevel_ = cfg.g.levelDegrees;   // the run copy carries this angle, so the frames it hands back are already turned by it
 	tracker.start(jobs, o);
-	rowsFrom.clear();
+	showSessionResults();   // Results follows the run (the saved runs are a click away in its menu)
 	page = Page::Track;
 	wasRunning_ = true;
 }
@@ -296,36 +339,31 @@ void App::stopTracking() {
 	tracker.stop();
 }
 
-void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
+bool App::followSpeedLimit(int before) {
 	Globals& g = cfg.g;
+	if (prefs.speedLimit == before || !calib::minLoggedFollows(g.minLoggedSpeed, before)) return false;
+	int want = calib::minLoggedForLimit(prefs.speedLimit);
+	if (g.minLoggedSpeed == want) return false;
+	g.minLoggedSpeed = want;   // autosave writes VST.cfg
+	return true;
+}
+
+void App::applyCalibration(bool l2r, double mph, int frames, double fps) {
+	const Globals& g = cfg.g;
 	if (mph <= 0 || frames <= 0) return;
 	if (fps <= 0) fps = g.CalibrationFPS;
-	// speed = CalibrationSpeed × CalibrationFrames × (fps / CalibrationFPS) / frames, so a pass at `mph` taking
-	// `frames` at `fps` corresponds to CalibrationFrames = frames × mph / CalibrationSpeed × CalibrationFPS / fps.
-	int calFrames = std::max(1, int(std::lround(calib::impliedFrames(mph, frames, fps, g.CalibrationSpeed, g.CalibrationFPS))));
 	// A one-way street has one lane, so a pass either way measures it for both directions: a wrong-way car is timed in
-	// the same lane.  (Before, a pass against the legal direction calibrated only that way, and the legal direction,
-	// the one step 2 and the speed zone card read, kept whatever it had: often the 2016 sample's value.)
+	// the same lane.  On a two-way street each lane is its own distance from the camera, so a pass speaks for its own.
 	const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
-	prefs.calibratedFor = cfg.path();
-	prefs.calibratedLines = speedLinesSig();   // autosave writes it to VST.cfg on the next frame
-	for (bool dir : { l2r, !l2r }) {
-		if (dir != l2r && !oneWay) break;
-		(dir ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
-		// The record of it: which pass, at what speed, and the value it set.  A new apply also makes any earlier check
-		// of this direction moot, so the page's last check result goes too.
-		CalEvent e;
-		e.l2r = dir;
-		e.drivenMph = mph;
-		e.frames = frames;
-		e.fps = fps;
-		e.calFrames = calFrames;
-		recordCalibration(e);
-		if (lastCheck_.l2r == dir) lastCheck_ = CalCheck();
-	}
-	toast(std::string("Calibrated ") + (oneWay ? "the lane (both directions)" : l2r ? "left → right" : "right → left") + ": "
-		+ std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed)) + " mph", c::ok, ICON_CHECK_CIRCLE);
-	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+	calib::Input in;
+	in.method = "pass";
+	in.dirs = oneWay ? calib::kBothDirs : l2r ? calib::kL2R : calib::kR2L;
+	in.zoneFt = calib::zoneFtFromPass(mph, frames, fps);
+	in.sigma = calib::sigmaPass(mph, frames);
+	char label[64];
+	snprintf(label, sizeof label, "Drive past at %g mph%s", std::round(mph * 10) / 10, oneWay ? "" : l2r ? ", left → right" : ", right → left");
+	in.label = label;
+	addCalibrationInput(in, "the drive past");
 }
 
 CalCheck App::checkCalibration(bool l2r, double mph, int frames, double fps) {
@@ -359,31 +397,145 @@ CalCheck App::checkCalibration(bool l2r, double mph, int frames, double fps) {
 }
 
 void App::averageCalibration(const CalCheck& check) {
-	Globals& g = cfg.g;
 	if (!check.valid) return;
-	// Each pass implies a CalibrationFrames value.  The first pass's is the one the check was made against; the
-	// check pass's comes from its own frames and speed, the same way an apply works it out.  The new calibration
-	// is their mean, rounded, so neither pass's speedometer reading or lane position wins outright.
-	double second = calib::impliedFrames(check.drivenMph, check.frames, check.fps, g.CalibrationSpeed, g.CalibrationFPS);
-	int calFrames = std::max(1, int(std::lround((check.calFrames + second) / 2)));
-	(check.l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
-	if (g.LegalDirection == "L2R" || g.LegalDirection == "R2L")   // one lane: both directions (see applyCalibration())
-		(check.l2r ? g.CalibrationFramesR2L : g.CalibrationFramesL2R) = calFrames;
-	prefs.calibratedFor = cfg.path();
-	prefs.calibratedLines = speedLinesSig();
-	// Recorded as an apply of the check pass (its speed, frames and fps) with the averaged value in force.  That
-	// starts a fresh calibration, so the direction reads "not checked" until a third pass checks the average.
-	CalEvent e;
-	e.l2r = check.l2r;
-	e.drivenMph = check.drivenMph;
-	e.frames = check.frames;
-	e.fps = check.fps;
-	e.calFrames = calFrames;
-	recordCalibration(e);
+	// The check pass is honest evidence too: it joins the inputs like any pass, weighted by its own uncertainty, so
+	// the calibration becomes the weighted middle of everything measured (two passes: about their mean).  The page's
+	// check result goes, and the direction reads "not checked" until another pass checks the combination.
+	applyCalibration(check.l2r, check.drivenMph, check.frames, check.fps);
 	lastCheck_ = CalCheck();
-	toast(std::string("Averaged ") + (check.l2r ? "left → right" : "right → left") + ": " + std::to_string(calFrames) + " frames at "
-		+ std::to_string(int(g.CalibrationSpeed)) + " mph. Check it once more.", c::ok, ICON_CHECK_CIRCLE);
+}
+
+const std::vector<calib::Input>& App::calibrationInputs() {
+	if (calInputsLoaded_ && calInputsFor_ == cfg.path()) return calInputs_;
+	calInputsFor_ = cfg.path();
+	calInputsLoaded_ = true;
+	bool known = false;
+	calInputs_ = screenshotMode || cfg.path().empty() ? std::vector<calib::Input>() : calib::loadInputs(calib::inputsPath(), cfg.path(), &known);
+	if (known || !calibrationDone()) return calInputs_;
+	// A calibration from before inputs were kept: seed it as one input per direction so the next method adds to it
+	// rather than wiping it out.  The history's latest apply that set today's value says what it was: a pass whose own
+	// numbers imply that value is that pass, with a pass's uncertainty; anything else (a cones or car calibration, an
+	// average, a hand edit, the sample's VST.cfg) is "Earlier calibration" at kSigmaEarlier.  The seed is saved with
+	// the first change, so until then it's recomputed the same way each time.
+	const Globals& g = cfg.g;
+	const std::vector<CalEvent>& rows = calibrationHistory();
+	std::string lines = speedLinesSig();
+	for (bool l2r : { true, false }) {
+		int frames = l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L;
+		if (frames <= 0) continue;
+		const CalEvent* last = nullptr;
+		for (const CalEvent& e : rows) if (!e.check && e.l2r == l2r && e.calFrames == frames) last = &e;
+		calib::Input in;
+		in.time = last ? last->time : "";
+		in.dirs = l2r ? calib::kL2R : calib::kR2L;
+		in.lines = lines;
+		double implied = last ? calib::impliedFrames(last->drivenMph, last->frames, last->fps, g.CalibrationSpeed, g.CalibrationFPS) : 0;
+		bool wasPass = last && std::lround(implied) == frames
+			&& !(std::fabs(last->drivenMph - g.CalibrationSpeed) < 1e-6 && last->frames == frames && std::fabs(last->fps - g.CalibrationFPS) < 1e-6);
+		if (wasPass) {
+			in.method = "pass";
+			in.zoneFt = calib::zoneFtFromPass(last->drivenMph, last->frames, last->fps);
+			in.sigma = calib::sigmaPass(last->drivenMph, last->frames);
+			char label[64];
+			snprintf(label, sizeof label, "Drive past at %g mph", last->drivenMph);
+			in.label = label;
+		}
+		else {
+			in.method = "earlier";
+			in.zoneFt = calib::zoneFtForFrames(frames, g.CalibrationSpeed, g.CalibrationFPS);
+			in.sigma = calib::kSigmaEarlier;
+			in.label = "Your earlier calibration";
+		}
+		// The same measurement both ways (a one-way street's pass): one input for the lane, not two.
+		if (!l2r && !calInputs_.empty() && calInputs_[0].method == in.method && std::fabs(calInputs_[0].zoneFt - in.zoneFt) < 1e-6) {
+			calInputs_[0].dirs = calib::kBothDirs;
+			continue;
+		}
+		if (in.time.empty()) in.time = calib::nowIso();
+		in.id = calib::newInputId(calInputs_, in.time);
+		calInputs_.push_back(in);
+	}
+	return calInputs_;
+}
+
+calib::Combined App::calibrationCombined(bool l2r) {
+	return calib::combine(calibrationInputs(), l2r, speedLinesSig());
+}
+
+void App::saveCalibrationInputs() {
+	if (screenshotMode || cfg.path().empty()) return;
+	std::string err;
+	if (!calib::saveInputs(calib::inputsPath(), cfg.path(), calInputs_, err)) toast(err, c::bad, ICON_WARN);
+}
+
+void App::addCalibrationInput(calib::Input in, const char* from) {
+	if (!(in.zoneFt > 0) || !(in.sigma > 0) || !(in.dirs & calib::kBothDirs)) return;
+	calibrationInputs();   // loaded (and seeded) for this config before adding to it
+	if (in.time.empty()) in.time = calib::nowIso();
+	if (in.lines.empty()) in.lines = speedLinesSig();
+	bool added = calib::addInput(calInputs_, in);
+	saveCalibrationInputs();
+	applyCombinedCalibration();
+	// The toast says what changed and what it all adds up to now, in the same words as the page.
+	calib::Combined cmb = calibrationCombined(in.dirs != calib::kR2L);
+	std::string head = added ? std::string("Added ") + from + ". " : std::string("That one is already counted. ");
+	toast(head + calib::summary(cmb) + ".", cmb.valid && (cmb.n == 1 || cmb.agree()) ? c::ok : c::warn, ICON_CHECK_CIRCLE);
+}
+
+bool App::setCalibrationInputRemoved(const std::string& id, bool removed) {
+	calibrationInputs();
+	for (calib::Input& in : calInputs_) {
+		if (in.id != id) continue;
+		in.removed = removed;
+		saveCalibrationInputs();
+		applyCombinedCalibration();
+		return true;
+	}
+	return false;
+}
+
+void App::applyCombinedCalibration() {
+	Globals& g = cfg.g;
+	bool any = false, changed = false;
+	for (bool l2r : { true, false }) {
+		calib::Combined cmb = calibrationCombined(l2r);
+		if (!cmb.valid) continue;
+		any = true;
+		// The engine counts whole frames, so the combination is rounded here; the inputs keep the exact value.
+		int frames = std::max(1, int(std::lround(calib::framesForZone(cmb.zoneFt, g.CalibrationSpeed, g.CalibrationFPS))));
+		int& cur = l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L;
+		// Only a change of value is a new calibration in the history.  An input that agrees to the frame leaves the
+		// value, and any check of it, standing.
+		bool wasCalibrated = calibrationState(l2r).kind != CalState::None && calibrationDone();
+		if (frames == cur && wasCalibrated) continue;
+		cur = frames;
+		changed = true;
+		// Recorded as the pass the value stands for: a car at CalibrationSpeed taking CalibrationFrames frames at
+		// CalibrationFPS (the history format has no column for the method; calibration-inputs.json has the detail).
+		CalEvent e;
+		e.l2r = l2r;
+		e.drivenMph = g.CalibrationSpeed;
+		e.frames = frames;
+		e.fps = g.CalibrationFPS;
+		e.calFrames = frames;
+		recordCalibration(e);
+		if (lastCheck_.l2r == l2r) lastCheck_ = CalCheck();
+	}
+	if (any) {
+		prefs.calibratedFor = cfg.path();
+		prefs.calibratedLines = speedLinesSig();   // autosave writes it to VST.cfg on the next frame
+	}
+	else if (prefs.calibratedFor == cfg.path()) prefs.calibratedFor.clear();   // every input removed: not calibrated
+	calibAppliedId_ = 0;
 	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+	// A live run is restarted only when CalibrationFrames actually moved: an input that agrees to the frame leaves the
+	// running csv on the current calibration, so it isn't split into a new run for nothing.
+	if (changed || !any) {
+		restartAfterCalibration();
+		// Results' speeds and feet follow the new scale at once, not on its next refresh: the open set on this view
+		// takes the new calibration (CalSets.h) and its rows are re-timed.
+		if (!reviewing()) { syncSets(true); applySets(); }
+	}
 }
 
 // The camera as the Lane card's ghost car describes it: step 2's distance (stored in metres) and lens, with the height
@@ -397,31 +549,44 @@ perspective::CameraSetup App::cameraSetup() const {
 	return c;
 }
 
-void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from) {
-	Globals& g = cfg.g;
-	int calFrames = std::max(1, int(std::lround(calFramesD)));
-	if (calFramesD <= 0 || (!l2r && !r2l)) return;
-	for (int d = 0; d < 2; d++) {
-		bool dirL2R = d == 0;
-		if (!(dirL2R ? l2r : r2l)) continue;
-		(dirL2R ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) = calFrames;
-		// The history format has no column for the method; the row reads as the pass the measurement stands for, a
-		// car at CalibrationSpeed taking CalibrationFrames frames at CalibrationFPS.
-		CalEvent e;
-		e.l2r = dirL2R;
-		e.drivenMph = g.CalibrationSpeed;
-		e.frames = calFrames;
-		e.fps = g.CalibrationFPS;
-		e.calFrames = calFrames;
-		recordCalibration(e);
-		if (lastCheck_.l2r == dirL2R) lastCheck_ = CalCheck();
-	}
-	prefs.calibratedFor = cfg.path();
-	prefs.calibratedLines = speedLinesSig();
-	calibAppliedId_ = 0;
-	toast(std::string("Calibrated from ") + from + ": " + std::to_string(calFrames) + " frames at " + std::to_string(int(g.CalibrationSpeed))
-		+ " mph. Check it with one drive past.", c::ok, ICON_CHECK_CIRCLE);
-	syncPlanFromCalibration();   // step 2's planner now uses the measured street (Guide.cpp)
+calib::ParkingLane App::parkingLane() const {
+	calib::ParkingLane p;
+	p.yLeft = prefs.parkY0;
+	p.yRight = prefs.parkY1;
+	p.measuredFt = prefs.parkFt;
+	return p;
+}
+
+double App::laneRowAt(bool l2r, double frameX) const {
+	const Globals& g = cfg.g;
+	return g.AnalysisBoxTop + g.lane(l2r).at(frameX - g.AnalysisBoxLeft);
+}
+
+calib::CarSpot App::carSpot(bool l2r) const {
+	if (carX_[0] < 0 || carX_[1] < 0) return calib::CarSpot();
+	double midX = (carX_[0] + carX_[1]) * .5, row = (carY_[0] + carY_[1]) * .5;
+	return calib::placeCar(cameraSetup(), laneRowAt(l2r, midX), parkingLane(), midX, row);
+}
+
+double App::carScale(bool l2r) const {
+	if (!carParked_ || carX_[0] < 0 || carX_[1] < 0) return 1;
+	double midX = (carX_[0] + carX_[1]) * .5;
+	if (parkingLane().set()) return carSpot(l2r).parkedScale;
+	return calib::scaleBeyond(cameraSetup(), midX, carFartherFt_);
+}
+
+void App::applyDistanceCalibration(bool l2r, bool r2l, double calFramesD, const char* from, const char* method, double sigma,
+	const std::string& label) {
+	const Globals& g = cfg.g;
+	if (!(calFramesD > 0) || (!l2r && !r2l)) return;
+	calib::Input in;
+	in.method = method ? method : "cones";
+	in.dirs = (l2r ? calib::kL2R : 0) | (r2l ? calib::kR2L : 0);
+	in.zoneFt = calib::zoneFtForFrames(calFramesD, g.CalibrationSpeed, g.CalibrationFPS);
+	in.sigma = sigma > 0 ? sigma : in.method == "camera" ? calib::kSigmaCamera : in.method == "car" ? calib::sigmaCar(200, false, 0, 0)
+		: calib::sigmaCones(200);
+	in.label = label.empty() ? std::string("Measured from ") + from : label;
+	addCalibrationInput(in, from);
 }
 
 // Appends a calibration event to calibration-history.csv and to the in-memory copy the page reads.  The
@@ -433,6 +598,42 @@ void App::recordCalibration(CalEvent e) {
 	calHistory_.push_back(e);
 	std::string err;
 	if (!screenshotMode && !calib::append(e, err)) toast(err, c::bad, ICON_WARN);
+}
+
+// ---- the user's own calibration drives, and runs measured before the latest calibration ----------------------
+
+void App::markCalibrationPass(const Vehicle& v, bool check, double mph) {
+	CalPass p;
+	p.time = v.passed();
+	p.stats = fs::path(v.statsPath).filename().string();
+	p.frame = v.ev.frame;
+	p.check = check;
+	p.l2r = v.ev.leftToRight;
+	p.drivenMph = mph;
+	calibrationPass("", 0);   // load the file before adding to the cache
+	calPasses_[report::passKey(p.stats, p.frame)] = p;
+	std::string err;
+	if (!screenshotMode && !calib::appendPass(p, err)) toast(err, c::bad, ICON_WARN);
+	// Results shows the mark straight away, keeping the selection.
+	for (ResultRow& r : rows)
+		if (r.frame == p.frame && !r.statsPath.empty() && fs::path(r.statsPath).filename() == p.stats) { r.calKind = check ? 2 : 1; r.drivenMph = mph; }
+}
+
+const CalPass* App::calibrationPass(const std::string& statsPath, int frame) {
+	if (!calPassesLoaded_) {
+		calPassesLoaded_ = true;
+		if (!screenshotMode)
+			for (const CalPass& p : calib::loadPasses()) calPasses_[report::passKey(p.stats, p.frame)] = p;   // a later use of a pass wins
+	}
+	if (statsPath.empty()) return nullptr;
+	auto it = calPasses_.find(report::passKey(fs::path(statsPath).filename().string(), frame));
+	return it == calPasses_.end() ? nullptr : &it->second;
+}
+
+void App::restartAfterCalibration() {
+	if (!tracker.running()) return;
+	if (tracker.progress().live && batch.empty()) restartPending_ = true;   // pumpTracker() does it on the next frame
+	else toast("This video keeps the calibration it started with. Run it again to measure it with the new one.", c::accent2, ICON_INFO);
 }
 
 const std::vector<CalEvent>& App::calibrationHistory() {
@@ -448,10 +649,17 @@ const std::vector<CalEvent>& App::calibrationHistory() {
 CalState App::calibrationState(bool l2r) {
 	// calibrationDone() covers calibrations made before the history existed (v1.1) and the bundled sample, whose
 	// VST.cfg comes calibrated for that video: those count as calibrated, not checked, until a check says more.
-	return calib::state(calibrationHistory(), l2r, l2r ? cfg.g.CalibrationFramesL2R : cfg.g.CalibrationFramesR2L, calibrationDone());
+	// With inputs on record, a direction none of them counts for (all removed, or made on other speed lines) is not
+	// calibrated, whatever the history's last apply was.
+	bool done = calibrationDone();
+	if (!done && !calibrationInputs().empty() && !calibrationCombined(l2r).valid) return CalState();
+	return calib::state(calibrationHistory(), l2r, l2r ? cfg.g.CalibrationFramesL2R : cfg.g.CalibrationFramesR2L, done);
 }
 
 void App::toast(const std::string& text, unsigned color, const char* icon) {
+	// The same note twice in a row (a two-way calibration applies each direction) shows once, its timer restarted.
+	for (auto it = toasts_.begin(); it != toasts_.end(); ++it)
+		if (it->text == text) { toasts_.erase(it); break; }
 	toasts_.push_back({ text, color, icon, now() + 4.5 });
 	if (toasts_.size() > 3) toasts_.pop_front();
 }
@@ -472,19 +680,20 @@ void App::setRemote(bool on) {
 
 // ---- results --------------------------------------------------------------------------------------------
 
-void App::loadResultsCsv(const std::string& path) {
+// One stats csv into `rows`, appended.  The csv names directions by compass label, mapped back with the current
+// config's labels; a run's own labels (in its manifest) are the street report's business.
+bool App::appendStatsRows(const std::string& path, const std::string& label, int* skipped) {
 	std::vector<StatsRow> stats;
 	std::string err;
-	int skipped = 0;
-	if (!readStatsCsv(path, stats, err, &skipped)) { toast(err, c::bad, ICON_WARN); return; }
-	rows.clear();
+	if (!readStatsCsv(path, stats, err, skipped)) { toast(err, c::bad, ICON_WARN); return false; }
 	const Globals& g = cfg.g;
+	const calsets::RunInfo run = calsets::readRun(path);   // the zone feet this run was measured with
 	for (const StatsRow& s : stats) {
 		ResultRow r;
-		r.source = fs::path(path).filename().string();
+		r.source = label;
+		r.statsPath = path;
 		r.frame = s.frame;
 		r.compass = s.compass;
-		// The csv names directions by compass label; map them back with the current config's labels.
 		r.l2r = s.compass == g.L2RDirection || (s.compass != g.R2LDirection && s.endPix > s.startPix);
 		r.wrongWay = cfg.g.isWrongWay(r.l2r);
 		r.speed = s.speed;
@@ -496,15 +705,75 @@ void App::loadResultsCsv(const std::string& path) {
 		// The Timestamp column says when this vehicle passed; drop its UTC offset to match session rows ("yyyy-mm-ddThh:mm:ss").
 		// Older csvs only have Date/Time, which for Foscam recordings is when the recording started.
 		r.time = !s.timestamp.empty() ? s.timestamp.substr(0, 19) : s.date.empty() ? "" : s.date + " " + s.time;
+		r.statsPath = path;
+		if (const CalPass* p = calibrationPass(path, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
+		r.trend = s.trend;
+		r.entryMph = s.entryMph;
+		r.exitMph = s.exitMph;
+		r.accel = s.accel;
+		r.mphIn20ft = s.mphIn20ft;
+		r.measured = { s.speed, s.zoneSeconds, !s.trend.empty(), s.entryMph, s.exitMph, s.mphIn20ft, s.accel };
+		r.thenFt = run.known ? run.scale.of(r.l2r) : 0;
+		r.widthPx = s.lengthPx;
 		rows.push_back(r);
 	}
+	return true;
+}
+
+void App::loadResultsCsv(const std::string& path) {
+	int skipped = 0;
+	std::vector<ResultRow> was;
+	was.swap(rows);
+	if (!appendStatsRows(path, fs::path(path).filename().string(), &skipped)) { rows.swap(was); return; }
+	rowsScope = ResultsScope::File;
+	archive_ = archive::Info();
+	dataset_ = dataset::Info();
 	rowsFrom = path;
+	applySets();
+	rowsRuns = 1;
 	selectedRow_ = -1;
 	if (skipped) toast(std::to_string(skipped) + " rows in that file weren't in VST's format and were skipped", c::warn, ICON_WARN);
 }
 
+// All saved runs, newest run first: what the tracker has written to <data>/Stats over every launch.  Each row's Source
+// is its run in words (resume::runLabel), e.g. "Camera 0 · 2026-11-01 13:30".  A run whose csv can't be read is
+// skipped with a toast; malformed rows are counted once for all runs.
+void App::showSavedRuns() {
+	rows.clear();
+	rowsRuns = 0;
+	int skipped = 0;
+	if (!screenshotMode)
+		for (const resume::SavedRun& run : resume::savedRuns(dataDir())) {
+			int bad = 0;
+			if (appendStatsRows(run.csv, resume::runLabel(run.name), &bad)) rowsRuns++;
+			skipped += bad;
+		}
+	rowsScope = ResultsScope::Saved;
+	rowsFrom.clear();
+	archive_ = archive::Info();
+	dataset_ = dataset::Info();
+	applySets();
+	selectedRow_ = -1;
+	if (skipped) toast(std::to_string(skipped) + " rows in the saved runs weren't in VST's format and were skipped", c::warn, ICON_WARN);
+}
+
+// How Results shows a speed trend: an icon, its colour and the words.  Slowing down is the good news (green), steady is
+// neutral, speeding up is a warning and rapidly speeding up is red.  Unknown is a faint dash.
+struct TrendLook { const char* icon; ImU32 color; const char* label; };
+static TrendLook trendLook(const std::string& trend) {
+	vst::Trend t = vst::trendFromName(trend.c_str());
+	switch (t) {
+	case vst::Trend::Decelerating: return { ICON_TREND_DOWN, c::ok, vst::trendLabel(t) };
+	case vst::Trend::Steady: return { ICON_MINUS, c::dim, vst::trendLabel(t) };
+	case vst::Trend::Accelerating: return { ICON_TREND_UP, c::warn, vst::trendLabel(t) };
+	case vst::Trend::RapidlyAccelerating: return { ICON_ANGLES_UP, c::bad, vst::trendLabel(t) };
+	default: return { ICON_MINUS, c::faint, "Can't tell" };
+	}
+}
+
 void App::showSessionResults() {
 	rows.clear();
+	std::map<std::string, calsets::RunInfo> runs;   // each run's manifest, read once
 	for (const Vehicle& v : tracker.vehiclesSince(0)) {
 		ResultRow r;
 		r.vehicleId = v.id;
@@ -519,9 +788,58 @@ void App::showSessionResults() {
 		r.large = v.large;
 		r.fps = v.fps;
 		r.time = v.passed();   // empty for recordings without a start time
+		r.widthPx = v.ev.width;
+		r.statsPath = v.statsPath;
+		if (const CalPass* p = calibrationPass(v.statsPath, r.frame)) { r.calKind = p->check ? 2 : 1; r.drivenMph = p->drivenMph; }
+		const vst::SpeedTrend& t = v.ev.trend;
+		if (t.known()) {
+			// Rounded the way the csv rounds them, so a session row and the same car read back from the csv match.
+			r.trend = vst::trendName(t.trend);
+			r.entryMph = int(t.entryMph + 0.5);
+			r.exitMph = int(t.exitMph + 0.5);
+			r.accel = std::round(t.accelMphPerSec * 10) / 10;
+			r.mphIn20ft = int(t.projectedMph + 0.5);
+		}
+		r.measured = { r.speed, v.ev.zoneSeconds, t.known(), r.entryMph, r.exitMph, r.mphIn20ft, r.accel };
+		// A run still being written has no manifest yet (a video's is written at the end): shown as measured until then.
+		if (!v.statsPath.empty()) {
+			auto it = runs.find(v.statsPath);
+			if (it == runs.end()) it = runs.emplace(v.statsPath, calsets::readRun(v.statsPath)).first;
+			r.thenFt = it->second.known ? it->second.scale.of(r.l2r) : 0;
+		}
+		r.clipPath = v.clipPath;
 		rows.push_back(r);
 	}
+	rowsScope = ResultsScope::Session;
 	rowsFrom.clear();
+	rowsRuns = 0;
+	archive_ = archive::Info();
+	dataset_ = dataset::Info();
+	applySets();
+}
+
+// Each vehicle's length in feet when the calibration gives the scale (session rows, and csv rows from v1.10's LengthPx), and
+// truck-or-bus by that real size: about 24 ft long or more.  A csv row keeps the area test, against the threshold
+// retuneLargeVehicles() set from the same calibration.
+// A row from a calibration set is sized at that set's scale, the same one its speed is re-timed to, so a run measured
+// before a recalibration (or from another view) never shows old-scale speeds beside new-scale sizes: pixels per foot
+// scale with the zone's pixels and inversely with its feet.
+void App::sizeRows() {
+	double ppf = pxPerFtAtLane();
+	const calsets::View now = currentView();
+	const calsets::Scale nowFt = currentScale();
+	const int nowPx = now.lineRight - now.lineLeft;
+	for (ResultRow& r : rows) {
+		double k = 1;
+		if (const calsets::Set* set = setOfRow(r)) {
+			calsets::Scale shown = calsets::shownScale(*set, now, nowFt);
+			int setPx = set->view.lineRight - set->view.lineLeft;
+			if (set->known && shown.valid() && nowFt.valid() && setPx > 0 && nowPx > 0)
+				k = double(setPx) / nowPx * nowFt.of(r.l2r) / shown.of(r.l2r);
+		}
+		r.lengthFt = ppf > 0 && r.widthPx > 0 ? r.widthPx / (ppf * k) : 0;
+		if (r.lengthFt > 0) r.large = r.lengthFt >= kLargeVehicleFt;
+	}
 }
 
 Texture* App::snapshotTexture(int id) {
@@ -535,6 +853,300 @@ Texture* App::snapshotTexture(int id) {
 	snapTex_[id] = std::move(t);
 	if (snapTex_.size() > 300) snapTex_.erase(snapTex_.begin());   // oldest ids first
 	return raw;
+}
+
+// ---- archived datasets (Archive.h) --------------------------------------------------------------------------
+
+bool App::openArchive(const std::string& dir) {
+	archive::Info a;
+	std::string err;
+	if (!archive::read(dir, a, err)) { toast(err, c::bad, ICON_WARN); return false; }
+	rows.clear();
+	for (const archive::Vehicle& v : a.vehicles) {
+		ResultRow r;
+		r.source = v.source;
+		r.frame = v.frame;
+		r.l2r = v.l2r;
+		r.compass = v.compass;
+		r.wrongWay = v.wrongWay;   // as judged when it was archived, by the one-way setting of the time
+		r.speed = v.speed;
+		r.frames = v.frames;
+		r.area = v.area;
+		r.large = v.large;
+		r.flagged = v.flagged;
+		r.fps = v.fps > 0 ? v.fps : 30;
+		r.time = v.passed;
+		r.lengthFt = v.lengthFt;   // feet at the archive's own calibration; sizeRows() isn't run on an archive
+		r.trend = v.trend;
+		r.entryMph = v.entryMph;
+		r.exitMph = v.exitMph;
+		r.accel = v.accel;
+		r.mphIn20ft = v.mphIn20ft;
+		r.calKind = v.ownDrive;
+		r.drivenMph = v.drivenMph;
+		if (!v.snapshot.empty()) r.snapshotPath = (fs::path(a.dir) / fs::path(v.snapshot)).string();
+		if (!v.clip.empty()) r.clipPath = (fs::path(a.dir) / fs::path(v.clip)).string();
+		rows.push_back(r);
+	}
+	archive_ = a;
+	// A published dataset is an archive folder with dataset.json beside archive.json: its badge and layers go on top.
+	dataset_ = dataset::Info();
+	if (dataset::isDataset(a.dir) && !dataset::read(a.dir, dataset_, err)) { toast(err, c::warn, ICON_WARN); dataset_ = dataset::Info(); }
+	setFilter_ = 0;
+	selectedSet_ = 0;
+	rowsScope = ResultsScope::File;   // one dataset; reviewing() tells it apart from a csv
+	rowsFrom = a.dir;
+	rowsRuns = 0;
+	selectedRow_ = -1;
+	fileTex_.clear();
+	page = Page::Results;
+	return true;
+}
+
+Texture* App::fileTexture(const std::string& path) {
+	auto it = fileTex_.find(path);
+	if (it != fileTex_.end()) return it->second.get();   // a null entry: tried, unreadable
+	// imdecode of the bytes rather than imread, which can't open non-ASCII paths on Windows.  A snapshot is a still for
+	// the detail card, not a frame to track, so it doesn't go through the frame input port.
+	std::unique_ptr<Texture> t;
+	std::ifstream in(fs::path(path), std::ios::binary);
+	std::vector<uchar> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	cv::Mat img = bytes.empty() ? cv::Mat() : cv::imdecode(bytes, cv::IMREAD_COLOR);
+	if (!img.empty()) { t = std::make_unique<Texture>(); t->update(img); }
+	Texture* raw = t.get();
+	fileTex_[path] = std::move(t);
+	return raw;
+}
+
+// What "Archive" takes from what Results shows: the stats csvs behind the rows (with their manifests and highlights),
+// every row with this session's snapshot and clip when it has them, the config and calibration history, and the
+// limits and calibration in force, so the archive can be judged and reported on the same way later.
+archive::Request App::archiveRequest(const std::string& name, bool move, const std::vector<ResultRow>* from) {
+	const Globals& g = cfg.g;
+	archive::Request req;
+	req.dataDir = dataDir();
+	req.move = move;
+	archive::Info& i = req.info;
+	i.name = name;
+	i.created = calib::nowIso();
+	i.from = rowsScope == ResultsScope::Saved ? "All saved runs" : rowsScope == ResultsScope::Session ? "This session" : fs::path(rowsFrom).filename().string();
+	i.siteName = prefs.siteName;
+	i.speedLimit = prefs.speedLimit;
+	i.wayOver = prefs.egregious;
+	i.vst = VST_VERSION;
+	i.configPath = cfg.path();
+	i.cal.l2rCompass = g.L2RDirection;
+	i.cal.r2lCompass = g.R2LDirection;
+	i.cal.legal = g.LegalDirection;
+	i.cal.framesL2R = g.CalibrationFramesL2R;
+	i.cal.framesR2L = g.CalibrationFramesR2L;
+	i.cal.calSpeed = g.CalibrationSpeed;
+	i.cal.calFps = g.CalibrationFPS;
+	i.cal.minLoggedSpeed = g.minLoggedSpeed;
+	req.configFile = cfg.path();
+	if (!cfg.path().empty()) req.historyFiles.push_back((fs::path(cfg.path()).parent_path() / "calibration-history.csv").string());
+	req.historyFiles.push_back((userpaths::configDir() / "calibration-history.csv").string());
+	for (const ResultRow& r : from ? *from : rows) {
+		if (!r.statsPath.empty() && std::find(req.statsCsvs.begin(), req.statsCsvs.end(), r.statsPath) == req.statsCsvs.end())
+			req.statsCsvs.push_back(r.statsPath);
+		archive::Source s;
+		archive::Vehicle& v = s.row;
+		v.passed = r.time;
+		v.speed = r.speed;
+		v.l2r = r.l2r;
+		v.compass = r.compass;
+		v.wrongWay = r.wrongWay;
+		v.frames = r.frames;
+		v.area = r.area;
+		v.frame = r.frame;
+		v.large = r.large;
+		v.flagged = r.flagged;
+		v.fps = r.fps;
+		v.source = r.source;
+		v.lengthFt = r.lengthFt;
+		v.trend = r.trend;
+		v.entryMph = r.entryMph;
+		v.exitMph = r.exitMph;
+		v.accel = r.accel;
+		v.mphIn20ft = r.mphIn20ft;
+		v.ownDrive = r.calKind;
+		v.drivenMph = r.drivenMph;
+		Vehicle tv;
+		if (r.vehicleId && tracker.vehicle(r.vehicleId, tv)) { s.snapshot = tv.snapshot; s.clipPath = tv.clipPath; }
+		req.vehicles.push_back(std::move(s));
+	}
+	// The calibration sets of those runs, frozen at the speeds they are archived with: the street report made from the
+	// archive re-times its csvs to these, so it agrees with the archived rows (archiveReportInput).
+	if (!reviewing()) {
+		syncSets();
+		calsets::Store frozen;
+		for (const calsets::Set& set : sets_.sets) {
+			calsets::Set f = set;
+			f.runs.clear();
+			for (const std::string& csv : req.statsCsvs)
+				if (set.has(fs::path(csv).filename().string())) f.runs.push_back(fs::path(csv).filename().string());
+			if (f.runs.empty()) continue;
+			f.scale = calsets::shownScale(set, currentView(), currentScale());
+			if (!f.locked()) { f.state = calsets::State::Locked; f.lockReason = "archived"; f.lockedAt = i.created; }
+			frozen.sets.push_back(f);
+			frozen.nextId = std::max(frozen.nextId, f.id + 1);
+		}
+		if (!frozen.sets.empty()) req.extra.push_back({ "Stats/calibration-sets.json", calsets::dump(frozen) });
+	}
+	return req;
+}
+
+// "Archive these results": a name and move-or-copy, then archive::write, then the new archive opens in Results so the
+// user sees at once that everything is there.
+void App::archiveDialog() {
+	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Always);   // 0 = fit the height every frame, as options open and close
+	if (!ImGui::BeginPopupModal("Archive these results", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+	ArchiveForm& f = archiveForm_;
+	int snaps = 0;
+	for (const ResultRow& r : rows) snaps += r.vehicleId != 0;
+	dimText("Puts these %zu vehicles away in a folder of their own, with the results files, %s, and the setup and calibration "
+		"they were measured with. Open them again any time from Open in Results, or double-click review.html in the folder.",
+		rows.size(), snaps ? "their snapshots and clips" : "the highlights video");
+	ImGui::Dummy(ImVec2(0, px(6)));
+	float col = px(110);
+	formLabel("Name", col);
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+	ImGui::InputTextWithHint("##aname", "e.g. First week, before the new signs", f.name, sizeof f.name);
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::SetCursorPosX(col);
+	if (ImGui::RadioButton("Move them into the archive", f.move)) f.move = true;
+	ImGui::SetCursorPosX(col + px(28));
+	dimText("Start fresh: the street report and Open stop counting them. You can put them back.");
+	ImGui::SetCursorPosX(col);
+	if (ImGui::RadioButton("Keep them here too (archive a copy)", !f.move)) f.move = false;
+	if (!f.error.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad)); ImGui::TextWrapped("%s", f.error.c_str()); ImGui::PopStyleColor(); }
+	ImGui::Dummy(ImVec2(0, px(6)));
+	if (primaryButton(ICON_ARCHIVE "  Archive")) {
+		std::string name = f.name;
+		if (name.find_first_not_of(" \t") == std::string::npos) name = "Results " + calib::nowIso().substr(0, 10);
+		// From this session or from all saved runs (which include this session's csvs): a move takes the session's
+		// files, so the session lets go of its vehicles too.
+		bool fromSession = rowsScope != ResultsScope::File;
+		std::string dir;
+		std::vector<std::string> warnings;
+		f.error.clear();
+		if (archive::write(archiveRequest(name, f.move), dir, f.error, &warnings)) {
+			// Moved out of a session: its clips and csvs are in the archive now, so the session lets go of those vehicles.
+			if (f.move && fromSession) { tracker.clearVehicles(); snapTex_.clear(); seenVehicleId_ = 0; }
+			ImGui::CloseCurrentPopup();
+			openArchive(dir);
+			toast("Archived " + std::to_string(rows.size()) + " vehicles as \"" + name + "\"", c::ok, ICON_ARCHIVE);
+			for (const std::string& w : warnings) toast(w, c::warn, ICON_WARN);
+		}
+	}
+	ImGui::SameLine();
+	if (ghostButton("Cancel")) ImGui::CloseCurrentPopup();
+	ImGui::EndPopup();
+}
+
+// The Open menu: every archive (newest first), then the plain csv and "another folder" for an archive kept elsewhere
+// (a USB stick, a neighbour's copy).
+void App::openMenu() {
+	ImGui::SetNextWindowSizeConstraints(ImVec2(px(360), 0), ImVec2(px(720), px(460)));
+	if (!ImGui::BeginPopup("openmenu")) return;
+	sectionLabel("ARCHIVES");
+	if (archives_.empty()) dimText("None yet. Archive puts the results you're looking at here.");
+	for (size_t i = 0; i < archives_.size(); i++) {
+		const archive::Info& a = archives_[i];
+		ImGui::PushID(int(i));
+		std::string label = std::string(ICON_ARCHIVE "  ") + (a.name.empty() ? fs::path(a.dir).filename().string() : a.name);
+		if (ImGui::Selectable(label.c_str(), archive_.dir == a.dir)) { openArchive(a.dir); ImGui::CloseCurrentPopup(); }
+		ImGui::SameLine(0, px(16));
+		std::string when = a.firstPassed.empty() ? "archived " + a.created.substr(0, std::min<size_t>(10, a.created.size()))
+			: a.firstPassed.substr(0, 10) + (a.lastPassed.substr(0, 10) != a.firstPassed.substr(0, 10) ? " to " + a.lastPassed.substr(0, 10) : "");
+		std::string detail = std::to_string(a.vehicles.size()) + " vehicles · " + when + (a.moved ? "" : " · a copy");
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
+		ImGui::TextUnformatted(detail.c_str());   // one line: the menu grows to fit rather than wrapping under the name
+		ImGui::PopStyleColor();
+		ImGui::PopID();
+	}
+	// Published datasets (Dataset.h): the badge's words beside each, so a tainted one is seen before it is opened.
+	sectionLabel("PUBLISHED");
+	if (publishedList_.empty()) dimText("None yet. Publish, in the calibration set bar, freezes a locked set for others to check.");
+	for (size_t i = 0; i < publishedList_.size(); i++) {
+		const dataset::Info& d = publishedList_[i];
+		ImGui::PushID(int(1000 + i));
+		std::string label = std::string(ICON_CHECK_CIRCLE "  ") + (d.name.empty() ? d.id : d.name);
+		if (ImGui::Selectable(label.c_str(), dataset_.dir == d.dir)) { openArchive(d.dir); ImGui::CloseCurrentPopup(); }
+		ImGui::SameLine(0, px(16));
+		dataset::Verdict v = d.status();
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(v == dataset::Verdict::Tainted ? c::bad : v == dataset::Verdict::Review ? c::warn
+			: v == dataset::Verdict::Accurate ? c::ok : c::dim));
+		std::string detail = std::to_string(d.summary.cars) + " vehicles · published " + d.published.substr(0, std::min<size_t>(10, d.published.size()))
+			+ " · " + dataset::verdictLabel(v);
+		ImGui::TextUnformatted(detail.c_str());
+		ImGui::PopStyleColor();
+		ImGui::PopID();
+	}
+	ImGui::Separator();
+	if (ImGui::Selectable(ICON_FILE_CSV "  A stats csv…")) {
+		ImGui::CloseCurrentPopup();
+		auto r = pfd::open_file("Open stats csv", (fs::path(dataDir()) / "Stats").string(), { "Stats csv", "*.csv", "All files", "*" }).result();
+		if (!r.empty()) loadResultsCsv(r[0]);
+	}
+	if (ImGui::Selectable(ICON_FOLDER_OPEN "  An archive or published folder somewhere else…")) {
+		ImGui::CloseCurrentPopup();
+		std::string r = pfd::select_folder("Open an archive or published dataset folder", (fs::path(dataDir()) / "Archive").string()).result();
+		if (!r.empty()) openArchive(r);
+	}
+	ImGui::EndPopup();
+}
+
+// Over an open archive: what it is, that it's read-only, and the two things to do with it besides looking.
+void App::reviewBanner(float width) {
+	const archive::Info& a = archive_;
+	// A published dataset (dataset.json beside archive.json) says "published", with its own icon; the rest is shared.
+	const bool isPub = !dataset_.dir.empty();
+	beginCard("review", isPub ? ICON_PUBLISH : ICON_ARCHIVE, a.name.empty() ? (isPub ? "Published dataset" : "Archive") : a.name.c_str(), ImVec2(width, 0));
+	std::string what = std::string(isPub ? "Read-only · published " : "Read-only · archived ") + a.created.substr(0, std::min<size_t>(10, a.created.size())) + " from "
+		+ (a.from == "This session" ? std::string("this session") : a.from) + " · judged at " + std::to_string(a.speedLimit) + " mph";
+	if (!a.siteName.empty() && a.siteName != report::Settings().siteName) what = a.siteName + " · " + what;
+	if (a.moved) what += " · moved out of your data";
+	dimText("%s", what.c_str());
+	if (a.moved) {
+		if (ghostButton(ICON_UNDO "  Put back into my data")) {
+			std::string msg;
+			syncSets(true);   // sets_ as they stand before the runs come back
+			if (archive::restore(a.dir, dataDir(), msg)) {
+				archive_.moved = false;
+				// Its runs come back in the calibration sets they were archived in, locked at the speeds they had, rather
+				// than being filed afresh (which could re-time them to today's calibration).
+				for (calsets::Set set : calsets::load((fs::path(a.dir) / "Stats").string()).sets) {
+					bool filed = false;
+					for (const std::string& r : set.runs) filed |= sets_.ofRun(r) != nullptr;
+					if (filed || set.runs.empty()) continue;
+					// Its old number when that is free (numbers are never reused, so it is this set coming home, and the
+					// archive named "Set 2, ..." puts back Set 2); otherwise a new one.
+					if (set.id <= 0 || sets_.find(set.id)) set.id = sets_.nextId;
+					sets_.nextId = std::max(sets_.nextId, set.id + 1);
+					set.state = calsets::State::Locked;
+					set.published.clear();
+					sets_.sets.push_back(set);
+				}
+				std::sort(sets_.sets.begin(), sets_.sets.end(), [](const calsets::Set& x, const calsets::Set& y) { return x.id < y.id; });
+				std::string err;
+				calsets::save(setsFor_, sets_, err);
+				syncSets(true);
+				applySetsDue_ = true;
+				toast("Put back: the street report and Open count these runs again. The archive stays as it was.", c::ok, ICON_UNDO);
+				if (!msg.empty()) toast(msg, c::warn, ICON_WARN);
+			}
+			else toast(msg, c::bad, ICON_WARN);
+		}
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Copies the results files back into your data folder. The archive keeps its own copy.");
+		ImGui::SameLine();
+	}
+	if (ghostButton(ICON_EXTERNAL "  Open in browser")) openWithSystem((fs::path(a.dir) / "review.html").string());
+	if (ImGui::IsItemHovered()) ImGui::SetTooltip("review.html: the same table, snapshots and clips in any web browser, no install needed.");
+	ImGui::SameLine();
+	if (ghostButton(dataset_.dir.empty() ? ICON_XMARK "  Close archive" : ICON_XMARK "  Close")) showSessionResults();
+	endCard();
 }
 
 // Pulls new frames and vehicles from the tracker each GUI frame: updates textures, raises toasts for the
@@ -584,7 +1196,21 @@ void App::pumpTracker() {
 		seenVehicleId_ = v.id;
 		if (v.ev.wrongWay) toast("Wrong-way driver, " + std::to_string(v.ev.speed) + " mph", c::wrong, ICON_WARN);
 		else if (v.egregious) toast(std::to_string(v.ev.speed) + " mph " + (v.ev.leftToRight ? "→" : "←") + "  well over the limit", c::bad, ICON_BOLT);
-		if (rowsFrom.empty()) showSessionResults();
+		if (rowsScope == ResultsScope::Session) showSessionResults();
+	}
+	if (restartPending_) {
+		// A calibration was applied during a live run: stop it (its csv keeps the calibration it was measured with, which
+		// its calibration set re-times, CalSets.h) and start a fresh one with the new value, staying on the page the user is on.
+		restartPending_ = false;
+		if (tracker.running() && tracker.progress().live) {
+			Page was = page;
+			stopTracking();
+			wasRunning_ = false;
+			startTracking();
+			page = was;
+			toast("Tracking restarted so the cars from now on are measured with the new calibration", c::ok, ICON_PLAY);
+			return;
+		}
 	}
 	if (wasRunning_ && !tracker.running()) {
 		wasRunning_ = false;
@@ -654,13 +1280,24 @@ void App::frame(float w, float h) {
 		player.tick(now());
 		if (live && !player.opening() && !player.isOpen() && !player.error.empty()) {
 			toast(player.error, c::bad, ICON_WARN);
+			// The camera from last time didn't answer (unplugged, asleep, busy in another app).  prefs.lastSource keeps
+			// it, so steps 3 and 4 stay checked and Recent still lists it; say that nothing was lost.
+			if (!resumedSource_.empty() && resumedSource_ == source)
+				toast("Couldn't reconnect " + friendlySourceName(source) + " from last time. Your setup and results are safe: "
+					"plug it in, then pick it under Recent on Connect the camera.", c::warn, ICON_CAMERA);
+			resumedSource_.clear();
 			source.clear();
 			pendingRecent_.clear();
 		}
+		if (!resumedSource_.empty() && player.isOpen() && !player.opening()) resumedSource_.clear();
 		if (!pendingRecent_.empty() && pendingRecent_ == source && player.isOpen() && !player.opening()) rememberSource(source);
 		else if (!pendingRecent_.empty() && pendingRecent_ != source) pendingRecent_.clear();   // cancelled or replaced
 	}
-	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) prefs.zonesFor = source;
+	if (page == Page::Zones && !source.empty() && cfg.problems().empty()) {
+		prefs.zonesFor = source;
+		if (player.isOpen() && player.info().width > 0) prefs.zonesFrame = std::to_string(player.info().width) + "x" + std::to_string(player.info().height);
+	}
+	if (!screenshotMode) prefs.lastPage = pageKey(page, guideStep_);   // written with the other prefs (savePrefsSoon)
 	autosave();
 	// Pick your spot's draft: follow the saved plan where untouched, save it as it's edited when autosave is on (once no
 	// control is being dragged or typed in), and say so when the page is left with changes unsaved.
@@ -729,7 +1366,9 @@ bool App::flowDone(int step) {
 	switch (step) {
 	case 0: return prefs.guideDone || (page == Page::Guide && guideStep_ > 0);
 	case 1: return prefs.planConfirmed;   // saved at least once (a rough guess counts)
-	case 2: return (!source.empty() && !player.opening()) || !batch.empty();   // connected, not still connecting
+	// Connected (not still connecting), queued, or connected before and not disconnected since: the step was done,
+	// and the header's chip says when the camera isn't answering right now.
+	case 2: return resume::sourceStepDone(!source.empty() && !player.opening(), !batch.empty(), prefs.lastSource);
 	case 3: return zonesDone();
 	case 4: return calibrationDone() && !(sampleCache_.size() && source == sampleCache_);   // the sample's own calibration isn't yours
 	default: return false;
@@ -939,11 +1578,18 @@ void App::drawHeader(float w) {
 	ImVec2 calSize = calNag ? pillSize(calText, fonts.body) : ImVec2(0, 0);
 	float bw = ImGui::CalcTextSize(runLabel).x + px(30);
 	float pauseW = run ? ImGui::GetFrameHeight() + px(10) : 0;
-	std::string chip = source.empty() ? std::string("No source") : shortSourceName(source, 36);
+	// Unplugged since last time, or a camera that just failed to open: name the remembered source rather than
+	// "No source", which reads as forgotten.  A camera or stream is "not connected"; a video file (the sample, say,
+	// after a camera attempt replaced it) is just "closed", since nothing about it is broken.
+	const std::string& shown = !source.empty() ? source : prefs.lastSource;
+	SourceInfo::Kind shownKind = shown.empty() ? SourceInfo::None : classifySource(shown);
+	bool live = shownKind == SourceInfo::Camera || shownKind == SourceInfo::Stream;
+	std::string chip = !source.empty() ? shortSourceName(source, 36)
+		: !shown.empty() ? shortSourceName(shown, 28) + (live ? " · not connected" : " · closed") : std::string("No source");
 	if (player.opening()) chip = "Connecting to " + chip + "…";
 	if (batch.size() > 1) chip = std::to_string(batch.size()) + " videos queued";
-	const char* chipIcon = source.empty() ? ICON_VIDEO : classifySource(source) == SourceInfo::Camera ? ICON_CAMERA
-		: classifySource(source) == SourceInfo::Stream ? ICON_BROADCAST : ICON_FILE_VIDEO;
+	const char* chipIcon = shown.empty() ? ICON_VIDEO : shownKind == SourceInfo::Camera ? ICON_CAMERA
+		: shownKind == SourceInfo::Stream ? ICON_BROADCAST : ICON_FILE_VIDEO;
 	std::string chipText = std::string(chipIcon) + "  " + chip;
 	ImVec2 cs = pillSize(chipText.c_str(), fonts.body);
 	float right = w - px(24);
@@ -1162,6 +1808,151 @@ void App::piCameraSettings() {
 	dimText("Press Connect to start the camera with these settings.");
 }
 
+// ---- USB cameras (Webcam.h) ------------------------------------------------------------------------------------
+
+void App::listUsbCameras() {
+	if (usbListing_.valid() || now() - usbListedAt_ < 3) return;
+	usbListedAt_ = now();
+	usbListing_ = std::async(std::launch::async, [] { return webcam::list(); });
+}
+
+void App::pumpUsbListing() {
+	if (!usbListing_.valid() || usbListing_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+	usbCams_ = usbListing_.get();
+	usbListed_ = true;
+	usbListedAt_ = now();
+}
+
+const webcam::Device* App::usbDevice(int index) const {
+	for (const webcam::Device& d : usbCams_) if (d.index == index) return &d;
+	return nullptr;
+}
+
+// The settings a camera was last connected with come back with it (Recent keeps one entry per camera, rememberSource).
+void App::pickUsbCamera(int index) {
+	cameraIndex_ = index;
+	piChoice_ = -1;
+	usbSettings_ = webcam::Settings();
+	usbSettings_.camera = index;
+	const std::string key = "usb:" + std::to_string(index);
+	for (const std::string& r : prefs.recent)
+		if (frameio::classify(r) == frameio::Kind::Camera && frameio::deviceKey(r) == key) { webcam::parse(r, usbSettings_); break; }
+}
+
+webcam::Mode App::usbModeFor(const webcam::Settings& s) const {
+	const webcam::Device* d = usbDevice(s.camera);
+	std::vector<webcam::Mode> modes = d ? d->modes : std::vector<webcam::Mode>();
+	if (s.picksMode()) {
+		webcam::Mode m = webcam::best(modes);
+		if (!m.valid()) { m.width = frameio::kWorkingWidth; m.height = frameio::kWorkingHeight; m.fps = 60; }   // the old ask
+		if (s.fps > 0) m.fps = s.fps;
+		return m;
+	}
+	webcam::Mode m;
+	m.width = s.width; m.height = s.height; m.fps = s.fps; m.format = s.format;
+	return m;
+}
+
+// The USB camera settings popup.  VST picks the mode by default (webcam::best: frames first, then 16:9, then size) and
+// says why; every mode the driver lists can be chosen instead.  Nothing here touches the street: marks, distance and
+// calibration belong to the camera (frameio::deviceKey), not to its mode, so the only thing said about them is what
+// webcam::changeNote() knows a change of shape or size can do to the picture.
+void App::usbCameraSettings(bool inUse) {
+	const webcam::Device* d = usbDevice(cameraIndex_);
+	usbSettings_.camera = cameraIndex_;
+	ImGui::PushFont(fonts.strong);
+	ImGui::TextUnformatted(d ? d->label().c_str() : ("USB camera " + std::to_string(cameraIndex_)).c_str());
+	ImGui::PopFont();
+	ImGui::PushTextWrapPos(px(380));
+	if (const webcam::Model* m = d ? webcam::recognize(*d) : nullptr) dimText(ICON_INFO "  %s", m->note);
+	if (d && d->isVirtual())
+		dimText(ICON_WARN "  A picture made by other software, not a camera. VST times it like any camera; speeds are right when that "
+			"software passes the camera's frames through at a steady rate.");
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::TextUnformatted("Picture size and frame rate");
+	std::vector<webcam::Mode> listed = d ? d->modes : std::vector<webcam::Mode>();
+	webcam::Mode best = webcam::best(listed);
+	char b[200];
+	if (best.valid()) snprintf(b, sizeof b, "Best for timing: %s##best", best.text().c_str());
+	else snprintf(b, sizeof b, "Let VST choose (asks for 1280 × 720 at 60 fps)##best");
+	if (ImGui::RadioButton(b, usbSettings_.picksMode() && usbSettings_.fps <= 0)) { usbSettings_.width = usbSettings_.height = 0; usbSettings_.fps = 0; usbSettings_.format.clear(); }
+	ImGui::Indent(px(26));
+	dimText("%s", webcam::whyBest(best, listed).c_str());
+	ImGui::Unindent(px(26));
+	std::vector<webcam::Mode> offered = webcam::offered(listed);
+	offered.erase(std::remove(offered.begin(), offered.end(), best), offered.end());   // that's the first choice already
+	if (offered.empty() && listed.empty()) {
+		// Nothing listed (this system can't say, or the camera is busy): the sizes most cameras have, as asks.
+		offered = { { 1280, 720, 60, "MJPG" }, { 1280, 720, 30, "MJPG" }, { 1920, 1080, 30, "MJPG" }, { 640, 480, 30, "" } };
+		dimText("%s", d && !d->error.empty() ? (d->error + " Or ask for one of these: the camera takes its nearest.").c_str() : "Or ask for one of these: the camera takes its nearest.");
+	}
+	if (ImGui::BeginChild("##modes", ImVec2(px(380), std::min(ImGui::GetFrameHeightWithSpacing() * float(offered.size()) + px(4), px(260))), ImGuiChildFlags_None)) {
+		for (const webcam::Mode& m : offered) {
+			bool on = !usbSettings_.picksMode() && usbSettings_.width == m.width && usbSettings_.height == m.height
+				&& std::lround(usbSettings_.fps) == std::lround(m.fps) && (usbSettings_.format.empty() || usbSettings_.format == m.format);
+			if (ImGui::RadioButton(m.text().c_str(), on)) { usbSettings_.width = m.width; usbSettings_.height = m.height; usbSettings_.fps = m.fps; usbSettings_.format = m.format; }
+		}
+	}
+	ImGui::EndChild();
+
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::TextUnformatted("Shutter");
+	static const struct { int us; const char* label; } shutters[] = {
+		{ -1, "1/1000 s, slower if dark (recommended)" }, { 500, "1/2000 s" }, { 1000, "1/1000 s, always" }, { 2000, "1/500 s" }, { 4000, "1/250 s" }, { 0, "Automatic" },
+	};
+	const char* current = "Custom";
+	for (auto& sh : shutters) if (sh.us == usbSettings_.shutterUs) current = sh.label;
+	ImGui::SetNextItemWidth(px(300));
+	if (ImGui::BeginCombo("##usbshutter", current)) {
+		for (auto& sh : shutters) if (ImGui::Selectable(sh.label, sh.us == usbSettings_.shutterUs)) usbSettings_.shutterUs = sh.us;
+		ImGui::EndCombo();
+	}
+	dimText("A short shutter keeps cars sharp and stops the camera lowering its frame rate in shade. Where the system won't "
+		"let VST set it (macOS, some cameras), it stays automatic.");
+
+	// What the change does to the street set up for this camera.
+	ImGui::Dummy(ImVec2(0, px(4)));
+	ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
+	ImGui::TextWrapped(ICON_CHECK_CIRCLE "  These change how the camera sends pictures, not your street: your marks, distance and calibration stay.");
+	ImGui::PopStyleColor();
+	const std::string wanted = webcam::name(usbSettings_);
+	if (inUse && player.isOpen()) {
+		webcam::Mode was;
+		was.width = player.info().width; was.height = player.info().height; was.fps = player.info().fps;
+		std::string note = webcam::changeNote(was, usbModeFor(usbSettings_));
+		bool marked = !prefs.zonesFor.empty() && frameio::deviceKey(prefs.zonesFor) == frameio::deviceKey(source);
+		if (!note.empty() && (marked || calibrationDone())) {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(note.find("shape") != std::string::npos ? c::warn : c::dim));
+			ImGui::TextWrapped("%s", note.c_str());
+			ImGui::PopStyleColor();
+		}
+		ImGui::BeginDisabled(wanted == source || tracker.running());
+		if (primaryButton(ICON_LINK "  Reconnect with these settings", ImVec2(-FLT_MIN, 0), c::ok)) { openSource(wanted); ImGui::CloseCurrentPopup(); }
+		ImGui::EndDisabled();
+		if (tracker.running() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Live tracking is using the camera. Stop tracking first.");
+	}
+	else dimText("Press Connect to start the camera with these settings.");
+	ImGui::PopTextWrapPos();
+}
+
+// The marks (and calibration) were made on a picture of one shape; a mode of another shape stretches the working frame
+// differently, so lanes sit at other heights.  Nothing is changed: it says so and how to get back.
+void App::shapeNote() {
+	if (!player.isOpen() || prefs.zonesFrame.empty() || frameio::deviceKey(prefs.zonesFor) != frameio::deviceKey(source)) return;
+	webcam::Mode was, now;
+	if (std::sscanf(prefs.zonesFrame.c_str(), "%dx%d", &was.width, &was.height) != 2) return;
+	now.width = player.info().width; now.height = player.info().height;
+	if (!was.valid() || !now.valid() || was.wide() == now.wide()) return;
+	ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+	ImGui::PushTextWrapPos(0);
+	ImGui::TextWrapped(ICON_WARN "  The picture is %d × %d now, another shape than the %d × %d you marked your street on. Your marks and "
+		"calibration are kept: look at step 4 to check the box still sits on the lane, or pick a %s size in the camera settings.",
+		now.width, now.height, was.width, was.height, was.wide() ? "16:9" : "4:3");
+	ImGui::PopTextWrapPos();
+	ImGui::PopStyleColor();
+}
+
 void App::pageSource() {
 	flowStepper();
 	float avail = ImGui::GetContentRegionAvail().x;
@@ -1212,16 +2003,33 @@ void App::pageSource() {
 			piCams_.empty() ? "A webcam, a phone in USB webcam mode, or a Raspberry Pi camera. Tracks live, in real time."
 				: "A Raspberry Pi camera, a webcam, or a phone in USB webcam mode. Tracks live, in real time.", [&] {
 			bool pi = piChoice_ >= 0 && piChoice_ < int(piCams_.size());
+			pumpUsbListing();
 			// The menu takes what the Connect/Disconnect button leaves, so the button's label is never cut off in a narrow
-			// window (three cards share the left two thirds of the page).
-			bool inUse = pi ? picam::isName(source) : source == std::to_string(cameraIndex_);
+			// window (three cards share the left two thirds of the page).  Both kinds of camera have a settings popup.
+			bool inUse = pi ? picam::isName(source) : frameio::deviceKey(source) == "usb:" + std::to_string(cameraIndex_);
 			float connectW = buttonWidth(inUse ? ICON_XMARK " Disconnect" : ICON_LINK " Connect");
-			float settingsW = pi ? ImGui::GetFrameHeight() + px(4) : 0;
-			ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x - connectW - settingsW - px(8), px(76), px(110)));
-			char camLabel[96];
+			// The camera's settings sit in the card's top-right corner, beside its icon, where the row below has no room.
+			{
+				ImVec2 back = ImGui::GetCursorScreenPos();
+				const char* label = ICON_SLIDERS " Settings";
+				ImGui::SetCursorScreenPos(ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - px(18) - buttonWidth(label), ImGui::GetWindowPos().y + px(16)));
+				if (ghostButton(label)) ImGui::OpenPopup(pi ? "##pisettings" : "##usbsettings");
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+					ImGui::SetTooltip("%s", pi ? "Pi camera settings: frame rate, shutter, focus"
+						: "Camera settings: picture size, frame rate, shutter. VST picks the best for timing unless you choose.");
+				if (pi && ImGui::BeginPopup("##pisettings")) { piCameraSettings(); ImGui::EndPopup(); }
+				if (!pi && ImGui::BeginPopup("##usbsettings")) { usbCameraSettings(inUse); ImGui::EndPopup(); }
+				ImGui::SetCursorScreenPos(back);
+			}
+			ImGui::SetNextItemWidth(std::clamp(ImGui::GetContentRegionAvail().x - connectW - px(8), px(76), px(130)));
+			char camLabel[160];
+			const webcam::Device* usb = usbDevice(cameraIndex_);
 			if (pi) snprintf(camLabel, sizeof camLabel, ICON_CAMERA " Pi %d", piCams_[piChoice_].index);
+			else if (usb && !usb->name.empty()) snprintf(camLabel, sizeof camLabel, "%s", usb->name.c_str());   // clipped to the box; the tooltip has it all
 			else snprintf(camLabel, sizeof camLabel, "USB %d", cameraIndex_);   // "USB camera N" in the menu
+			if (ImGui::IsWindowAppearing() || ImGui::IsItemHovered()) listUsbCameras();   // a camera plugged in since: there by the time the menu opens
 			if (ImGui::BeginCombo("##cam", camLabel, ImGuiComboFlags_HeightLarge)) {
+				listUsbCameras();
 				for (int i = 0; i < int(piCams_.size()); i++) {
 					snprintf(camLabel, sizeof camLabel, "Pi camera %d: %s", piCams_[i].index, piCams_[i].model.c_str());
 					if (ImGui::Selectable(camLabel, piChoice_ == i)) piChoice_ = i;
@@ -1233,20 +2041,39 @@ void App::pageSource() {
 					ImGui::EndDisabled();
 				}
 				if (!piCams_.empty() || (piListed_ && picam::onRaspberryPi())) ImGui::Separator();
+				// USB cameras by the name the system gives them, with the best frame rate their driver lists (Webcam.h).
+				// Where nothing is listed (an unlisted platform, or still looking) the numbers are offered as before.
+				for (const webcam::Device& d : usbCams_) {
+					double top = d.topFps();
+					if (top > 0) snprintf(camLabel, sizeof camLabel, "%s  ·  up to %.0f fps##usb%d", d.label().c_str(), top, d.index);
+					else snprintf(camLabel, sizeof camLabel, "%s##usb%d", d.label().c_str(), d.index);
+					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == d.index)) pickUsbCamera(d.index);
+					if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+						const webcam::Model* m = webcam::recognize(d);
+						ImGui::SetTooltip("Camera %d%s%s", d.index, m ? ": " : "", m ? m->note : "");
+					}
+				}
+				if (!usbCams_.empty()) {
+					ImGui::BeginDisabled();
+					ImGui::Selectable("Not listed? Try a number:");
+					ImGui::EndDisabled();
+				}
+				else if (!usbListed_) {
+					ImGui::BeginDisabled();
+					ImGui::Selectable("Looking for cameras…");
+					ImGui::EndDisabled();
+				}
 				for (int i = 0; i < 6; i++) {
-					snprintf(camLabel, sizeof camLabel, "USB camera %d%s", i, i == 0 ? " (usually built-in)" : "");
-					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == i)) { cameraIndex_ = i; piChoice_ = -1; }
+					if (usbDevice(i)) continue;
+					snprintf(camLabel, sizeof camLabel, "USB camera %d%s", i, i == 0 && usbCams_.empty() ? " (usually built-in)" : "");
+					if (ImGui::Selectable(camLabel, !pi && cameraIndex_ == i)) pickUsbCamera(i);
 				}
 				ImGui::EndCombo();
 			}
 			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-				ImGui::SetTooltip("Which camera to use. USB camera 0 is usually the built-in or first one plugged in.");
-			if (pi) {
-				ImGui::SameLine(0, px(4));
-				if (iconButton(ICON_SLIDERS, "Pi camera settings: frame rate, shutter, focus")) ImGui::OpenPopup("##pisettings");
-				if (ImGui::BeginPopup("##pisettings")) { piCameraSettings(); ImGui::EndPopup(); }
-			}
-			ImGui::SameLine(0, px(pi ? 6 : 8));
+				ImGui::SetTooltip("%s", pi ? "Which camera to use." : usb && !usb->name.empty() ? (usb->label() + ", camera " + std::to_string(usb->index)).c_str()
+					: "Which camera to use. USB camera 0 is usually the built-in or first one plugged in.");
+			ImGui::SameLine(0, px(8));
 			// The button follows the menu: Disconnect while the camera it names is the source (or connecting), Connect
 			// otherwise.  A Pi camera's source name carries its settings, so any Pi camera source counts as "it".
 			if (inUse) {
@@ -1258,7 +2085,7 @@ void App::pageSource() {
 					piSettings_.camera = piCams_[piChoice_].index;
 					openSource(picam::name(piSettings_));
 				}
-				else openSource(std::to_string(cameraIndex_));
+				else { usbSettings_.camera = cameraIndex_; openSource(webcam::name(usbSettings_)); }
 			}
 		});
 		ImGui::SameLine(0, px(16));
@@ -1367,6 +2194,7 @@ void App::pageSource() {
 			ImGui::SameLine(px(130));
 			ImGui::TextUnformatted(v.c_str());
 		};
+		if (!in.deviceName.empty()) fact("Camera", in.deviceName);
 		fact("Resolution", std::to_string(in.width) + " × " + std::to_string(in.height));
 		if (in.kind != SourceInfo::Image) {
 			char buf[64];
@@ -1382,6 +2210,12 @@ void App::pageSource() {
 				fact("Shutter", buf);
 			}
 			else if (in.shutter != frameio::Shutter::Unknown) fact("Shutter", "automatic");
+			if (in.kind == SourceInfo::Camera && frameio::classify(in.path) == frameio::Kind::Camera) {
+				webcam::Settings us;
+				webcam::parse(in.path, us);
+				fact("Mode", in.modePicked ? "picked by VST for timing" : us.picksMode() ? "as the camera gave it" : "your choice (camera settings)");
+				if (in.modePicked && !in.modeWhy.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", in.modeWhy.c_str());
+			}
 		}
 		ImGui::Dummy(ImVec2(0, px(4)));
 		// Plain-language checks against what the tracker needs (README "Set-up Checklist").
@@ -1413,6 +2247,32 @@ void App::pageSource() {
 			snprintf(b, sizeof b, "Sending about %.0f fps though it reports %.0f. Speeds are counted in frames, so fix the shutter "
 				"or add light before you calibrate.", in.measuredFps, in.fps);
 			check(false, "", b);
+		}
+		// What VST knows about this model beyond what its driver says (the registry, Webcam.h): a hint, never a setting.
+		if (frameio::classify(in.path) == frameio::Kind::Camera)
+			if (const webcam::Model* m = webcam::recognize(in.deviceName, 0, 0)) {
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(std::string(m->kind) == "virtual" ? c::warn : c::dim));
+				ImGui::PushTextWrapPos(0);
+				ImGui::TextWrapped(ICON_INFO "  %s: %s", m->name, m->note);
+				ImGui::PopTextWrapPos();
+				ImGui::PopStyleColor();
+			}
+		shapeNote();
+		// Short-view timing's look-ahead was fitted to step 2's frame rate; a slower camera moves cars farther per frame
+		// than it looks for.  Fitting it again changes only that, not the speed lines, so the calibration stays.
+		if (cfg.g.subFrameTiming && in.fps > 0 && in.kind != SourceInfo::Image) {
+			int need = lookAheadFor(in.fps);
+			if (std::min(cfg.g.maxL2RDistOnEntry, cfg.g.maxR2LDistOnEntry) < need) {
+				char b[240];
+				snprintf(b, sizeof b, "Short-view timing looks ahead for a %.0f fps camera; at %.0f fps fast cars move farther each frame "
+					"than that and can be missed.", planSaved().fps, in.fps);
+				check(false, "", b);
+				snprintf(b, sizeof b, ICON_SLIDERS "  Fit the look-ahead to %.0f fps", in.fps);
+				if (ghostButton(b, ImVec2(-FLT_MIN, 0))) {
+					cfg.g.maxL2RDistOnEntry = cfg.g.maxR2LDistOnEntry = need;
+					toast("Look-ahead fitted to this camera. Speed lines and calibration are unchanged.", c::ok, ICON_CHECK);
+				}
+			}
 		}
 		if (frameio::classify(in.path) == frameio::Kind::Camera) cameraCheck(in.path, "");
 	}
@@ -1490,8 +2350,14 @@ void App::pageZones() {
 		feedHint("Open a video, camera or photo of your street to draw on"));
 	OverlayStyle st;
 	const char* hovered = nullptr;
-	st.editable = !levelTool_;   // the level dots get the mouse while they're out
+	st.editable = !levelTool_ && !parkingLineDragging();   // the level dots get the mouse while they're out
 	if (player.isOpen()) zoneOverlay(v, cfg.g, st, &hovered);   // with no picture, the lines would only cover the hint
+	// The parking lane (ParkingLane.h) gets the mouse only where the zones don't want it: it usually lies outside the
+	// analysis box, and a zone handle on top of it stays reachable.
+	if (player.isOpen() && parkingLane().set()) {
+		double py[2] = { prefs.parkY0, prefs.parkY1 };
+		if (parkingLineOverlay(v, py, !levelTool_ && !hovered, &hovered)) { prefs.parkY0 = py[0]; prefs.parkY1 = py[1]; savePrefsSoon(); }
+	}
 	if (player.isOpen() && ghostCar_) ghostCars(v, cfg.g, cameraSetup(), ghostGoesRight());
 	if (player.isOpen() && (levelTool_ || levelGrid_)) {
 		levelGuide(v, levelDots_, levelTool_);
@@ -1540,6 +2406,7 @@ void App::pageZones() {
 	};
 	if (!oneWay) keys.push_back({ c::r2l, "← Lane", "hubcap height of cars going left" });
 	if (cfg.g.hasStreetEdge()) keys.push_back({ c::streetEdge, "Street edge", "along the curb: how the street recedes" });
+	if (parkingLane().set()) keys.push_back({ c::parking, "Parking lane", "wheel centres of parked cars, for step 5" });
 	float kw = (canvasW - px(36)) / 3;
 	for (int i = 0; i < int(keys.size()); i++) {
 		if (i % 3) ImGui::SameLine(px(18) + kw * (i % 3));
@@ -1643,8 +2510,15 @@ void App::zoneInspector() {
 	beginCard("zone", ICON_STOPWATCH, "Speed zone");
 	dimText("Timing starts when a front bumper crosses one white line and stops at the other. Put them as far apart as the lane stays clear; "
 		"with short-view timing (step 2) even a short stretch works.");
-	intRow("Left line", &g.speedLineLeft, 0, g.AnalysisBoxWidth);
-	intRow("Right line", &g.speedLineRight, 0, g.AnalysisBoxWidth);
+	// On the rails (Globals::railZone()): inside the box, at least kMinZone apart.  A typed value (Ctrl+click) can go past
+	// the drag limits, so the rails are applied after either field changes, moving the other line if it must.
+	{
+		const int sl0 = g.speedLineLeft, sr0 = g.speedLineRight;
+		intRow("Left line", &g.speedLineLeft, 0, std::max(g.AnalysisBoxWidth - Globals::kMinZone, 0));
+		intRow("Right line", &g.speedLineRight, std::min(Globals::kMinZone, g.AnalysisBoxWidth), g.AnalysisBoxWidth);
+		if (g.speedLineLeft != sl0 || g.speedLineRight != sr0) g.railZone(g.speedLineLeft != sl0);
+		dimText("The lines stay inside the box and at least %d px apart. Right on the box's edge is fine: VST times cars as they come into view.", Globals::kMinZone);
+	}
 	// How long a car at the limit spends between the lines, from the calibration (the legal direction's lane on a
 	// one-way street).  Before calibrating, the numbers in VST.cfg belong to some other street, so it says nothing
 	// yet; with short-view timing a short time is expected, not a problem.
@@ -1666,7 +2540,11 @@ void App::zoneInspector() {
 	dimText("Just the street: leave out treetops, parked cars and the sidewalk so they can't fool the tracker.");
 	intRow("Left", &g.AnalysisBoxLeft, 0, 1279);
 	intRow("Top", &g.AnalysisBoxTop, 0, 719);
-	intRow("Width", &g.AnalysisBoxWidth, 40, 1280);
+	{
+		const int w0 = g.AnalysisBoxWidth;
+		intRow("Width", &g.AnalysisBoxWidth, Globals::kMinZone, 1280);
+		if (g.AnalysisBoxWidth != w0) { g.AnalysisBoxWidth = std::max(g.AnalysisBoxWidth, Globals::kMinZone); g.railZone(false); }  // the right side moved: the lines stay inside
+	}
 	intRow("Height", &g.AnalysisBoxHeight, 30, 720);
 	endCard();
 
@@ -1754,8 +2632,10 @@ void App::zoneInspector() {
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s", help);
 			};
 			double distFt = prefs.planDist * plan::kFt;
+			double wasFt = distFt;
 			numRow("To the lane (ft)", &distFt, 1, "%.0f", 4, 300, "From the camera to the middle of the lane, square to the street. The same as step 2.");
-			prefs.planDist = distFt / plan::kFt;
+			// Through the plan, as the user's own number: a calibration later keeps it (Guide.cpp setMeasuredDistance).
+			if (distFt != wasFt) setMeasuredDistance(distFt / plan::kFt, "Your distance, from the ghost car on Mark your street");
 			numRow("Camera height (ft)", &prefs.calcHeightFt, 1, "%.0f", 0, 100, "Above the road. A second-floor window is about 12-15 ft.");
 			numRow("Field of view (°)", &prefs.planHfov, 1, "%.0f", perspective::kMinHfovDeg, perspective::kMaxHfovDeg,
 				"Horizontal angle the camera sees. Phones and webcams: 60-80°. Wide IP cameras: 90-110°. The same as step 2.");
@@ -1793,14 +2673,81 @@ void App::zoneInspector() {
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
 					ImGui::SetTooltip("Draws the green street edge from this setup, so short-view timing measures along the ground.");
 				ImGui::SameLine();
-				if (primaryButton(ICON_CHECK "  Calibrate from it", ImVec2(-FLT_MIN, 0)))
-					applyDistanceCalibration(true, true, zoneFt / (g.CalibrationSpeed * 5280 / 3600) * g.CalibrationFPS, "the camera setup");
+				if (primaryButton(ICON_CHECK "  Calibrate from it", ImVec2(-FLT_MIN, 0))) {
+					// A typed-in camera model is the roughest input (kSigmaCamera), so once anything is measured on the
+					// street it counts for little; until then it gives a working start.
+					char label[96];
+					snprintf(label, sizeof label, "Camera setup: %.0f ft away, %.0f ft up", cam.distanceFt, cam.heightFt);
+					applyDistanceCalibration(true, true, calib::framesForZone(zoneFt, g.CalibrationSpeed, g.CalibrationFPS), "the camera setup",
+						"camera", calib::kSigmaCamera, label);
+				}
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-					ImGui::SetTooltip("Sets both directions' calibration from the zone's length in feet. One drive past then checks it.");
+					ImGui::SetTooltip("Adds the zone's length from this setup to your calibration, as a rough measurement.\n"
+						"Anything measured on the street (a drive past, cones, a known car) counts for much more.");
 			}
 		}
 		endCard();
 	}
+
+	// The parking lane: a line on the parked cars' wheel centres, kept for step 5's Known car mode (ParkingLane.h), which
+	// then tells a parked car from a passing one by itself and scales a parked one to the travel lane.  The tracker never
+	// uses it.  It starts parallel to the lane line, 50 px above it (the far side, the usual view from a window), or below
+	// when there's no room above; the user drags it onto a parked car's wheels.
+	ImGui::Dummy(ImVec2(0, px(2)));
+	beginCard("parking", ICON_CAR, "Parking lane");
+	{
+		const bool oneWayP = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+		const bool laneL2R = oneWayP ? g.LegalDirection == "L2R" : true;
+		bool hasPark = parkingLane().set();
+		if (ImGui::Checkbox("Cars park along this street", &hasPark)) {
+			if (hasPark) {
+				// It starts 50 px beyond the farther lane line (above it), or, with no room there, 50 px nearer than the
+				// nearer one, so on a two-way street it never begins between the two lanes.
+				double l1 = laneRowAt(true, 0), r1 = laneRowAt(true, 1280), l2 = laneRowAt(false, 0), r2 = laneRowAt(false, 1280);
+				if (oneWayP) { l2 = l1 = laneRowAt(laneL2R, 0); r2 = r1 = laneRowAt(laneL2R, 1280); }
+				const bool farL1 = l1 + r1 <= l2 + r2;
+				double l = farL1 ? l1 : l2, r = farL1 ? r1 : r2, off = -50;
+				if (std::min(l, r) - 50 < 20) { l = farL1 ? l2 : l1; r = farL1 ? r2 : r1; off = 50; }
+				prefs.parkY0 = std::clamp(std::round(l + off), 1.0, 719.0);
+				prefs.parkY1 = std::clamp(std::round(r + off), 1.0, 719.0);
+			}
+			else prefs.parkY0 = prefs.parkY1 = 0;
+			savePrefsSoon();
+		}
+		ImGui::PushTextWrapPos(0);
+		if (!hasPark)
+			dimText("Optional. Mark where parked cars' wheels sit, and step 5 can calibrate from a parked car of a known model: "
+				"it tells parked from passing by itself and corrects for the parked car being farther away.");
+		else {
+			dimText("Drag the blue dashed line onto the middle of a parked car's wheels, the way the lane line sits on a moving "
+				"car's hubcaps. Drag an end if the street runs at an angle. The tracker ignores it; it's for step 5.");
+			calib::ParkingLane park = parkingLane();
+			calib::CarSpot sp;
+			double laneRow = laneRowAt(laneL2R, 640);
+			calib::parkedBeyond(cameraSetup(), 640, laneRow, park, sp);
+			if (std::isfinite(sp.parkedFt)) {
+				const char* how = sp.fromPicture ? "worked out from the picture, your camera's height and step 2's distance"
+					: sp.typical ? "a typical guess: VST can't read it from this camera" : "as you measured";
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(c::parking));
+				ImGui::TextWrapped(ICON_RULER "  Parked cars' wheels are about %.1f ft %s than moving cars' (%s).",
+					std::fabs(sp.parkedFt), sp.parkedFt >= 0 ? "farther" : "nearer", how);
+				ImGui::PopStyleColor();
+			}
+			formLabel("Measured (ft)", col);
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
+			if (ImGui::InputDouble("##parkft", &prefs.parkFt, .5, 1, prefs.parkFt > 0 ? "%.1f" : "auto")) {
+				prefs.parkFt = std::clamp(prefs.parkFt, 0.0, 40.0);
+				savePrefsSoon();
+			}
+			helpMarker("Optional. Across the street, from a moving car's wheels to a parked car's (for a car in the middle of\n"
+				"the travel lane, about half a lane plus half a parking lane). Leave it at 0 (auto) and VST works it out from the\n"
+				"two lines, using the camera height under \"Check it with a ghost car\" above.");
+			int cmp = std::fabs(laneRow - park.at(640)) < 4 ? 0 : 1;
+			if (!cmp) dimText(ICON_WARN "  The parking lane sits on the lane line. Drag it onto the parked cars.");
+		}
+		ImGui::PopTextWrapPos();
+	}
+	endCard();
 
 	ImGui::Dummy(ImVec2(0, px(2)));
 	beginCard("obs", ICON_BAN, "Obstruction");
@@ -1830,7 +2777,7 @@ void App::zoneInspector() {
 		intRow("Max → step", &g.maxL2RDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Max ← step", &g.maxR2LDistOnEntry, 5, 1280, "Fastest trackable motion, pixels per two frames. A short view needs several hundred.");
 		intRow("Entry look-back", &g.entryLookBack, 0, 1280);
-		intRow("Slowest logged", &g.minLoggedSpeed, 0, 100, "Vehicles timed below this many mph (walkers, cyclists) are counted in the run manifest but not written to the csv. 0 logs every timed vehicle.");
+		intRow("Slowest logged", &g.minLoggedSpeed, 0, 100, "Vehicles timed below this many mph (walkers, cyclists) are counted in the run manifest but not written to the csv. 0 logs every timed vehicle. Follows the speed limit (5 mph under it, at most 18) until you change it here.");
 	}
 
 	// Validation from the engine itself, then save/revert.
@@ -1857,11 +2804,38 @@ void App::zoneInspector() {
 // Calibrate
 // ======================================================================================================
 
-// Speed you drove, as an exact whole number with -/+ steps (a slider can't land on 27 reliably).
-static void speedStepper(const char* id, int* mph) {
+// Speed you drove, as an exact whole number with -/+ steps (a slider can't land on 27 reliably).  True when edited.
+static bool speedStepper(const char* id, int* mph) {
 	ImGui::SetNextItemWidth(-FLT_MIN);
-	ImGui::InputInt(id, mph, 1, 5);
-	*mph = std::clamp(*mph, 5, 80);
+	bool changed = ImGui::InputInt(id, mph, 1, 5);
+	*mph = std::clamp(*mph, calib::kTargetMin, calib::kTargetMax);
+	return changed;
+}
+
+// The drive-by's target speed as chips (calib::targetPresets: 10, 15, 20, 25 and the posted limit), above the steps'
+// pass list so it's chosen before the drive.  Until the user touches it the target follows the saved choice or the
+// posted limit; a chip is remembered (prefs.calibTarget) for next time.  Any other speed goes in the "I drove at"
+// stepper below, which is the same value: the chips are shortcuts for it.
+void App::targetSpeedChips() {
+	if (!calibSpeedSet_) calibSpeed_ = calib::defaultTarget(prefs.calibTarget, prefs.speedLimit);
+	std::vector<int> presets = calib::targetPresets(prefs.speedLimit);
+	std::vector<std::string> text;
+	for (int mph : presets) text.push_back(std::to_string(mph) + (mph == prefs.speedLimit ? " (limit)" : ""));
+	std::vector<const char*> labels;
+	for (const std::string& t : text) labels.push_back(t.c_str());
+	int sel = int(std::find(presets.begin(), presets.end(), calibSpeed_) - presets.begin());
+	if (sel == int(presets.size())) sel = -1;   // a custom or dashcam-read speed: no chip lit
+	formLabel("Target (mph)", px(130));
+	if (segmented("target", &sel, labels.data(), int(labels.size()))) {
+		calibSpeed_ = presets[size_t(sel)];
+		calibSpeedSet_ = true;
+		prefs.calibTarget = calibSpeed_;
+		prefs.save();
+		dashFor_ = 0;   // a dashcam reading no longer stands for "I drove at"
+	}
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Any steady speed calibrates equally well, so drive at whatever is comfortable on your street.\n"
+			"The posted limit is a good choice. For another speed, type it under \"I drove at\".");
 }
 
 double App::drivenMph(int vehicleId) const {
@@ -1939,6 +2913,7 @@ void App::dashcamSpeed(const Vehicle* picked) {
 			dashFor_ = picked->id;
 			dashMph_ = std::round(j.mph * 10) / 10;
 			calibSpeed_ = int(std::lround(dashMph_));
+			calibSpeedSet_ = true;
 		}
 		if (j.agree) {
 			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok));
@@ -2061,21 +3036,61 @@ void App::pageCalibrate() {
 	bool carMode = calibMode_ == 3;
 	float* markX = carMode ? carX_ : coneX_;
 	float* markY = carMode ? carY_ : coneY_;
-	auto markName = [&](int i) { return carMode ? std::string(i == 0 ? "Front bumper" : "Rear bumper") : "Spot " + std::to_string(i + 1); };
+	auto markName = [&](int i) {
+		if (!carMode) return "Spot " + std::to_string(i + 1);
+		return std::string(i == 0 ? "Left " : "Right ") + (carWheels_ ? "wheel" : "bumper");
+	};
 	if ((calibMode_ == 2 || carMode) && player.isOpen()) {
 		ImDrawList* dl = ImGui::GetWindowDrawList();
+		// Known car: the parking lane as drawn in step 4, so it's plain which line a car's wheels are on.
+		const calib::ParkingLane park = parkingLane();
+		if (carMode && park.set()) {
+			double py[2] = { park.yLeft, park.yRight };
+			parkingLineOverlay(v, py, false, nullptr, .8f);
+		}
 		float top = float(g.AnalysisBoxTop) - 30, bottom = float(g.AnalysisBoxTop + g.AnalysisBoxHeight) + 30;
+		if (carMode)
+			for (int i = 0; i < 2; i++)
+				if (markX[i] >= 0) { top = std::min(top, markY[i] - 60); bottom = std::max(bottom, markY[i] + 30); }
 		for (int i = 0; i < 2; i++) {
 			if (markX[i] < 0) continue;
 			ImVec2 a = v.at(markX[i], top), b = v.at(markX[i], bottom), base = v.at(markX[i], markY[i]);
 			dl->AddLine(a, b, alpha(c::warn, .8f), px(2));
-			dl->AddTriangleFilled(base + ImVec2(0, -px(16)), base + ImVec2(-px(8), 0), base + ImVec2(px(8), 0), c::warn);
+			if (carMode && carWheels_) {
+				// A crosshair on the wheel's centre, as the card's picture shows it.
+				dl->AddCircle(base, px(9), c::warn, 0, 2.5f);
+				dl->AddLine(base - ImVec2(px(14), 0), base + ImVec2(px(14), 0), c::warn, 2.f);
+			}
+			else dl->AddTriangleFilled(base + ImVec2(0, -px(16)), base + ImVec2(-px(8), 0), base + ImVec2(px(8), 0), c::warn);
+			// Each name on its line's outer side, so two marks close together (a car's wheels) don't print over each other.
 			std::string t = markName(i);
-			dl->AddText(fonts.strong, fsz(fonts.strong), a + ImVec2(px(6), 0), c::warn, t.c_str());
+			const int other = 1 - i;
+			const bool outLeft = markX[other] >= 0 && markX[i] < markX[other];
+			const float tw = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t.c_str()).x;
+			float tx = outLeft ? a.x - px(6) - tw : a.x + px(6);
+			tx = std::clamp(tx, v.origin.x + px(4), v.origin.x + v.size.x - tw - px(4));
+			dl->AddText(fonts.strong, fsz(fonts.strong), ImVec2(tx, a.y), c::warn, t.c_str());
 		}
 		if (markX[0] >= 0 && markX[1] >= 0) {
 			ImVec2 a = v.at(markX[0], markY[0]), b = v.at(markX[1], markY[0]);
 			dl->AddLine(a + ImVec2(0, px(8)), b + ImVec2(0, px(8)), c::warn, px(2));
+		}
+		// Known car: where the car is, on the car itself, in the colour of the line it's on.
+		if (carMode && markX[0] >= 0 && markX[1] >= 0) {
+			const bool oneWayC = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+			bool l2r = oneWayC ? g.LegalDirection == "L2R" : coneDir_ != 2;
+			calib::CarSpot spot = carSpot(l2r);
+			char t[96];
+			ImU32 col;
+			if (park.set() && spot.offLines) { std::snprintf(t, sizeof t, ICON_WARN "  Not on a line: click the wheel centres"); col = c::warn; }
+			else if (carParked_) { std::snprintf(t, sizeof t, ICON_CAR "  PARKED  ·  scaled x%.2f to the travel lane", carScale(l2r)); col = c::parking; }
+			else { std::snprintf(t, sizeof t, ICON_CHECK_CIRCLE "  IN THE TRAVEL LANE"); col = l2r ? c::l2r : c::r2l; }
+			ImVec2 ts = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t);
+			ImVec2 mid = v.at(float(markX[0] + markX[1]) * .5f, std::min(markY[0], markY[1]));
+			ImVec2 tp(std::clamp(mid.x - ts.x * .5f - px(8), v.origin.x + px(6), v.origin.x + v.size.x - ts.x - px(22)),
+				std::max(mid.y - px(46) - ts.y, v.origin.y + px(44)));
+			dl->AddRectFilled(tp, tp + ts + ImVec2(px(16), px(10)), col, px(6));
+			dl->AddText(fonts.strong, fsz(fonts.strong), tp + ImVec2(px(8), px(5)), c::bg0, t);
 		}
 		if (coneTimerAt_ >= 0) {
 			// Big enough to read from across the room on the way out.
@@ -2090,7 +3105,8 @@ void App::pageCalibrate() {
 		}
 		if (conePlacing_ >= 0) {
 			ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-			std::string t = carMode ? "Click the " + std::string(conePlacing_ == 0 ? "front" : "rear") + " bumper, at the corner facing the camera"
+			std::string t = carMode ? (carWheels_ ? "Click the middle of the " + std::string(conePlacing_ == 0 ? "left" : "right") + " wheel, on the side facing you"
+					: "Click the " + std::string(conePlacing_ == 0 ? "left" : "right") + " bumper, where it ends on the side facing the camera")
 				: "Click the cone or pole at spot " + std::to_string(conePlacing_ + 1);
 			ImVec2 ts = fonts.strong->CalcTextSizeA(fsz(fonts.strong), FLT_MAX, 0, t.c_str());
 			ImVec2 tp = v.origin + ImVec2((v.size.x - ts.x) * .5f, px(12));
@@ -2142,8 +3158,14 @@ void App::pageCalibrate() {
 
 	ImGui::Dummy(ImVec2(0, px(2)));
 	// Under the picture: the latest check pass's result when there is one (it has the room to sit beside the
-	// numbers), otherwise how the calibration is used.
+	// numbers), else every measurement the calibration is made of, else (nothing measured yet) how it is used.
 	if (lastCheck_.valid) calibrationCheckCard(canvasW);
+	else if (!calibrationInputs().empty()) {
+		// The rest of the column, scrolling if a two-way street's two lists need more.
+		beginCard("calinputs", ICON_LAYERS, "What your calibration is made of", ImVec2(canvasW, std::max(px(150), ImGui::GetContentRegionAvail().y)), true);
+		calibrationInputsCard(true);
+		endCard();
+	}
 	else {
 		beginCard("how", ICON_INFO, "How VST turns frames into speed", ImVec2(canvasW, 0));
 		ImGui::PushTextWrapPos(0);
@@ -2180,6 +3202,9 @@ void App::pageCalibrate() {
 		else if (ghostButton(ICON_BULLSEYE "  Check it with a second drive", ImVec2(-FLT_MIN, 0))) {
 			calibChecking_ = true;
 			calibPickId_ = 0;   // a check needs a new pass, not the one just used
+			calibSpeed_ = calib::checkTarget(calibSpeed_);   // suggest another speed; the user can pick any
+			calibSpeedSet_ = true;
+			dashFor_ = 0;
 		}
 	};
 	// A pass can be checked once its direction has a calibration, and never against the pass that calibration was
@@ -2207,17 +3232,29 @@ void App::pageCalibrate() {
 
 	if (calibMode_ == 0) {
 		beginCard("drive", calibChecking_ ? ICON_BULLSEYE : ICON_CAR, calibChecking_ ? "Check it with a second drive" : "Drive through at a known speed");
+		// The steps name the target speed, so they read as instructions for this street rather than an example.
+		targetSpeedChips();
+		char stepText[320];
 		if (calibChecking_) {
-			stepLine(1, "Drive past again on cruise control, ideally at a different speed from your first pass.");
+			snprintf(stepText, sizeof stepText, "Drive past again at a steady %d mph. A different speed from your first pass tests more.", calibSpeed_);
+			stepLine(1, stepText);
 			stepLine(2, "Pick that pass and enter the speed you drove. Within ±2 mph is verified.");
 		}
 		else {
 			stepLine(1, "Start tracking (live, or record a video). Your street should already be marked (step 4).");
-			stepLine(2, "Drive past on cruise control at a speed you know, e.g. 25 mph, or at any steady speed while a Tesla dashcam or VST Ride-along on your phone records. Once each way on a two-way street.");
+			snprintf(stepText, sizeof stepText, "Drive past at a steady %d mph, or at any steady speed while a Tesla dashcam or VST Ride-along on your "
+				"phone records it. %s", calibSpeed_, g.LegalDirection == "Both" ? "Once each way." : "The legal way is enough.");
+			stepLine(2, stepText);
 			stepLine(3, "Pick your pass below, enter the speed you drove (or read it from those recordings), and apply.");
 		}
+		if (calib::belowCruiseControl(calibSpeed_)) {
+			ImGui::PushTextWrapPos(0);
+			dimText(ICON_INFO "  Most cruise control won't hold under 25 mph. Hold it steady by eye on the speedometer, "
+				"or let VST Ride-along on your phone read the speed for you afterwards.");
+			ImGui::PopTextWrapPos();
+		}
 		ImGui::Dummy(ImVec2(0, px(2)));
-		auto vs = tracker.vehiclesSince(0);
+		auto vs = tracker.passesSince(0);
 		if (vs.empty()) dimText("No vehicles measured yet this session. Run tracking first, then come back here.");
 		else {
 			// Five rows while checking (the newest passes are the likely ones), so the Current calibration card with
@@ -2225,24 +3262,30 @@ void App::pageCalibrate() {
 			ImGui::BeginChild("picklist", ImVec2(0, calibChecking_ ? ImGui::GetTextLineHeightWithSpacing() * 5 + ImGui::GetStyle().FramePadding.y * 2 : px(240)), ImGuiChildFlags_FrameStyle);
 			for (auto it = vs.rbegin(); it != vs.rend(); ++it) {
 				ImGui::PushID(it->id);
-				char label[180];
-				snprintf(label, sizeof label, "%s   %d frames   measured %d mph   %s%s",
-					it->ev.leftToRight ? "L→R" : "R→L", it->frames(), it->ev.speed, it->time.substr(11).c_str(),
-					it->id == calibAppliedId_ ? "   calibrated from" : "");
+				char label[200];
+				snprintf(label, sizeof label, "%s  %d frames  measured %d mph%s  %s%s",
+					it->ev.leftToRight ? "L→R" : "L←R", it->frames(), it->ev.speed, it->belowMin ? " · slow" : "",
+					it->time.substr(11).c_str(), it->id == calibAppliedId_ ? "  · calibrated from" : "");
 				if (ImGui::Selectable(label, calibPickId_ == it->id)) calibPickId_ = it->id;
+				if (it->belowMin && ImGui::IsItemHovered())
+					ImGui::SetTooltip("Slower than Slowest logged (%d mph), so it isn't in the csv or Results,\n"
+						"but it calibrates as well as any other pass.", g.minLoggedSpeed);
 				ImGui::PopID();
 			}
 			ImGui::EndChild();
 		}
 		formLabel("I drove at (mph)", px(130));
-		speedStepper("##spd", &calibSpeed_);
+		if (speedStepper("##spd", &calibSpeed_)) { calibSpeedSet_ = true; dashFor_ = 0; }
 		Vehicle picked;
 		bool have = calibPickId_ > 0 && tracker.vehicle(calibPickId_, picked);
 		dashcamSpeed(have ? &picked : nullptr);
 		if (calibChecking_) {
 			const char* why = have ? whyNoCheck(picked.ev.leftToRight, picked.id) : nullptr;
 			ImGui::BeginDisabled(!have || why);
-			if (primaryButton(ICON_BULLSEYE "  Check this pass", ImVec2(-FLT_MIN, 0))) checkCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
+			if (primaryButton(ICON_BULLSEYE "  Check this pass", ImVec2(-FLT_MIN, 0))) {
+				checkCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
+				markCalibrationPass(picked, true, drivenMph(picked.id));
+			}
 			ImGui::EndDisabled();
 			if (why) { ImGui::PushTextWrapPos(0); dimText("%s", why); ImGui::PopTextWrapPos(); }
 		}
@@ -2250,6 +3293,7 @@ void App::pageCalibrate() {
 			ImGui::BeginDisabled(!have);
 			if (primaryButton(ICON_CHECK "  Use this pass", ImVec2(-FLT_MIN, 0))) {
 				applyCalibration(picked.ev.leftToRight, drivenMph(picked.id), picked.frames(), picked.fps);
+				markCalibrationPass(picked, false, drivenMph(picked.id));
 				calibAppliedId_ = picked.id;
 			}
 			ImGui::EndDisabled();
@@ -2265,7 +3309,7 @@ void App::pageCalibrate() {
 			"Stand a cone on each, or have one person hold a pole (or a broom) upright on one spot, then the other.");
 		stepLine(2, "With no car in the way, mark each spot on the picture, here or on the phone companion from the street. "
 			"Any point on an upright pole will do, so it works even where the road surface is hidden.");
-		stepLine(3, "Enter the distance and apply. Then check it with one drive past.");
+		stepLine(3, "Enter the distance and add it to your calibration. A drive past later cross-checks it.");
 		ImGui::Dummy(ImVec2(0, px(4)));
 		// On your own, or with the phone busy being the camera: two timed pictures (live cameras), or the recording.
 		bool live = player.isOpen() && (player.info().kind == SourceInfo::Camera || player.info().kind == SourceInfo::Stream);
@@ -2351,7 +3395,11 @@ void App::pageCalibrate() {
 			ImGui::PopTextWrapPos();
 		}
 		ImGui::BeginDisabled(framesD <= 0 || tooClose);
-		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD);
+		if (primaryButton(ICON_PLUS "  Add to calibration", ImVec2(-FLT_MIN, 0))) {
+			char label[64];
+			snprintf(label, sizeof label, "Cones or pole, %g ft apart", coneFt_);
+			applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD, "the cones", "cones", calib::sigmaCones(markPx), label);
+		}
 		ImGui::EndDisabled();
 		if (ImGui::SmallButton("Clear spots")) { coneX_[0] = coneX_[1] = coneY_[0] = coneY_[1] = -1; conePlacing_ = -1; }
 		if (anyCalibrated) {
@@ -2365,106 +3413,194 @@ void App::pageCalibrate() {
 		endCard();
 	}
 	else if (calibMode_ == 3) {
-		// A car of known length as the measuring stick: the same arithmetic as the cones (calib::framesForDistance), with
-		// the bumpers as the two marks and the maker's overall length as the distance.  What it adds over the cones is
+		// A car of known size as the measuring stick: the same arithmetic as the cones (calib::framesForDistance), with
+		// two points on the car as the marks and the maker's figure as the distance.  What it adds over the cones is
 		// convenience (no tape, no trip outside, and any car of a known model that shows up will do); what it costs is
 		// accuracy, from three places the copy below steers around:
-		//  - Depth.  A car parked beyond the traffic lane looks shorter than a moving one, so speeds read high unless
-		//    the "parked beyond" correction (calib::markPxAtLane) is set.  A passing car has no such error.
-		//  - Corners.  Off to one side the camera also sees the car's front or back, which looks like extra length.
-		//    Marking the corners facing the camera, with the car near the middle of the picture, keeps that small.
-		//  - The model's length: the picker names each generation's years, since generations differ by inches.
+		//  - Where to click.  The wheel centres (the default) are two sharp points on the side facing the camera, so a
+		//    car at a slight angle, rounded corners or a bike rack change nothing; bumpers are there for a car whose
+		//    wheels are hidden.  See calib::kKnownCars.
+		//  - Depth.  A parked car isn't where moving cars are, so its span is scaled to the travel lane (carScale): from
+		//    the parking lane drawn in step 4 when there is one (ParkingLane.h; the page then says Parked or In the
+		//    travel lane by itself), otherwise from "Parked" and how far beyond, through the camera model.  A passing
+		//    car needs nothing.
+		//  - The model's figures: the picker names each generation's years, since generations differ by inches.
 		// The marks span the car, not the zone, so a camera not square to the street (the zone's ends at different
 		// depths) adds error the cones placed at the white lines don't have.
-		beginCard("car", ICON_CAR, "A car you know the length of");
-		stepLine(1, "Find a frame with the car side-on in the zone, near the middle of the picture. A parked car works, "
+		const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+		const calib::ParkingLane park = parkingLane();
+		const bool marked = carX_[0] >= 0 && carX_[1] >= 0;
+		beginCard("car", ICON_CAR, "A car you know the model of");
+		stepLine(1, "Find a frame with the car side-on, near the middle of the picture and as big as it gets. A parked car works, "
 			"or step through a recording to a sharp frame of one passing by.");
-		stepLine(2, "Click its front bumper, then its rear bumper, each at the corner facing the camera.");
-		stepLine(3, "Pick the model or type its length, say where it is, and apply. Then check it with one drive past.");
+		stepLine(2, carWheels_ ? "Click the centre of each wheel on the side facing you, left wheel first."
+			: "Click the left bumper, then the right one, each where it ends on the side facing the camera.");
+		stepLine(3, "Pick the model, check it says where the car is, and apply. Then check it with one drive past.");
 		ImGui::Dummy(ImVec2(0, px(4)));
+
+		// What to click, as a picture: the two marks and the span they measure.
+		static const char* const how[] = { "Wheel centres", "Bumpers" };
+		int hw = carWheels_ ? 0 : 1;
+		if (segmented("carhow", &hw, how, 2) && carWheels_ != (hw == 0)) {
+			carWheels_ = hw == 0;
+			// The picked model gives the other figure; a typed one starts again from a typical car.
+			carFt_ = carModel_ >= 0 ? (carWheels_ ? calib::kKnownCars[carModel_].wheelbaseIn : calib::kKnownCars[carModel_].inches) / 12
+				: carWheels_ ? calib::kTypicalWheelbaseFt : 15.5;
+			carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1;
+			conePlacing_ = -1;
+		}
+		{
+			float sw = ImGui::GetContentRegionAvail().x, sh = px(84);
+			ImVec2 at = ImGui::GetCursorScreenPos();
+			wheelbaseSketch(ImGui::GetWindowDrawList(), at + ImVec2(sw * .08f, 0), ImVec2(sw * .84f, sh), carWheels_);
+			ImGui::Dummy(ImVec2(sw, sh));
+		}
+		ImGui::PushTextWrapPos(0);
+		dimText("%s", carWheels_
+			? "The middle of each wheel is a sharp point at the lane line's height, so a car at a slight angle, rounded corners "
+			  "or a bike rack don't matter. The easiest and most accurate choice."
+			: "Only when the wheels are hidden. Bumpers are rounded, and at an angle the camera sees some of the front or back, "
+			  "which reads as extra length.");
+		ImGui::PopTextWrapPos();
+		ImGui::Dummy(ImVec2(0, px(2)));
+
 		float bw = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
 		ImGui::BeginDisabled(!player.isOpen());
 		for (int i = 0; i < 2; i++) {
 			if (i) ImGui::SameLine(0, px(10));
-			std::string label = std::string(conePlacing_ == i ? ICON_CROSSHAIRS "  Click the picture" : i == 0 ? ICON_FLAG "  Front bumper" : ICON_FLAG "  Rear bumper")
+			const char* name = carWheels_ ? (i == 0 ? "Left wheel" : "Right wheel") : (i == 0 ? "Left bumper" : "Right bumper");
+			std::string label = std::string(conePlacing_ == i ? ICON_CROSSHAIRS "  Click the picture" : std::string(ICON_FLAG "  ") + name)
 				+ "##car" + std::to_string(i);
 			if (conePlacing_ == i ? primaryButton(label.c_str(), ImVec2(bw, 0)) : ghostButton(label.c_str(), ImVec2(bw, 0)))
 				conePlacing_ = conePlacing_ == i ? -1 : i;
 		}
 		ImGui::EndDisabled();
 		auto carText = [&](int i) { return carX_[i] < 0 ? std::string("not marked") : "x " + std::to_string(int(std::lround(carX_[i]))); };
-		dimText("Front: %s    Rear: %s", carText(0).c_str(), carText(1).c_str());
+		dimText("Left: %s    Right: %s", carText(0).c_str(), carText(1).c_str());
 
-		// The model picker fills the length; typing a length switches the picker to "typed in".
+		// The model picker fills the span; typing one switches the picker to "typed in".
 		formLabel("Model", px(130));
 		ImGui::SetNextItemWidth(-FLT_MIN);
-		const char* shownModel = carModel_ >= 0 ? calib::kKnownCars[carModel_].name : "Other (type the length)";
+		const char* shownModel = carModel_ >= 0 ? calib::kKnownCars[carModel_].name : "Other (type it)";
 		if (ImGui::BeginCombo("##carmodel", shownModel, ImGuiComboFlags_HeightLarge)) {
 			for (int i = 0; i < int(IM_ARRAYSIZE(calib::kKnownCars)); i++) {
-				char item[96];
-				double in = calib::kKnownCars[i].inches;
+				char item[112];
+				double in = carWheels_ ? calib::kKnownCars[i].wheelbaseIn : calib::kKnownCars[i].inches;
 				snprintf(item, sizeof item, "%s   %d ft %d in", calib::kKnownCars[i].name, int(in) / 12, int(in) % 12);
 				if (ImGui::Selectable(item, carModel_ == i)) { carModel_ = i; carFt_ = in / 12; }
 			}
-			if (ImGui::Selectable("Other (type the length)", carModel_ < 0)) carModel_ = -1;
+			if (ImGui::Selectable("Other (type it)", carModel_ < 0)) carModel_ = -1;
 			ImGui::EndCombo();
 		}
-		formLabel("Length (ft)", px(130));
+		formLabel(carWheels_ ? "Wheelbase (ft)" : "Length (ft)", px(130));
 		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
 		if (ImGui::InputDouble("##carft", &carFt_, .1, 1, "%.2f")) carModel_ = -1;
 		carFt_ = std::clamp(carFt_, 0.0, 80.0);
-		helpMarker("Bumper to bumper. Search the year and model with \"overall length\"; makers list it in inches (divide by 12).\n"
-			"An inch either way is about half a percent, or 0.1 mph at 25 mph.");
+		helpMarker(carWheels_
+			? "Front wheel centre to rear wheel centre. Search the year and model with \"wheelbase\"; makers list it in inches\n"
+			  "(divide by 12). An inch either way is about 0.9%, or 0.2 mph at 25 mph."
+			: "Bumper to bumper. Search the year and model with \"overall length\"; makers list it in inches (divide by 12).\n"
+			  "An inch either way is about half a percent, or 0.1 mph at 25 mph.");
 
-		// Where the car is, for the depth correction.  The camera-to-lane distance is the site planner's (step 2),
-		// kept in metres there; it's edited here in feet because that's what the "farther" box is in.
-		static const char* const where[] = { "Driving by", "Parked beyond traffic" };
+		// Where the car is.  With a parking lane drawn (step 4) the marks' rows say it, and the choice follows each new
+		// pair of marks; a click on the other option overrides it until the car is marked again.  Without one it is the
+		// user's call, with how far beyond the moving cars a parked car sits.
+		const bool primaryL2R = oneWay ? g.LegalDirection == "L2R" : coneDir_ != 2;
+		calib::CarSpot spot = carSpot(primaryL2R);
+		bool newMarks = !std::equal(carX_, carX_ + 2, carAutoFor_) || !std::equal(carY_, carY_ + 2, carAutoFor_ + 2);
+		if (marked && park.set() && newMarks && spot.where != calib::CarSpot::Unknown) {
+			carParked_ = spot.where == calib::CarSpot::Parked;
+			std::copy(carX_, carX_ + 2, carAutoFor_);
+			std::copy(carY_, carY_ + 2, carAutoFor_ + 2);
+		}
+		static const char* const where[] = { "In the travel lane", "Parked" };
 		int w = carParked_ ? 1 : 0;
 		if (segmented("carwhere", &w, where, 2)) carParked_ = w == 1;
-		double laneFt = prefs.planDist * 3.281;
-		if (carParked_) {
-			formLabel("Camera to lane (ft)", px(130));
-			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
-			if (ImGui::InputDouble("##carlane", &laneFt, 1, 5, "%.0f")) prefs.planDist = std::max(laneFt, 3.0) / 3.281;
-			helpMarker("From the camera to the middle of the lane traffic drives in. Step 2, Pick your spot, has the same number.");
-			formLabel("Car is farther (ft)", px(130));
-			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
-			ImGui::InputDouble("##carfar", &carFartherFt_, .5, 1, "%.1f");
-			carFartherFt_ = std::clamp(carFartherFt_, 0.0, 50.0);
-			helpMarker("From the middle of the traffic lane to the middle of the parked car. Across a lane and a parking lane\n"
-				"that's usually 6 to 9 ft. A car parked on the near side, between you and traffic, can't be corrected this way.");
+		const double midX = marked ? (carX_[0] + carX_[1]) * .5 : 640;
+		ImGui::PushTextWrapPos(0);
+		if (park.set()) {
+			if (!marked) dimText(ICON_INFO "  Mark the car and VST says whether it's parked, from the parking lane you drew in step 4.");
+			else if (spot.offLines) {
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(c::warn));
+				ImGui::TextWrapped(ICON_WARN "  The marks aren't on the lane line or the parking lane. Click the middle of each wheel, "
+					"or move the lines in step 4 if they've drifted.");
+				ImGui::PopStyleColor();
+			}
+			else {
+				bool autoParked = spot.where == calib::CarSpot::Parked;
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(carParked_ ? c::parking : c::ok));
+				if (carParked_ == autoParked)
+					ImGui::TextWrapped(carParked_ ? ICON_CAR "  Parked: its wheels are on the parking lane." : ICON_CHECK_CIRCLE "  In the travel lane: its wheels are on the lane line.");
+				else ImGui::TextWrapped(ICON_INFO "  You chose %s; its wheels look %s.", carParked_ ? "parked" : "in the travel lane", autoParked ? "parked" : "in the travel lane");
+				ImGui::PopStyleColor();
+			}
+			if (carParked_ && marked && std::isfinite(spot.parkedFt)) {
+				const char* how2 = spot.fromPicture ? "from your picture and camera" : spot.typical ? "a typical guess" : "as you measured";
+				dimText("Parked cars are about %.1f ft %s than moving ones (%s), so VST scales this car ×%.2f to the travel lane.",
+					std::fabs(spot.parkedFt), spot.parkedFt >= 0 ? "farther" : "nearer", how2, spot.parkedScale);
+			}
 		}
 		else {
-			ImGui::PushTextWrapPos(0);
-			dimText(ICON_INFO "  A parked car? Choose \"Parked beyond traffic\". It sits farther from the camera than moving cars, "
-				"so it looks shorter, and speeds would read high.");
-			ImGui::PopTextWrapPos();
+			if (carParked_) {
+				formLabel("Farther by (ft)", px(130));
+				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - px(26));   // room for the help marker
+				ImGui::InputDouble("##carfar", &carFartherFt_, .5, 1, "%.1f");
+				carFartherFt_ = std::clamp(carFartherFt_, -30.0, 50.0);
+				helpMarker("From a passing car's wheels to the parked car's, across the street. Across half a lane and a parking\n"
+					"lane that's usually 6 to 9 ft. A car parked between you and traffic is nearer: type it negative.");
+				if (marked) dimText("VST scales this car ×%.2f to the travel lane, from your camera's height (step 4) and distance (step 2).", carScale(primaryL2R));
+			}
+			dimText(ICON_INFO "  Tip: draw the parking lane in step 4 and VST tells parked cars from passing ones by itself.");
+			if (ImGui::SmallButton("Draw the parking lane in step 4##car")) goFlow(3);
 		}
+		ImGui::PopTextWrapPos();
 		static const char* const carDirs[] = { "Both ways", "→ only", "← only" };
 		segmented("cardir", &coneDir_, carDirs, 3);
 
-		double rawPx = (carX_[0] >= 0 && carX_[1] >= 0) ? std::fabs(carX_[1] - carX_[0]) : 0;
-		double markPx = calib::markPxAtLane(rawPx, laneFt, carParked_ ? carFartherFt_ : 0);
+		// Each direction's frames: on a two-way street the two lanes are at different depths, so a parked car scales
+		// differently to each.  The card shows the primary direction (the legal one, or → unless "← only").
+		const bool doL2R = coneDir_ != 2, doR2L = coneDir_ != 1;
+		double rawPx = marked ? std::fabs(carX_[1] - carX_[0]) : 0;
 		double zonePx = g.speedLineRight - g.speedLineLeft;
-		double framesD = calib::framesForDistance(markPx, carFt_, zonePx, g.CalibrationSpeed, g.CalibrationFPS);
+		auto framesFor = [&](bool l2r) { return calib::framesForDistance(rawPx * carScale(l2r), carFt_, zonePx, g.CalibrationSpeed, g.CalibrationFPS); };
+		double framesD = framesFor(primaryL2R);
 		bool tooSmall = rawPx > 0 && rawPx < 60;
 		if (framesD > 0 && !tooSmall) {
-			double zoneFt = zonePx / markPx * carFt_;
+			double zoneFt = zonePx / (rawPx * carScale(primaryL2R)) * carFt_;
 			int rounded = std::max(1, int(std::lround(framesD)));
 			ImGui::PushFont(fonts.stat);
 			ImGui::Text("%.1f ft zone", zoneFt);
 			ImGui::PopFont();
 			ImGui::PushTextWrapPos(0);
 			dimText("A car at %.0f mph crosses it in %.1f frames at %.0f fps, saved as %d.", g.CalibrationSpeed, framesD, g.CalibrationFPS, rounded);
-			if (carParked_ && laneFt > 0)
-				dimText("Each foot the \"farther\" guess is off moves speeds about %.0f%%.", 100 / (laneFt + carFartherFt_));
+			if (!oneWay && doL2R && doR2L) dimText("← lane: %.1f frames.", framesFor(false));
+			if (carParked_ && !(park.set() && spot.fromPicture)) {
+				// How much a foot of error in "how far beyond" moves the result, so the user knows whether to measure it.
+				double ft = park.set() ? spot.parkedFt : carFartherFt_;
+				double s0 = calib::scaleBeyond(cameraSetup(), midX, ft), s1 = calib::scaleBeyond(cameraSetup(), midX, ft + 1);
+				if (s0 > 0) dimText("Each foot that distance is off moves speeds about %.0f%%.", std::fabs(s1 / s0 - 1) * 100);
+			}
 			ImGui::PopTextWrapPos();
 		}
 		else if (tooSmall) dimText(ICON_WARN "  The car is too small on the picture to measure. Pick a nearer one.");
 		ImGui::BeginDisabled(framesD <= 0 || tooSmall);
-		if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyDistanceCalibration(coneDir_ != 2, coneDir_ != 1, framesD, "the car's length");
+		if (primaryButton(ICON_PLUS "  Add to calibration", ImVec2(-FLT_MIN, 0))) {
+			// One input per direction it speaks for (a parked car scales differently to each lane of a two-way street),
+			// weighted by how well the marks and the parked-car depth are known (calib::sigmaCar).
+			const char* from = carWheels_ ? "the car's wheelbase" : "the car's length";
+			const double laneFt = prefs.planDist * plan::kFt;
+			const double fartherFt = park.set() && std::isfinite(spot.parkedFt) ? spot.parkedFt : carFartherFt_;
+			const double sigma = calib::sigmaCar(rawPx, carParked_, laneFt, fartherFt);
+			std::string label = std::string(carModel_ >= 0 ? calib::kKnownCars[carModel_].name : carWheels_ ? "A car's wheelbase" : "A car of known length")
+				+ (carParked_ ? ", parked" : "");
+			if (oneWay || !(doL2R && doR2L)) applyDistanceCalibration(doL2R, doR2L, framesD, from, "car", sigma, label);
+			else {
+				applyDistanceCalibration(true, false, framesFor(true), from, "car", sigma, label + ", →");
+				applyDistanceCalibration(false, true, framesFor(false), from, "car", sigma, label + ", ←");
+			}
+		}
 		ImGui::EndDisabled();
-		if (ImGui::SmallButton("Clear bumpers##car")) { carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1; conePlacing_ = -1; }
+		if (ImGui::SmallButton(carWheels_ ? "Clear wheels##car" : "Clear bumpers##car")) { carX_[0] = carX_[1] = carY_[0] = carY_[1] = -1; conePlacing_ = -1; }
 		if (anyCalibrated) {
 			ImGui::Dummy(ImVec2(0, px(2)));
 			if (ghostButton(ICON_BULLSEYE "  Check it with a drive past##car", ImVec2(-FLT_MIN, 0))) {
@@ -2501,8 +3637,9 @@ void App::pageCalibrate() {
 			ImGui::Text("%d frames", frames);
 			ImGui::PopFont();
 		}
+		if (!calibSpeedSet_) calibSpeed_ = calib::defaultTarget(prefs.calibTarget, prefs.speedLimit);
 		formLabel("I drove at (mph)", px(130));
-		speedStepper("##spd2", &calibSpeed_);
+		if (speedStepper("##spd2", &calibSpeed_)) calibSpeedSet_ = true;
 		if (calibChecking_) {
 			const char* why = whyNoCheck(calibDir_ == 0, 0);
 			ImGui::BeginDisabled(!frames || why);
@@ -2512,7 +3649,7 @@ void App::pageCalibrate() {
 		}
 		else {
 			ImGui::BeginDisabled(!frames);
-			if (primaryButton(ICON_CHECK "  Apply", ImVec2(-FLT_MIN, 0))) applyCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
+			if (primaryButton(ICON_PLUS "  Add to calibration", ImVec2(-FLT_MIN, 0))) applyCalibration(calibDir_ == 0, calibSpeed_, frames, fps);
 			ImGui::EndDisabled();
 		}
 		if (ImGui::SmallButton("Clear marks")) m[0] = m[1] = -1;
@@ -2521,7 +3658,8 @@ void App::pageCalibrate() {
 	}
 
 	ImGui::Dummy(ImVec2(0, px(4)));
-	beginCard("calnow", ICON_GAUGE, "Current calibration");
+	beginCard("calnow", ICON_GAUGE, "Your calibration");
+	calibrationInputsCard(false);
 	float half = (ImGui::GetContentRegionAvail().x - px(10)) * .5f;
 	auto calTile = [&](const char* name, int frames, ImU32 col) {
 		char v[32];
@@ -2591,6 +3729,146 @@ void App::pageCalibrate() {
 	ImGui::EndChild();
 }
 
+// The Calibrate page's "Your calibration" list (CalEvidence.h): what every measurement added up to, in one line a
+// novice can read ("3 measurements agree within 2%"), how sure that is, and each measurement with its share of the
+// weight, how far it sits from the rest, and a button to take it out.  Taken-out ones stay listed with "Put back",
+// and ones made on other speed lines are listed as not counted, so nothing ever vanishes without a trace.
+void App::calibrationInputsCard(bool list) {
+	const Globals& g = cfg.g;
+	const std::vector<calib::Input>& inputs = calibrationInputs();
+	calib::Combined both[2] = { calibrationCombined(true), calibrationCombined(false) };
+	// One section for a one-way street whose two directions count the same inputs (the usual case: a pass there
+	// measures the lane both ways); otherwise one per direction, since each lane is its own distance away.
+	auto sameIds = [](const calib::Combined& a, const calib::Combined& b) {
+		if (a.shares.size() != b.shares.size()) return false;
+		for (size_t i = 0; i < a.shares.size(); i++) if (a.shares[i].id != b.shares[i].id) return false;
+		return true;
+	};
+	std::vector<int> dirs;
+	if (g.LegalDirection != "Both" && sameIds(both[0], both[1])) dirs.push_back(g.LegalDirection == "R2L" ? 1 : 0);
+	else dirs = { 0, 1 };
+	std::string toRemove, toRestore;
+
+	for (int d : dirs) {
+		const calib::Combined& cmb = both[d];
+		ImGui::PushID(d);
+		if (dirs.size() > 1) {
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(d == 0 ? c::l2r : c::r2l));
+			ImGui::TextUnformatted(d == 0 ? "→  Left to right" : "←  Right to left");
+			ImGui::PopStyleColor();
+		}
+		std::string detail;
+		std::string head = calib::summary(cmb, &detail);
+		bool good = cmb.valid && (cmb.n == 1 || cmb.agree());
+		ImU32 col = !cmb.valid ? c::warn : good ? (cmb.n >= 2 ? c::ok : c::text) : c::warn;
+		ImGui::PushFont(fonts.strong);
+		ImGui::PushStyleColor(ImGuiCol_Text, v4(col));
+		ImGui::PushTextWrapPos(0);
+		ImGui::TextWrapped("%s  %s", !cmb.valid || !good ? ICON_WARN : cmb.n >= 2 ? ICON_CHECK_CIRCLE : ICON_CIRCLE, head.c_str());
+		ImGui::PopTextWrapPos();
+		ImGui::PopStyleColor();
+		ImGui::PopFont();
+		ImGui::PushTextWrapPos(0);
+		if (cmb.valid) {
+			// The combination's uncertainty in the terms that matter: mph at the posted limit.  Whole-frame rounding
+			// in the engine is on top of this, and shows on the tiles below.
+			double limit = prefs.speedLimit > 0 ? prefs.speedLimit : 25;
+			// The side panel's summary leaves the next step to the list under the picture.
+			dimText("Good to about ±%.1f%%, so ±%.1f mph at %.0f mph. %s", cmb.sigma * 100, cmb.sigma * limit, limit, list ? detail.c_str() : "");
+		}
+		else if (!detail.empty() && list) dimText("%s", detail.c_str());
+		ImGui::PopTextWrapPos();
+
+		// The counted inputs, one line each: what it is, its share of the weight as a bar and a percent, how far it sits
+		// from the result, and a button to take it out.
+		if (list && cmb.valid && ImGui::BeginTable("calinputs", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+			ImGui::TableSetupColumn("what", ImGuiTableColumnFlags_WidthStretch);
+			ImGui::TableSetupColumn("share", ImGuiTableColumnFlags_WidthFixed, px(120));
+			ImGui::TableSetupColumn("off", ImGuiTableColumnFlags_WidthFixed, px(48));
+			ImGui::TableSetupColumn("x", ImGuiTableColumnFlags_WidthFixed, px(24));
+			for (const calib::Share& sh : cmb.shares) {
+				const calib::Input* in = nullptr;
+				for (const calib::Input& e : inputs) if (e.id == sh.id) in = &e;
+				if (!in) continue;
+				ImGui::PushID(in->id.c_str());
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::AlignTextToFramePadding();
+				ImGui::PushStyleColor(ImGuiCol_Text, v4(sh.outlier ? c::warn : c::text));
+				ImGui::Text("%s%s", sh.outlier ? ICON_WARN "  " : "", in->label.empty() ? calib::methodName(in->method) : in->label.c_str());
+				ImGui::PopStyleColor();
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("%s: says %.1f ft of street between the speed lines, give or take %.0f%%.\nAdded %s.%s",
+						calib::methodName(in->method), in->zoneFt, in->sigma * 100, in->time.substr(0, 16).c_str(),
+						sh.outlier ? "\nWell off the others: if you doubt it, take it out." : "");
+				// Share of the weight: a bar and the percent beside it.
+				ImGui::TableNextColumn();
+				ImVec2 p = ImGui::GetCursorScreenPos();
+				float w = px(70), h = px(6), y = (ImGui::GetFrameHeight() - h) * .5f;
+				ImDrawList* dl = ImGui::GetWindowDrawList();
+				dl->AddRectFilled(p + ImVec2(0, y), p + ImVec2(w, y + h), c::bg3, h * .5f);
+				dl->AddRectFilled(p + ImVec2(0, y), p + ImVec2(std::max(h, w * float(sh.contribution)), y + h), sh.outlier ? c::warn : c::accent, h * .5f);
+				ImGui::Dummy(ImVec2(w, ImGui::GetFrameHeight()));
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its share of the say in the result: surer measurements count for more.");
+				ImGui::SameLine(0, px(8));
+				ImGui::AlignTextToFramePadding();
+				dimText("%.0f%%", sh.contribution * 100);
+				ImGui::TableNextColumn();
+				if (cmb.n >= 2) {
+					ImGui::AlignTextToFramePadding();
+					ImGui::PushStyleColor(ImGuiCol_Text, v4(sh.outlier ? c::warn : c::dim));
+					ImGui::Text("%+.0f%%", sh.offPct);
+					ImGui::PopStyleColor();
+					if (ImGui::IsItemHovered()) ImGui::SetTooltip(sh.offPct >= 0 ? "Says the street is %.1f%% longer than the combined result:\nalone, it would read speeds that much higher."
+						: "Says the street is %.1f%% shorter than the combined result:\nalone, it would read speeds that much lower.", std::fabs(sh.offPct));
+				}
+				ImGui::TableNextColumn();
+				if (ImGui::SmallButton(ICON_XMARK)) toRemove = in->id;
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Take this measurement out. You can put it back.");
+				ImGui::PopID();
+			}
+			ImGui::EndTable();
+		}
+		ImGui::PopID();
+		ImGui::Dummy(ImVec2(0, px(4)));
+	}
+
+	if (!list) return;
+	// Not counted: taken out by hand (with Put back), or made on speed lines that have moved since.
+	std::string lines = speedLinesSig();
+	int notCounted = 0;
+	for (const calib::Input& in : inputs) notCounted += in.removed || (!in.lines.empty() && in.lines != lines);
+	if (notCounted) {
+		char h[64];
+		snprintf(h, sizeof h, "Not counted (%d)###notcounted", notCounted);
+		if (ImGui::TreeNode(h)) {
+			for (const calib::Input& in : inputs) {
+				bool moved = !in.lines.empty() && in.lines != lines;
+				if (!in.removed && !moved) continue;
+				ImGui::PushID(in.id.c_str());
+				dimText("%s", in.label.empty() ? calib::methodName(in.method) : in.label.c_str());
+				ImGui::SameLine();
+				if (in.removed) { if (ImGui::SmallButton(ICON_UNDO "  Put back")) toRestore = in.id; }
+				else {
+					ImGui::PushFont(fonts.caption);
+					dimText("(other speed lines)");
+					ImGui::PopFont();
+				}
+				ImGui::PopID();
+			}
+			ImGui::TreePop();
+		}
+	}
+	if (!toRemove.empty()) {
+		setCalibrationInputRemoved(toRemove, true);
+		toast("Taken out. Under Not counted you can put it back.", c::dim, ICON_UNDO);
+	}
+	if (!toRestore.empty()) {
+		setCalibrationInputRemoved(toRestore, false);
+		toast("Put back into your calibration.", c::ok, ICON_CHECK_CIRCLE);
+	}
+}
+
 // The latest check pass: what you drove beside what the calibration says, the error, and the verdict.  A failed
 // check explains the usual causes and offers the two ways forward: calibrate again from scratch, or average the
 // two passes (when both drives were honest, the mean is a better estimate than either).
@@ -2641,23 +3919,35 @@ void App::calibrationCheckCard(float width) {
 	}
 	ImGui::PopTextWrapPos();
 	if (!k.verified) {
-		// What averaging would set, so the button says exactly what it does.
-		double second = calib::impliedFrames(k.drivenMph, k.frames, k.fps, g.CalibrationSpeed, g.CalibrationFPS);
-		int avg = std::max(1, int(std::lround((k.calFrames + second) / 2)));
+		// What adding the check pass would set: the inputs with this pass added, combined, so the button says exactly
+		// what it does.  Two honest passes end up near their mean; with more inputs the check pass is one voice of many.
+		std::vector<calib::Input> with = calibrationInputs();
+		calib::Input pass;
+		pass.method = "pass";
+		pass.dirs = g.LegalDirection == "Both" ? (k.l2r ? calib::kL2R : calib::kR2L) : calib::kBothDirs;
+		pass.zoneFt = calib::zoneFtFromPass(k.drivenMph, k.frames, k.fps);
+		pass.sigma = calib::sigmaPass(k.drivenMph, k.frames);
+		pass.lines = speedLinesSig();
+		pass.time = "preview";
+		calib::addInput(with, pass);
+		calib::Combined after = calib::combine(with, k.l2r, speedLinesSig());
+		int next = std::max(1, int(std::lround(calib::framesForZone(after.zoneFt, g.CalibrationSpeed, g.CalibrationFPS))));
 		ImGui::Dummy(ImVec2(0, px(2)));
 		float bw = (textW - px(10)) * .5f;
-		if (ghostButton(ICON_ROTATE "  Redo calibration", ImVec2(bw, 0))) {
+		if (ghostButton(ICON_ROTATE "  Drive again", ImVec2(bw, 0))) {
 			calibChecking_ = false;
 			calibPickId_ = 0;
 			lastCheck_ = CalCheck();
 		}
-		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drive past again and calibrate from that pass.");
+		if (ImGui::IsItemHovered()) ImGui::SetTooltip("Leave this pass out. Drive past again and add or check that one.\n"
+			"A measurement you doubt can be removed under Your calibration.");
 		ImGui::SameLine(0, px(10));
 		char label[64];
-		snprintf(label, sizeof label, ICON_ARROWS_LR "  Average: %d frames", avg);
+		snprintf(label, sizeof label, ICON_PLUS "  Add this pass: %d frames", next);
 		if (primaryButton(label, ImVec2(bw, 0))) averageCalibration(k);
 		if (ImGui::IsItemHovered())
-			ImGui::SetTooltip("Average the two passes: %d frames from the first, %.1f from this one.\nThen check the average with one more pass.", k.calFrames, second);
+			ImGui::SetTooltip("Count this pass as one more measurement. VST weighs it with the %d already there\n"
+				"(%s), giving %d frames. Then check it with one more pass.", after.n - 1, calib::summary(calibrationCombined(k.l2r)).c_str(), next);
 	}
 	ImGui::EndGroup();
 	endCard();
@@ -2853,9 +4143,11 @@ void App::runOptions() {
 	beginCard("runopts", ICON_SLIDERS, "Run settings");
 	formLabel("Speed limit", px(130));
 	ImGui::BeginDisabled(run);
+	int limitBefore = prefs.speedLimit;
 	if (ImGui::InputInt("##limit", &prefs.speedLimit, 5, 5)) {
 		prefs.speedLimit = std::clamp(prefs.speedLimit, 5, 80);
 		prefs.egregious = std::max(prefs.egregious, prefs.speedLimit);
+		followSpeedLimit(limitBefore);
 	}
 	formLabel("Way over from", px(130));
 	if (ImGui::InputInt("##egr", &prefs.egregious, 5, 5)) prefs.egregious = std::max(prefs.egregious, prefs.speedLimit);
@@ -2949,33 +4241,65 @@ void App::vehicleCard(const Vehicle& v, float width) {
 
 void App::pageResults() {
 	float avail = ImGui::GetContentRegionAvail().x, availH = ImGui::GetContentRegionAvail().y;
-	if (rows.empty() && rowsFrom.empty() && tracker.lastVehicleId() > 0) showSessionResults();
+	// Which rows to show on arrival.  This session's vehicles when there are any; otherwise, the first time Results is
+	// opened in a launch, every saved run, so a reopened Studio shows the results it has rather than "0 of 0".
+	if (rowsScope == ResultsScope::Session && rows.empty() && tracker.lastVehicleId() > 0) showSessionResults();
+	if (!resultsOpened_ && !screenshotMode && rowsScope == ResultsScope::Session && rows.empty() && !tracker.running()) showSavedRuns();
+	resultsOpened_ = true;
 
 	// Toolbar: filter, where the rows come from, file actions.
 	static const char* const filters[] = { "All", "Speeding", "Way over", "Wrong way" };
 	// The file buttons keep their full labels; the filter gives up width first, so the row fits a 1366-1480 px laptop
 	// window instead of pushing "Make report" off the edge.
 	float actionsW = px(16) * 2 + px(180);
-	for (const char* l : { ICON_CLOCK " This session", ICON_FILE_CSV " Open CSV", ICON_FILM " Highlights", ICON_FOLDER_OPEN " Folder", ICON_REPORT "  Make report" })
+	for (const char* l : { ICON_FOLDER_OPEN " Open", ICON_ARCHIVE " Archive", ICON_FILM " Highlights", ICON_FOLDER " Folder", ICON_REPORT "  Make report" })
 		actionsW += buttonWidth(l) + ImGui::GetStyle().ItemSpacing.x;
 	segmented("rfilter", &resultsFilter_, filters, 4, std::clamp(avail - actionsW, px(300), px(440)));
 	ImGui::SameLine(0, px(16));
 	ImGui::SetNextItemWidth(px(180));
 	ImGui::InputTextWithHint("##search", ICON_SEARCH "  min speed or source", searchBuf_, sizeof searchBuf_);
 	ImGui::SameLine(0, px(16));
-	if (ghostButton(ICON_CLOCK " This session")) showSessionResults();
+	if (ghostButton(ICON_FOLDER_OPEN " Open")) { archives_ = archive::list(dataDir()); publishedList_ = dataset::list(dataDir()); ImGui::OpenPopup("openmenu"); }
+	openMenu();
 	ImGui::SameLine();
-	if (ghostButton(ICON_FILE_CSV " Open CSV")) {
-		auto r = pfd::open_file("Open stats csv", (fs::path(dataDir()) / "Stats").string(), { "Stats csv", "*.csv", "All files", "*" }).result();
-		if (!r.empty()) loadResultsCsv(r[0]);
+	// Archive what's on screen.  Not an archive (it is one already), not nothing, and not while a run is still writing
+	// the csv it would move.
+	const char* whyNot = reviewing() ? "This is an archive already." : rows.empty() ? "Nothing to archive yet."
+		: tracker.running() ? "Stop tracking first: the run is still writing its results." : nullptr;
+	ImGui::BeginDisabled(whyNot != nullptr);
+	if (ghostButton(ICON_ARCHIVE " Archive") || (openArchiveDialog_ && !whyNot)) {
+		// A name that's ready to go: the site and the days the vehicles passed ("Locust Ave, 2016-01-30"), so a novice
+		// can just press Archive.  Rows without a usable date fall back to today.
+		archiveForm_ = ArchiveForm();
+		std::string first, last;
+		for (const ResultRow& r : rows) {
+			if (r.time.size() < 10 || r.time[4] != '-') continue;
+			std::string d = r.time.substr(0, 10);
+			if (first.empty() || d < first) first = d;
+			if (last.empty() || d > last) last = d;
+		}
+		std::string when = first.empty() ? calib::nowIso().substr(0, 10) : first == last ? first : first + " to " + last;
+		std::string site = prefs.siteName == report::Settings().siteName ? std::string() : prefs.siteName;
+		snprintf(archiveForm_.name, sizeof archiveForm_.name, "%s", (site.empty() ? "Results " + when : site + ", " + when).c_str());
+		ImGui::OpenPopup("Archive these results");
 	}
+	openArchiveDialog_ = false;
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+		ImGui::SetTooltip("%s", whyNot ? whyNot : "Put these results away in a folder of their own, with snapshots, clips and the calibration, to look at again later.");
+	archiveDialog();
 	ImGui::SameLine();
-	if (ghostButton(ICON_FILM " Highlights")) openWithSystem((fs::path(dataDir()) / "HiLites").string());
+	// While reviewing, Highlights and Folder show the archive's own.
+	fs::path base = reviewing() ? fs::path(archive_.dir) : fs::path(dataDir());
+	if (ghostButton(ICON_FILM " Highlights")) openWithSystem((base / "HiLites").string());
 	ImGui::SameLine();
-	if (ghostButton(ICON_FOLDER_OPEN " Folder")) openWithSystem((fs::path(dataDir()) / "Stats").string());
+	if (ghostButton(ICON_FOLDER " Folder")) openWithSystem(reviewing() ? base.string() : (base / "Stats").string());
 	ImGui::SameLine();
 	if (primaryButton(ICON_REPORT "  Make report")) { reportForm_.saved.clear(); reportForm_.error.clear(); ImGui::OpenPopup("Street report"); }
 	reportDialog();
+	if (reviewing()) reviewBanner(avail);
+	if (!dataset_.dir.empty()) datasetCover(avail);
+	const int limit = resultsLimit(), wayOver = resultsWayOver();
 
 	// Filtered view.
 	int minSpeed = 0;
@@ -2983,22 +4307,77 @@ void App::pageResults() {
 	try { if (!search.empty()) minSpeed = std::stoi(search); } catch (...) {}
 	std::vector<const ResultRow*> shown;
 	for (const ResultRow& r : rows) {
-		if (resultsFilter_ == 1 && r.speed <= prefs.speedLimit) continue;
-		if (resultsFilter_ == 2 && r.speed < prefs.egregious) continue;
+		if (resultsFilter_ == 1 && r.speed <= limit) continue;
+		if (resultsFilter_ == 2 && r.speed < wayOver) continue;
 		if (resultsFilter_ == 3 && !r.wrongWay) continue;
 		if (minSpeed > 0 && r.speed < minSpeed) continue;
 		if (!search.empty() && minSpeed == 0 && r.source.find(search) == std::string::npos) continue;
+		if (setFilter_ && r.setId != setFilter_) continue;   // the set bar's "Only this set"
 		shown.push_back(&r);
 	}
-	dimText("%s  ·  %zu of %zu vehicles", rowsFrom.empty() ? "This session" : fs::path(rowsFrom).filename().string().c_str(), shown.size(), rows.size());
+	int ownDrives = int(std::count_if(rows.begin(), rows.end(), [](const ResultRow& r) { return r.calKind != 0; }));
+	// The menu beside it names the source, so the line just counts.
+	std::string from = reviewing() ? std::string(dataset_.dir.empty() ? "Archived" : "Published") : rowsScope == ResultsScope::Saved ? std::to_string(rowsRuns) + (rowsRuns == 1 ? " run" : " runs")
+		: rowsScope == ResultsScope::File ? std::string("1 run") : std::string("Measured since Studio opened");
+	// Where the rows come from, on the line under the toolbar (the toolbar has no room for it at 1366-1480 px with
+	// Open and Archive): this session, all saved runs, or one saved run (the newest dozen, by name and time).  The menu
+	// is read when it opens, so a run that just ended is in it.
+	std::string scopeText = reviewing() ? std::string(ICON_ARCHIVE "  ") + archive_.name : rowsScope == ResultsScope::Saved ? ICON_CLOCK "  All saved runs"
+		: rowsScope == ResultsScope::File ? std::string(ICON_FILE_CSV "  ") + fs::path(rowsFrom).filename().string() : ICON_BOLT "  This session";
+	ImGui::SetNextItemWidth(px(240));
+	if (ImGui::BeginCombo("##rscope", scopeText.c_str(), ImGuiComboFlags_HeightLarge)) {
+		int session = tracker.lastVehicleId() > 0 ? int(tracker.vehiclesSince(0).size()) : 0;
+		std::string label = "This session  (" + std::to_string(session) + " vehicles)";
+		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Session)) showSessionResults();
+		std::vector<resume::SavedRun> runs = screenshotMode ? std::vector<resume::SavedRun>() : resume::savedRuns(dataDir());
+		label = "All saved runs  (" + std::to_string(runs.size()) + ")";
+		if (ImGui::Selectable(label.c_str(), rowsScope == ResultsScope::Saved)) showSavedRuns();
+		if (!runs.empty()) ImGui::SeparatorText("One run");
+		for (size_t i = 0; i < runs.size() && i < 12; i++) {
+			ImGui::PushID(int(i));
+			if (ImGui::Selectable(resume::runLabel(runs[i].name).c_str(), rowsScope == ResultsScope::File && rowsFrom == runs[i].csv))
+				loadResultsCsv(runs[i].csv);
+			ImGui::PopID();
+		}
+		if (runs.size() > 12) ImGui::TextDisabled("Older runs: Open > A stats csv");
+		ImGui::EndCombo();
+	}
+	ImGui::SameLine(0, px(12));
+	ImGui::AlignTextToFramePadding();
+	dimText("%s  ·  %zu of %zu vehicles%s", from.c_str(), shown.size(), rows.size(),
+		!ownDrives ? "" : ownDrives == 1 ? "  ·  1 is your own calibration drive, left out of the totals" : ("  ·  " + std::to_string(ownDrives)
+			+ " are your own calibration drives, left out of the totals").c_str());
+	// Calibration sets: which runs share a calibration, each set's state, and what can be done with it (Sets.cpp).
+	setsBar(avail);
+	publishDialog();
+	removeDialog();
+	recheckDialog();
 
+	if (rows.empty() && reviewing()) {
+		ImGui::Dummy(ImVec2(0, px(20)));
+		dimText("This archive holds no vehicles: its runs logged none. Its files are still in the folder.");
+		return;
+	}
 	if (rows.empty()) {
 		ImGui::Dummy(ImVec2(0, px(40)));
-		beginCard("noresults", ICON_CHART, "Nothing here yet", ImVec2(avail, 0));
-		dimText("Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
-			"Or use Open CSV to look at the results of an earlier run.");
-		if (source.empty() && batch.empty()) { if (primaryButton(ICON_VIDEO "  Choose a source")) page = Page::Source; }
-		else if (primaryButton(ICON_PLAY "  Start tracking")) startTracking();
+		// This session is empty but earlier runs are saved: say so first, so it never reads as lost data.
+		size_t saved = rowsScope == ResultsScope::Saved || screenshotMode ? 0 : resume::savedRuns(dataDir()).size();
+		beginCard("noresults", ICON_CHART, saved ? "Nothing measured this session yet" : "Nothing here yet", ImVec2(avail, 0));
+		if (saved) {
+			dimText("Your earlier results are safe: %zu saved %s in the data folder. Every run is kept from one launch to the next.",
+				saved, saved == 1 ? "run" : "runs");
+			std::string show = std::string(ICON_CLOCK "  Show all saved runs (") + std::to_string(saved) + ")";
+			if (primaryButton(show.c_str())) showSavedRuns();
+			ImGui::SameLine();
+		}
+		else
+			dimText(rowsScope == ResultsScope::Saved
+				? "No saved runs yet. Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction "
+				  "and a snapshot, and stays here the next time you open VST Studio."
+				: "Run tracking on a video or camera and every measured vehicle lands here, with its speed, direction and a snapshot. "
+				  "Or use Open to look at an archive or the results of an earlier run.");
+		if (source.empty() && batch.empty()) { if ((saved ? ghostButton(ICON_VIDEO "  Choose a source") : primaryButton(ICON_VIDEO "  Choose a source"))) page = Page::Source; }
+		else if (saved ? ghostButton(ICON_PLAY "  Start tracking") : primaryButton(ICON_PLAY "  Start tracking")) startTracking();
 		endCard();
 		return;
 	}
@@ -3007,9 +4386,12 @@ void App::pageResults() {
 	int over = 0, way = 0, wrong = 0, top = 0;
 	double sum = 0;
 	std::vector<int> speeds;
+	int traffic = 0;   // every row but the user's own calibration and check drives
 	for (const ResultRow& r : rows) {
-		over += r.speed > prefs.speedLimit;
-		way += r.speed >= prefs.egregious;
+		if (r.calKind) continue;
+		traffic++;
+		over += r.speed > limit;
+		way += r.speed >= wayOver;
 		wrong += r.wrongWay;
 		top = std::max(top, r.speed);
 		sum += r.speed;
@@ -3019,17 +4401,20 @@ void App::pageResults() {
 	int p85 = report::percentile(speeds, 85);   // nearest rank, the same definition as the street report and the phone
 	float tw = (avail - px(48)) / 5, th = px(100);
 	char sub[64];
-	statTile(ICON_CAR, "Vehicles", std::to_string(rows.size()), rowsFrom.empty() ? "this session" : "in this file", c::accent, ImVec2(tw, th));
+	const int perc = std::max(traffic, 1);
+	statTile(ICON_CAR, "Vehicles", std::to_string(traffic), reviewing() ? "in this archive" : rowsScope == ResultsScope::Session ? "this session" : rowsScope == ResultsScope::Saved ? "in all saved runs" : "in this file", c::accent, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / rows.size()), prefs.speedLimit);
+	snprintf(sub, sizeof sub, "%d%% over %d mph", int(over * 100 / perc), limit);
 	statTile(ICON_GAUGE, "Speeding", std::to_string(over), sub, c::warn, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "%d mph or more", prefs.egregious);
+	snprintf(sub, sizeof sub, "%d mph or more", wayOver);
 	statTile(ICON_BOLT, "Way over", std::to_string(way), sub, c::bad, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), cfg.g.LegalDirection == "Both" ? "one-way? set it in step 4" : "against the one-way", c::wrong, ImVec2(tw, th));
+	const std::string& legal = reviewing() ? archive_.cal.legal : cfg.g.LegalDirection;
+	statTile(ICON_WARN, "Wrong way", std::to_string(wrong), legal != "Both" ? "against the one-way" : reviewing() ? "two-way when archived" : "one-way? set it in step 4",
+		c::wrong, ImVec2(tw, th));
 	ImGui::SameLine(0, px(12));
-	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / rows.size(), top);
+	snprintf(sub, sizeof sub, "avg %.0f · top %d mph", sum / perc, top);
 	statTile(ICON_CHART, "85th percentile", std::to_string(p85) + " mph", sub, c::accent2, ImVec2(tw, th));
 
 	ImGui::Dummy(ImVec2(0, px(2)));
@@ -3037,19 +4422,24 @@ void App::pageResults() {
 	float leftW = avail - detailW - px(20);
 	float chartsH = px(210);
 	ImGui::BeginGroup();
-	resultsCharts(shown, leftW);
+	std::vector<const ResultRow*> charted;   // the charts are the street's traffic: not the user's own drives
+	for (const ResultRow* r : shown)
+		if (!r->calKind) charted.push_back(r);
+	resultsCharts(charted, leftW);
 	ImGui::Dummy(ImVec2(0, px(2)));
 
 	float tableH = ImGui::GetContentRegionAvail().y;
-	if (ImGui::BeginTable("rows", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable
+	if (ImGui::BeginTable("rows", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable
 		| ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX, ImVec2(leftW, tableH))) {
 		ImGui::TableSetupScrollFreeze(0, 1);
 		ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, px(46));
 		ImGui::TableSetupColumn("Speed", ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, px(110));
-		ImGui::TableSetupColumn("Direction", 0, 1.3f);
+		ImGui::TableSetupColumn("Direction", 0, 1.5f);
+		// Entry -> exit speed with the trend's icon; sorts by acceleration (fastest speeding up first, unknown last).
+		ImGui::TableSetupColumn("In " ICON_ARROW_RIGHT " out", ImGuiTableColumnFlags_PreferSortDescending | ImGuiTableColumnFlags_WidthFixed, px(118));
 		ImGui::TableSetupColumn("When", 0, 1.2f);
 		ImGui::TableSetupColumn("Frames", ImGuiTableColumnFlags_WidthFixed, px(70));
-		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(70));
+		ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, px(80));
 		ImGui::TableSetupColumn("Source", 0, 1.4f);
 		ImGui::TableHeadersRow();
 		// Sorting: by speed (default, fastest first) or by the order they were logged.
@@ -3061,8 +4451,14 @@ void App::pageResults() {
 				bool asc = ss->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
 				std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
 					const ResultRow *x = shown[a], *y = shown[b];
-					int kx = colIdx == 1 ? x->speed : colIdx == 4 ? x->frames : colIdx == 5 ? x->area : a;
-					int ky = colIdx == 1 ? y->speed : colIdx == 4 ? y->frames : colIdx == 5 ? y->area : b;
+					if (colIdx == 3) {
+						// Unknown trends sort after every known one, whichever way round.
+						bool kxn = !x->trend.empty(), kyn = !y->trend.empty();
+						if (kxn != kyn) return kxn;
+						return asc ? x->accel < y->accel : x->accel > y->accel;
+					}
+					int kx = colIdx == 1 ? x->speed : colIdx == 5 ? x->frames : colIdx == 6 ? x->area : a;
+					int ky = colIdx == 1 ? y->speed : colIdx == 5 ? y->frames : colIdx == 6 ? y->area : b;
 					return asc ? kx < ky : kx > ky;
 				});
 			}
@@ -3077,23 +4473,59 @@ void App::pageResults() {
 				int idx = int(&r - rows.data());
 				ImGui::TableNextRow(0, px(30));
 				ImGui::TableNextColumn();
+				setStripe(r, px(30));
 				ImGui::PushID(idx);
 				char num[16];
 				snprintf(num, sizeof num, "%d", idx + 1);
 				ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0, .5f));
-				if (ImGui::Selectable(num, selectedRow_ == idx, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, lineH))) selectedRow_ = idx;
+				if (ImGui::Selectable(num, selectedRow_ == idx, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, lineH))) {
+					selectedRow_ = idx;
+					if (r.setId) selectedSet_ = r.setId;   // the set bar follows the picked car
+				}
 				ImGui::PopStyleVar();
 				ImGui::PopID();
 				ImGui::TableNextColumn();
 				std::string s = std::to_string(r.speed) + " mph";
-				ImU32 col = speedColor(r.speed, prefs.speedLimit, prefs.egregious);
+				ImU32 col = speedColor(r.speed, limit, wayOver);
 				linePill(s.c_str(), c::bg0, col, fonts.strong);
+				if (r.adjusted) {
+					// Re-timed to its set's newer calibration: a small mark, the measured value on hover.
+					// Drawn beside the pill, centred on it, without adding a layout item: any item here makes the row taller
+					// than its neighbours and breaks the set stripe down the left edge.
+					ImVec2 pmin = ImGui::GetItemRectMin(), pmax = ImGui::GetItemRectMax();
+					ImVec2 sz = ImGui::CalcTextSize(ICON_RULER);
+					ImVec2 at(pmax.x + px(4), (pmin.y + pmax.y - sz.y) / 2);
+					ImGui::GetWindowDrawList()->AddText(at, c::dim, ICON_RULER);
+					if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(at, at + sz))
+						ImGui::SetTooltip("Adjusted to your newer calibration: measured %d mph with the one it was recorded with", r.measured.speed);
+				}
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				ImGui::PushStyleColor(ImGuiCol_Text, v4(r.l2r ? c::l2r : c::r2l));
 				ImGui::Text("%s %s", r.l2r ? "→" : "←", r.compass.c_str());
 				ImGui::PopStyleColor();
-				if (r.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
+				if (r.calKind) {
+					ImGui::SameLine();
+					linePill(r.calKind == 1 ? ICON_RULER " calibration" : ICON_BULLSEYE " check", c::bg0, c::accent2);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Your own %s drive at %g mph: left out of the totals, the charts and the street report",
+							r.calKind == 1 ? "calibration" : "check", std::round(r.drivenMph * 10) / 10);
+				}
+				else if (r.wrongWay) { ImGui::SameLine(); linePill(ICON_WARN " wrong way", c::rgb(0xFFFFFF), c::wrong); }
+				ImGui::TableNextColumn();
+				ImGui::AlignTextToFramePadding();
+				{
+					TrendLook tl = trendLook(r.trend);
+					ImGui::PushStyleColor(ImGuiCol_Text, v4(tl.color));
+					if (r.trend.empty()) ImGui::TextUnformatted(tl.icon);
+					else ImGui::Text("%s  %d " ICON_ARROW_RIGHT " %d", tl.icon, r.entryMph, r.exitMph);
+					ImGui::PopStyleColor();
+					if (ImGui::IsItemHovered()) {
+						if (r.trend.empty()) ImGui::SetTooltip("Not seen often or cleanly enough to tell whether it was speeding up or slowing down");
+						else ImGui::SetTooltip("%s: %d mph at the first speed line, %d at the second (%+.1f mph/s).\nAbout %d mph 20 ft further on.",
+							tl.label, r.entryMph, r.exitMph, r.accel, r.mphIn20ft);
+					}
+				}
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
 				if (!r.time.empty()) ImGui::TextUnformatted(r.time.size() > 11 ? r.time.substr(11).c_str() : r.time.c_str());
@@ -3103,7 +4535,9 @@ void App::pageResults() {
 				ImGui::Text("%d", r.frames);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
-				if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
+				// Feet long when the calibration gives the scale; the engine's area units otherwise.
+				if (r.lengthFt > 0) ImGui::Text(r.large ? ICON_TRUCK " %.0f ft" : "%.0f ft", r.lengthFt);
+				else if (r.large) ImGui::Text(ICON_TRUCK " %d", r.area);
 				else ImGui::Text("%d", r.area);
 				ImGui::TableNextColumn();
 				ImGui::AlignTextToFramePadding();
@@ -3124,18 +4558,18 @@ void App::pageResults() {
 		const ResultRow& r = rows[selectedRow_];
 		beginCard("det", nullptr, nullptr, ImVec2(detailW, 0));
 		float w = ImGui::GetContentRegionAvail().x;
-		Texture* t = r.vehicleId ? snapshotTexture(r.vehicleId) : nullptr;
+		Texture* t = r.vehicleId ? snapshotTexture(r.vehicleId) : !r.snapshotPath.empty() ? fileTexture(r.snapshotPath) : nullptr;
 		if (t) ImGui::Image((ImTextureID)(intptr_t)t->imguiId(), ImVec2(w, w * t->height() / std::max(1, t->width())));
 		else {
 			ImVec2 p = ImGui::GetCursorScreenPos();
 			ImGui::GetWindowDrawList()->AddRectFilled(p, p + ImVec2(w, w * .4f), c::bg3, px(8));
 			// Rows read from a csv have no picture; say why, centred in the placeholder.
-			const char* why = "Snapshots are kept only for\nvehicles tracked this session";
+			const char* why = reviewing() ? "No snapshot was archived\nfor this vehicle" : "Snapshots are kept only for\nvehicles tracked this session";
 			ImVec2 ts = ImGui::CalcTextSize(why);
 			ImGui::GetWindowDrawList()->AddText(p + (ImVec2(w, w * .4f) - ts) * .5f, c::faint, why);
 			ImGui::Dummy(ImVec2(w, w * .4f));
 		}
-		ImU32 col = r.wrongWay ? c::wrong : speedColor(r.speed, prefs.speedLimit, prefs.egregious);
+		ImU32 col = r.wrongWay ? c::wrong : speedColor(r.speed, limit, wayOver);
 		ImGui::PushFont(fonts.hero);
 		ImGui::PushStyleColor(ImGuiCol_Text, v4(col));
 		ImGui::Text("%d", r.speed);
@@ -3144,9 +4578,15 @@ void App::pageResults() {
 		ImGui::SameLine();
 		ImGui::SetCursorPosY(ImGui::GetCursorPosY() + px(26));
 		dimText("mph");
-		if (r.wrongWay) pill(ICON_WARN "  WRONG WAY", c::rgb(0xFFFFFF), c::wrong, fonts.strong);
-		else if (r.speed >= prefs.egregious) pill(ICON_BOLT "  WAY OVER THE LIMIT", c::bg0, c::bad, fonts.strong);
-		else if (r.speed > prefs.speedLimit) pill(ICON_GAUGE "  SPEEDING", c::bg0, c::warn, fonts.strong);
+		if (r.calKind) {
+			char what[96];
+			snprintf(what, sizeof what, "%s  YOU, %s AT %g MPH", r.calKind == 1 ? ICON_RULER : ICON_BULLSEYE, r.calKind == 1 ? "CALIBRATING" : "CHECKING",
+				std::round(r.drivenMph * 10) / 10);
+			pill(what, c::bg0, c::accent2, fonts.strong);
+		}
+		else if (r.wrongWay) pill(ICON_WARN "  WRONG WAY", c::rgb(0xFFFFFF), c::wrong, fonts.strong);
+		else if (r.speed >= wayOver) pill(ICON_BOLT "  WAY OVER THE LIMIT", c::bg0, c::bad, fonts.strong);
+		else if (r.speed > limit) pill(ICON_GAUGE "  SPEEDING", c::bg0, c::warn, fonts.strong);
 		else pill(ICON_CHECK "  WITHIN THE LIMIT", c::bg0, c::ok, fonts.strong);
 		ImGui::Dummy(ImVec2(0, px(4)));
 		auto kv = [&](const char* k, const std::string& v) {
@@ -3157,15 +4597,54 @@ void App::pageResults() {
 			ImGui::TextUnformatted(v.c_str());
 		};
 		kv("Direction", std::string(r.l2r ? "Left to right, " : "Right to left, ") + r.compass);
+		{
+			// Speed change: the trend in words and colour, entry -> exit, and where it was headed 20 ft on.
+			TrendLook tl = trendLook(r.trend);
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(c::dim));
+			ImGui::TextUnformatted("Speed change");
+			ImGui::PopStyleColor();
+			ImGui::SameLine(px(120));
+			ImGui::PushStyleColor(ImGuiCol_Text, v4(tl.color));
+			ImGui::Text("%s  %s", tl.icon, tl.label);
+			ImGui::PopStyleColor();
+			if (!r.trend.empty()) {
+				char buf[96];
+				snprintf(buf, sizeof buf, "%d " ICON_ARROW_RIGHT " %d mph  (%+.1f mph/s)", r.entryMph, r.exitMph, r.accel);
+				kv("In, out", buf);
+				kv("20 ft on", r.mphIn20ft == 0 ? std::string("stopped, at this rate") : "about " + std::to_string(r.mphIn20ft) + " mph");
+			}
+		}
 		kv("In the zone", std::to_string(r.frames) + " frames (" + std::to_string(r.frames / r.fps).substr(0, 4) + " s)");
-		kv("Size", std::to_string(r.area) + (r.large ? "  (truck or bus)" : ""));
+		{
+			char sz[96];
+			if (r.lengthFt > 0) snprintf(sz, sizeof sz, "about %.0f ft long  (%s)", r.lengthFt, r.large ? "truck or bus" : r.lengthFt >= 19 ? "pickup or van" : "car");
+			else snprintf(sz, sizeof sz, "%d%s", r.area, r.large ? "  (truck or bus)" : "");
+			kv("Size", sz);
+		}
 		kv("Frame", std::to_string(r.frame));
 		if (!r.time.empty()) { std::string t = r.time; if (t.size() > 10 && t[10] == 'T') t[10] = ' '; kv("Passed at", t); }
 		kv("Source", r.source);
+		if (!reviewing() && r.lengthFt <= 0 && r.area > 0 && pxPerFtAtLane() <= 0) { ImGui::PushTextWrapPos(0); dimText("Calibrate in step 5 and sizes show in feet."); ImGui::PopTextWrapPos(); }
+		if (r.calKind) {
+			ImGui::PushTextWrapPos(0);
+			dimText("Your own %s drive: left out of the totals, the charts and the street report.", r.calKind == 1 ? "calibration" : "check");
+			ImGui::PopTextWrapPos();
+		}
+		if (const calsets::Set* set = setOfRow(r)) {
+			// Which calibration this speed is at, in words; the stripe's colour ties it to the set bar above the table.
+			ImGui::PushTextWrapPos(0);
+			if (!set->known) dimText("From before VST kept each run's calibration, so this speed is shown as it was measured.");
+			else if (r.adjusted)
+				dimText("Measured %d mph with the calibration it was recorded with; %d mph with %s.", r.measured.speed, r.speed,
+					set->locked() ? "the calibration its set is locked to" : "your latest calibration");
+			else dimText("Set %d%s.", set->id, set->locked() ? ", locked to the calibration it was measured with" : ", at your latest calibration");
+			ImGui::PopTextWrapPos();
+		}
 		ImGui::Dummy(ImVec2(0, px(4)));
+		std::string clip = r.clipPath;
 		Vehicle v;
-		if (r.vehicleId && tracker.vehicle(r.vehicleId, v) && !v.clipPath.empty())
-			if (ghostButton(ICON_FILM "  Play clip", ImVec2(-FLT_MIN, 0))) openWithSystem(v.clipPath);
+		if (r.vehicleId && tracker.vehicle(r.vehicleId, v)) clip = v.clipPath;
+		if (!clip.empty() && ghostButton(ICON_FILM "  Play clip", ImVec2(-FLT_MIN, 0))) openWithSystem(clip);
 		if (r.vehicleId && ghostButton(ICON_RULER "  This was me: calibrate from it", ImVec2(-FLT_MIN, 0))) {
 			calibPickId_ = r.vehicleId;
 			calibMode_ = 0;
@@ -3184,6 +4663,7 @@ void App::pageResults() {
 
 // Histogram of speeds (2 mph bins, coloured by band, limit marked) next to a timeline of every vehicle.
 void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width) {
+	const int limit = resultsLimit(), wayOver = resultsWayOver();
 	float h = px(200);
 	float half = (width - px(12)) * .5f;
 	auto frameCard = [&](const char* id, const char* icon, const char* title) { beginCard(id, icon, title, ImVec2(half, h)); };
@@ -3202,18 +4682,20 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		int maxC = std::max(1, *std::max_element(counts.begin(), counts.end()));
 		float bw = sz.x / bins;
 		int hoverBin = -1;
+		// Only when nothing covers the card: IsMouseHoveringRect alone also fires under an open dialog.
+		const bool canHover = ImGui::IsWindowHovered();
 		for (int i = 0; i < bins; i++) {
 			int mph = lo + i * 2;
 			float bh = (sz.y - px(4)) * counts[i] / maxC;
 			ImVec2 a(p.x + i * bw + 1, p.y + sz.y - bh), b(p.x + (i + 1) * bw - 1, p.y + sz.y);
-			bool hov = ImGui::IsMouseHoveringRect(ImVec2(a.x, p.y), b);
+			bool hov = canHover && ImGui::IsMouseHoveringRect(ImVec2(a.x, p.y), b);
 			if (hov) hoverBin = i;
-			if (counts[i]) dl->AddRectFilled(a, b, alpha(speedColor(mph, prefs.speedLimit, prefs.egregious), hov ? 1.f : .8f), px(3), ImDrawFlags_RoundCornersTop);
+			if (counts[i]) dl->AddRectFilled(a, b, alpha(speedColor(mph, limit, wayOver), hov ? 1.f : .8f), px(3), ImDrawFlags_RoundCornersTop);
 		}
-		float lx = p.x + (prefs.speedLimit + 1 - lo) / 2.f * bw;
+		float lx = p.x + (limit + 1 - lo) / 2.f * bw;
 		for (float y = p.y; y < p.y + sz.y; y += px(8)) dl->AddLine(ImVec2(lx, y), ImVec2(lx, y + px(4)), c::text, 1.5f);
 		// The label sits on a chip of the card colour so the bars behind it can't swallow it.
-		std::string lim = std::to_string(prefs.speedLimit) + " mph limit";
+		std::string lim = std::to_string(limit) + " mph limit";
 		ImVec2 ls = fonts.caption->CalcTextSizeA(fsz(fonts.caption), FLT_MAX, 0, lim.c_str());
 		ImVec2 lp(std::min(lx + px(6), p.x + sz.x - ls.x - px(4)), p.y);
 		dl->AddRectFilled(lp - ImVec2(px(4), px(1)), lp + ls + ImVec2(px(4), px(1)), alpha(c::bg2, .9f), px(4));
@@ -3237,7 +4719,7 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 		sz.y -= px(4);
 		int top = 50;
 		for (const ResultRow* r : shown) top = std::max(top, r->speed + 5);
-		float ly = p.y + sz.y - sz.y * prefs.speedLimit / top;
+		float ly = p.y + sz.y - sz.y * limit / top;
 		dl->AddRectFilled(ImVec2(p.x, p.y), ImVec2(p.x + sz.x, ly), alpha(c::bad, .04f));
 		for (float x = p.x; x < p.x + sz.x; x += px(8)) dl->AddLine(ImVec2(x, ly), ImVec2(x + px(4), ly), alpha(c::text, .6f), 1.f);
 		size_t n = shown.size();
@@ -3246,7 +4728,7 @@ void App::resultsCharts(const std::vector<const ResultRow*>& shown, float width)
 			const ResultRow* r = shown[i];
 			float x = p.x + (n > 1 ? sz.x * i / (n - 1) : sz.x * .5f);
 			float y = p.y + sz.y - sz.y * r->speed / top;
-			ImU32 col = speedColor(r->speed, prefs.speedLimit, prefs.egregious);
+			ImU32 col = speedColor(r->speed, limit, wayOver);
 			if (r->wrongWay) dl->AddCircle(ImVec2(x, y), px(6), c::wrong, 0, 2.f);
 			dl->AddCircleFilled(ImVec2(x, y), px(3.2f), col);
 			ImVec2 m = ImGui::GetIO().MousePos;
@@ -3277,6 +4759,14 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 	in.current.calSpeed = g.CalibrationSpeed;
 	in.current.calFps = g.CalibrationFPS;
 	in.current.minLoggedSpeed = g.minLoggedSpeed;
+	calibrationPass("", 0);   // load calibration-passes.csv
+	for (const auto& kv : calPasses_) in.calibrationPasses.insert(kv.first);
+	// Each run at its calibration set's zone feet, the same speeds Results shows (CalSets.h).
+	syncSets(true);
+	for (const calsets::Set& s : sets_.sets) {
+		calsets::Scale ft = calsets::shownScale(s, currentView(), currentScale());
+		if (s.known && ft.valid()) for (const std::string& r : s.runs) in.zoneFt[r] = { ft.l2r, ft.r2l };
+	}
 	if (!snapshots) return in;
 	// Example frames exist only for this session's vehicles (kept in memory).  Take the six fastest in the date range,
 	// each made safe by blurForReport before it ever reaches the report.
@@ -3286,9 +4776,47 @@ report::Input App::reportInput(bool snapshots, const std::string& from, const st
 		if (in.snapshots.size() >= 6) break;
 		std::string when = v.passed();
 		std::string day = when.substr(0, 10);
+		if (calibrationPass(v.statsPath, v.ev.frame)) continue;   // the user's own drive isn't an example of the street's traffic
 		if (v.snapshot.empty() || (!from.empty() && (day.empty() || day < from)) || (!to.empty() && (day.empty() || day > to))) continue;
 		std::string jpeg = report::blurForReport(v.snapshot);
 		if (!jpeg.empty()) in.snapshots.push_back({ jpeg, v.ev.speed, v.ev.leftToRight, when });
+	}
+	return in;
+}
+
+// The same for an open archive: its folder is laid out like the data folder, so the report reads its Stats/ as is, with
+// the history and config it was archived with and its own (unblurred until blurForReport) snapshots.
+report::Input App::archiveReportInput(bool snapshots, const std::string& from, const std::string& to) {
+	const archive::Info& a = archive_;
+	report::Input in;
+	in.dataDir = a.dir;
+	in.configPath = a.configPath;   // history rows are keyed on the original path
+	in.historyFiles.push_back((fs::path(a.dir) / "calibration-history.csv").string());
+	// The calibration sets it was archived with (Stats/calibration-sets.json), so the report re-times its runs the way
+	// Results showed them when they were archived.
+	for (const calsets::Set& s : calsets::load((fs::path(a.dir) / "Stats").string()).sets)
+		if (s.known && s.scale.valid()) for (const std::string& r : s.runs) in.zoneFt[r] = { s.scale.l2r, s.scale.r2l };
+	in.current.l2rCompass = a.cal.l2rCompass;
+	in.current.r2lCompass = a.cal.r2lCompass;
+	in.current.legal = a.cal.legal;
+	in.current.framesL2R = a.cal.framesL2R;
+	in.current.framesR2L = a.cal.framesR2L;
+	in.current.calSpeed = a.cal.calSpeed;
+	in.current.calFps = a.cal.calFps;
+	in.current.minLoggedSpeed = a.cal.minLoggedSpeed;
+	if (!snapshots) return in;
+	std::vector<const archive::Vehicle*> vs;
+	for (const archive::Vehicle& v : a.vehicles) if (!v.snapshot.empty()) vs.push_back(&v);
+	std::sort(vs.begin(), vs.end(), [](const archive::Vehicle* x, const archive::Vehicle* y) { return x->speed > y->speed; });
+	for (const archive::Vehicle* v : vs) {
+		if (in.snapshots.size() >= 6) break;
+		std::string day = v->passed.substr(0, 10);
+		if ((!from.empty() && (day.empty() || day < from)) || (!to.empty() && (day.empty() || day > to))) continue;
+		std::ifstream f(fs::path(a.dir) / fs::path(v->snapshot), std::ios::binary);
+		std::vector<uchar> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		cv::Mat img = bytes.empty() ? cv::Mat() : cv::imdecode(bytes, cv::IMREAD_COLOR);
+		std::string jpeg = img.empty() ? std::string() : report::blurForReport(img);
+		if (!jpeg.empty()) in.snapshots.push_back({ jpeg, v->speed, v->l2r, v->passed });
 	}
 	return in;
 }
@@ -3304,11 +4832,13 @@ report::Settings App::reportSettings() {
 
 // The "Make report" dialog: a few choices, then one HTML file in <data>/Reports that prints cleanly to PDF.
 void App::reportDialog() {
-	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Appearing);
+	ImGui::SetNextWindowSize(ImVec2(px(560), 0), ImGuiCond_Always);   // 0 = fit the height every frame, as options open and close
 	if (!ImGui::BeginPopupModal("Street report", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings)) return;
 	ReportForm& f = reportForm_;
 	float col = px(150);
-	dimText("A printable study of the speeds in your data folder, for a city council or a traffic engineer. "
+	dimText(reviewing() ? "A printable study of the speeds in this archive, for a city council or a traffic engineer. "
+		"It lists coverage, speeds per direction, the calibration record and the error band."
+		: "A printable study of the speeds in your data folder, for a city council or a traffic engineer. "
 		"It lists coverage, speeds per direction, the calibration record and the error band.");
 	ImGui::Dummy(ImVec2(0, px(6)));
 	formLabel("Site name", col);
@@ -3338,11 +4868,16 @@ void App::reportDialog() {
 	}
 	ImGui::SetCursorPosX(col);
 	ImGui::Checkbox("Include example frames (blurred)", &f.snapshots);
-	if (f.snapshots) { ImGui::SetCursorPosX(col); dimText("Only this session's vehicles have snapshots. Plates are blurred and nothing identifying is added."); }
+	if (f.snapshots) {
+		ImGui::SetCursorPosX(col);
+		dimText(reviewing() ? "From this archive's snapshots. Plates are blurred and nothing identifying is added."
+			: "Only this session's vehicles have snapshots. Plates are blurred and nothing identifying is added.");
+	}
 	formLabel("Note", col);
 	ImGui::InputTextMultiline("##rnote", f.note, sizeof f.note, ImVec2(-FLT_MIN, px(70)));
 	ImGui::SetCursorPosX(col);
-	dimText("Limit %d mph, way over %d mph (set on the Live page).", prefs.speedLimit, prefs.egregious);
+	if (reviewing()) dimText("Limit %d mph, way over %d mph, as when it was archived.", resultsLimit(), resultsWayOver());
+	else dimText("Limit %d mph, way over %d mph (set on the Live page).", prefs.speedLimit, prefs.egregious);
 
 	if (!f.error.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::bad)); ImGui::TextWrapped("%s", f.error.c_str()); ImGui::PopStyleColor(); }
 	if (!f.saved.empty()) { ImGui::PushStyleColor(ImGuiCol_Text, v4(c::ok)); ImGui::TextWrapped(ICON_CHECK_CIRCLE "  Saved %s", f.saved.c_str()); ImGui::PopStyleColor(); }
@@ -3357,13 +4892,16 @@ void App::reportDialog() {
 		if (f.compare && (!*f.cmpFrom || !*f.cmpTo)) f.error = "Give both dates of the period to compare with.";
 		if (f.error.empty()) {
 			report::Settings s = reportSettings();
+			s.speedLimit = resultsLimit();   // an archive is reported at the limits it was archived with
+			s.wayOver = resultsWayOver();
 			s.from = f.from;
 			s.to = f.to;
 			s.note = f.note;
 			s.includeSnapshots = f.snapshots;
 			if (f.compare) { s.compareFrom = f.cmpFrom; s.compareTo = f.cmpTo; }
 			std::string path, html;
-			if (report::writeReport(reportInput(f.snapshots, s.from, s.to), s, path, html, f.error)) {
+			report::Input in = reviewing() ? archiveReportInput(f.snapshots, s.from, s.to) : reportInput(f.snapshots, s.from, s.to);
+			if (report::writeReport(in, s, path, html, f.error)) {
 				f.saved = path;
 				toast("Report saved: " + fs::path(path).filename().string(), c::ok, ICON_REPORT);
 			}

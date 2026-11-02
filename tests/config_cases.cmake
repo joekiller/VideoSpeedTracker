@@ -70,3 +70,8 @@ expect_run(lane_angle_off_box "${sample}R2LStreetYRight = 500\n" "R2LStreetYRigh
 expect_run(street_edge_ok "${sample}streetEdge = [185,175]\n" "Can't open video")
 expect_run(street_edge_crossing "${sample}streetEdge = [185,100]\n" "streetEdge and the L2R lane line meet inside the picture")
 expect_run(street_edge_bad "${sample}streetEdge = 185\n" "can't read a value for streetEdge")
+
+# The speed zone's rails (Globals::railZone, kMinZone): a line may sit on the box's edge, but the lines must be at least
+# 200 px apart.
+expect_run(zone_on_box_edge "${sample}speedLineLeft = 0\n" "Can't open video")
+expect_run(zone_too_narrow "${sample}speedLineRight = 500\n" "the speed zone is 150 px wide .* at least 200 px")

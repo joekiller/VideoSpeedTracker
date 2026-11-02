@@ -68,6 +68,7 @@
 #include <thread>
 #include <ctime>
 #include <cmath>
+#include <iomanip>
 #include <sstream>
 #include <locale>
 #include <opencv2/videoio/registry.hpp>
@@ -151,7 +152,34 @@ struct EngineExit { int code; };  // thrown by quit() so an embedded run unwinds
 
 // One row per logged vehicle.  Flag is "*****" for an implausible speed, else empty; it used to be written only when set, and is
 // now always there so that Timestamp (ISO 8601 local time with UTC offset, empty when unknown) is always the 15th column.
-const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp";
+// The speed trend follows (v1.10+, SpeedTrend.h): EntryMph and ExitMph at the two speed lines, AccelMphPerSec (+ speeding
+// up), Trend (decelerating, steady, accelerating or rapid) and MphIn20ft, the speed projected 20 ft past the exit line.
+// All five are empty when the trend can't be told.  LengthPx (v1.10+) is the vehicle's side-on length in analysis-box
+// pixels (VehicleDynamics::getLengthPx), which VST Studio turns into feet with the calibration, so sizes survive a
+// reopen, Open and an archive.  ZoneSeconds (v1.10+) is the time the front bumper took between the speed lines, to 0.1 ms:
+// estSpeed is the zone length over this, rounded, so a later calibration of the same view re-times the car exactly
+// (VST Studio's calibration sets, src/Gui/CalSets.h) instead of rescaling a whole-mph value.  Readers of the older 15
+// columns ignore them all.
+const string statsHeader = "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, "
+	"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx, ZoneSeconds";
+
+// The ZoneSeconds cell: 4 decimals with a '.' whatever the locale, empty when the car wasn't timed.
+string zoneSecondsCell(double s){
+	if (!(s > 0)) return "";
+	ostringstream o;
+	o.imbue(locale::classic());
+	o << fixed << setprecision(4) << s;
+	return o.str();
+}
+
+// The five speed-trend cells of a stats row (see statsHeader), "" in each when unknown.
+string trendCells(const vst::SpeedTrend& t){
+	if (!t.known()) return ", , , , ";
+	char buf[128];
+	snprintf(buf, sizeof buf, "%d, %d, %.1f, %s, %d", int(t.entryMph + 0.5), int(t.exitMph + 0.5), t.accelMphPerSec,
+		vst::trendName(t.trend), int(t.projectedMph + 0.5));
+	return buf;
+}
 
 // Reads the next frame and scales it to the 1280x720 canvas every config coordinate refers to, so cameras that record
 // 1080p, 4K or 640x480 work with the same VST.cfg geometry, then levels it (levelDegrees).  Returns false at end of video or on a read error.
@@ -425,7 +453,9 @@ void writeManifest(bool complete){
 		<< ", \"R2LDirection\": " << jsonString(g.R2LDirection) << ",\n"
 		<< "    \"speedLineLeft\": " << g.speedLineLeft << ", \"speedLineRight\": " << g.speedLineRight << ",\n"
 		<< "    \"minLoggedSpeed\": " << g.minLoggedSpeed << ", \"subFrameTiming\": " << g.subFrameTiming << ",\n"
-		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << ", \"streetEdge\": [" << g.streetEdge[0] << ", " << g.streetEdge[1] << "]\n"
+		<< "    \"levelDegrees\": " << jsonNumber(g.levelDegrees) << ", \"streetEdge\": [" << g.streetEdge[0] << ", " << g.streetEdge[1] << "],\n"
+		// The view, with the speed lines and streetEdge above: runs that share all of it are one calibration set (CalSets.h).
+		<< "    \"analysisBox\": [" << g.AnalysisBoxLeft << ", " << g.AnalysisBoxTop << ", " << g.AnalysisBoxWidth << ", " << g.AnalysisBoxHeight << "]\n"
 		<< "  },\n"
 		<< "  \"counts\": { \"logged\": " << runLogged << ", \"belowMinSpeed\": " << runBelowMinSpeed << ", \"untimed\": " << runUntimed << " }\n"
 		<< "}\n";
@@ -1040,11 +1070,22 @@ int loggedVehicles = 0, speeders = 0, wrongWayVehicles = 0;
 // vehicle's estSpeed is -1 until it is timed.
 // An embedding host also hears about each belowMinSpeed and untimed vehicle (Hooks::onAttempt), so it can show how many cars
 // were tried against how many got a speed; a logged one reaches it through reportVehicle() instead.
-void reportAttempt(bool leftToRight, bool timed, int estSpeed){
+// A timed one also carries its frames and bumper positions at the speed lines and its timestamp (see AttemptEvent).
+void reportAttempt(bool leftToRight, bool timed, int estSpeed, VehicleDynamics& v){
 #ifdef VST_EMBEDDED
-	if (hooks && hooks->onAttempt) hooks->onAttempt({ leftToRight, timed, timed ? estSpeed : 0, frameNumber });
+	if (hooks && hooks->onAttempt){
+		vst::AttemptEvent a{ leftToRight, timed, timed ? estSpeed : 0, frameNumber };
+		if (timed){
+			a.startFrame = v.getTrackStartFrame(); a.endFrame = v.getTrackEndFrame();
+			a.startPixel = v.getTrackStartPixel(); a.endPixel = v.getTrackEndPixel();
+			double when = vehicleTime();
+			a.timestamp = when >= 0 ? formatTime(when, false) : "";
+			a.compass = leftToRight ? g.L2RDirection : g.R2LDirection;
+		}
+		hooks->onAttempt(a);
+	}
 #else
-	(void)leftToRight; (void)timed; (void)estSpeed;
+	(void)leftToRight; (void)timed; (void)estSpeed; (void)v;
 #endif
 }
 
@@ -1052,11 +1093,11 @@ bool countVehicle(bool isOK, VehicleDynamics& v, int estSpeed, bool leftToRight)
 	if (isOK && v.getTrackEndPixel() > 0){
 		if (estSpeed >= g.minLoggedSpeed){ runLogged++; return true; }
 		runBelowMinSpeed++;
-		reportAttempt(leftToRight, true, estSpeed);
+		reportAttempt(leftToRight, true, estSpeed, v);
 	}
 	else if (v.getTrackStartPixel() != 0 && !v.firstSeenInZone()){
 		runUntimed++;
-		reportAttempt(leftToRight, false, -1);
+		reportAttempt(leftToRight, false, -1, v);
 		if (pleaseTrace) traceFile << "<" << frameNumber << ">   UNTIMED " << (leftToRight ? "L2R" : "R2L") << " vehicle: entered the zone at frame "
 			<< v.getTrackStartFrame() << ", pixel " << v.getTrackStartPixel() << ", and was lost before timing finished" << endl;
 	}
@@ -1085,11 +1126,20 @@ void reportVehicle(bool leftToRight, VehicleDynamics& v, int estSpeed, const str
 #ifdef VST_EMBEDDED
 	if (hooks && hooks->onVehicle)
 		hooks->onVehicle({ leftToRight, wrongWay, compass, estSpeed, frameNumber, v.getTrackStartFrame(), v.getTrackEndFrame(),
-			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp });
+			v.getTrackStartPixel(), v.getTrackEndPixel(), v.getArea(), timestamp, v.getLengthPx(g), v.getSpeedTrend(), v.getZoneSeconds() });
 #else
 	(void)v;
 	(void)timestamp;
 #endif
+}
+
+// The trace file's line for a speed trend: "accelerating  in 22 out 28 mph  +5.3 +- 1.1 mph/s  31 mph in 20 ft  (11 points)".
+string traceTrend(const vst::SpeedTrend& t){
+	char buf[160];
+	if (!t.known()) snprintf(buf, sizeof buf, "unknown  (%d points, %.2f ft rms, %+.1f +- %.1f mph/s)", t.points, t.rmsFt, t.accelMphPerSec, t.accelSE);
+	else snprintf(buf, sizeof buf, "%s  in %.1f out %.1f mph  %+.1f +- %.1f mph/s  %.1f mph in 20 ft  (%d points, %.2f ft rms)", vst::trendName(t.trend),
+		t.entryMph, t.exitMph, t.accelMphPerSec, t.accelSE, t.projectedMph, t.points, t.rmsFt);
+	return buf;
 }
 
 void logL2Rstats(bool isOK, int index){
@@ -1105,6 +1155,7 @@ void logL2Rstats(bool isOK, int index){
 		<< "   Exit pixel: " << vehiclesGoingRight[index].getTrackEndPixel()
 		<< "   # Pixels: " << vehiclesGoingRight[index].getTrackEndPixel() - vehiclesGoingRight[index].getTrackStartPixel()
 		<< "             Est speed: " << estSpeed
+		<< endl << "         Trend: " << traceTrend(vehiclesGoingRight[index].getSpeedTrend())
 		<< endl << "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >"
 		<< endl << endl << endl;
 	if (countVehicle(isOK, vehiclesGoingRight[index], estSpeed, true)){  // timed, clean track, and at least minLoggedSpeed
@@ -1120,7 +1171,8 @@ void logL2Rstats(bool isOK, int index){
 			<< vehiclesGoingRight[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingRight[index].getSpeedTrend()) << ", " << vehiclesGoingRight[index].getLengthPx(g)
+			<< ", " << zoneSecondsCell(vehiclesGoingRight[index].getZoneSeconds()) << endl;
 		reportVehicle(true, vehiclesGoingRight[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingRight[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
@@ -1175,6 +1227,7 @@ void logR2Lstats(bool isOK, int index){
 		<< "   End pixel: " << vehiclesGoingLeft[index].getTrackEndPixel()
 		<< "   # Pixels: " << vehiclesGoingLeft[index].getTrackStartPixel() - vehiclesGoingLeft[index].getTrackEndPixel()
 		<< "             Est speed: " << estSpeed
+		<< endl << "         Trend: " << traceTrend(vehiclesGoingLeft[index].getSpeedTrend())
 		<< endl << "< < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < < <"
 		<< endl << endl << endl;
 	if (countVehicle(isOK, vehiclesGoingLeft[index], estSpeed, false)){  // timed, clean track, and at least minLoggedSpeed
@@ -1190,7 +1243,8 @@ void logR2Lstats(bool isOK, int index){
 			<< vehiclesGoingLeft[index].getArea() << ", , "
 			<< estSpeed << ", "
 			<< ((estSpeed < 0 || estSpeed > crazySpeed) ? "*****" : "") << ", "
-			<< timestamp << endl;
+			<< timestamp << ", " << trendCells(vehiclesGoingLeft[index].getSpeedTrend()) << ", " << vehiclesGoingLeft[index].getLengthPx(g)
+			<< ", " << zoneSecondsCell(vehiclesGoingLeft[index].getZoneSeconds()) << endl;
 		reportVehicle(false, vehiclesGoingLeft[index], estSpeed, timestamp);
 		if (meetsHLRCriterion(estSpeed, vehiclesGoingLeft[index].getArea())){
 			Mat zero = Mat::zeros(Size(Globals::FrameWidth, Globals::FrameHeight), frame1.type());
@@ -1231,6 +1285,37 @@ void logR2Lstats(bool isOK, int index){
 	}
 }
 
+
+// Where a newly found vehicle is, relative to the speed line it enters by.  One first seen already past that line
+// (midZone) is usually a lost track picked up again, and is not timed (markInvalidSpeed()).  The exception (justEntered)
+// is a car still at the box's entry edge (within margin(45) of it) that is just coming into view: it can't have been seen
+// sooner, so it is timed from there when
+//   - subFrameTiming is on (a short view, where a car can be a frame pair into the zone before it is first seen), or
+//   - its front bumper is at most one entry look-ahead (maxDistOnEntry, about a frame pair at speed) past the line, which
+//     happens when the line is that close to the box's edge.  A speed line on the edge itself, as a box drawn hard against
+//     the side of the picture gives, otherwise leaves every car coming in from that side untimed.  Without subFrameTiming
+//     such a car is timed by the front-bumper fit (markEnteredAtEdge()), since no frame shows it at the entry line.
+enum class Entry { beforeZone, nearLine, justEntered, midZone };
+Entry entryPosition(const Rect& box, bool leftToRight){
+	int front = leftToRight ? box.x + box.width : box.x;
+	int past = leftToRight ? front - g.speedLineLeft : g.speedLineRight - front;  // how far the front bumper is into the zone
+	bool atEdge = leftToRight ? box.x <= g.pixelLeft + g.margin(45, true) : box.x + box.width >= g.pixelRight - g.margin(45, false);
+	int lookAhead = leftToRight ? g.maxL2RDistOnEntry : g.maxR2LDistOnEntry;
+	if (past < 0) return atEdge && past >= -lookAhead ? Entry::nearLine : Entry::beforeZone;
+	if (atEdge && (g.subFrameTiming || past <= lookAhead)) return Entry::justEntered;
+	return Entry::midZone;
+}
+
+// Starts tracking a vehicle first seen at box, judged by entryPosition().
+void startTrack(vector<VehicleDynamics>& tracks, const Rect& box, bool leftToRight){
+	tracks.push_back(VehicleDynamics(leftToRight ? L2R : R2L));
+	tracks.back().addSnapshot(Snapshot(box, frameNumber));
+	switch (entryPosition(box, leftToRight)){
+	case Entry::midZone: tracks.back().markInvalidSpeed(); break;
+	case Entry::justEntered: case Entry::nearLine: if (!g.subFrameTiming) tracks.back().markEnteredAtEdge(); break;
+	case Entry::beforeZone: break;
+	}
+}
 
 OverlapType doesL2ROverlapAnyR2L(int L2RIndex, vector<Projection> vehiclesL2R, vector<Projection> vehiclesR2L, int projectedR2LSize){
 // Function name tells it all.  Does a selected L2R vehicle overlap any R2L vehicles?  Indicate which bumpers overlap.
@@ -1525,12 +1610,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 			coalescedRectangle = coalesce(objectBoundingRectangleL2R, numOKSizeObjectsL2R,
 				g.pixelLeft, min(min(safeR2LZone, safeL2RZone), (g.pixelLeft + g.pixelRight) / 2), strict);  // Look for vehicle from left (-20 covers projection slop)
 			if (coalescedRectangle.x != -1){ // at least one object is present in coalesced rectangle(s)
-				vehiclesGoingRight.push_back(VehicleDynamics(L2R));
-				vehiclesGoingRight[vehiclesGoingRight.size() - 1].addSnapshot(Snapshot(coalescedRectangle, frameNumber));
-				// First seen already in the zone: usually a lost track picked up again.  In a short view (subFrameTiming) a car can be a
-				// frame pair into the zone before it is first seen, so one still at the left edge is just entering and is timed from there.
-				if (coalescedRectangle.x + coalescedRectangle.width >= g.speedLineLeft && !(g.subFrameTiming && coalescedRectangle.x <= g.margin(45, true)))
-					     vehiclesGoingRight[vehiclesGoingRight.size() - 1].markInvalidSpeed();
+				startTrack(vehiclesGoingRight, coalescedRectangle, true);  // not timed if first seen already in the zone (entryPosition())
 				if (pleaseTrace) traceFile << endl << endl << "<" << frameNumber
 					<< ">    >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Just added rightbound vehicle[" << vehiclesGoingRight.size() - 1 << "] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>" << endl;
 				displayAnalysisGoingRight(frameNumber, vehiclesGoingRight.size() - 1, coalescedRectangle, none, AnalysisFrame, -1);
@@ -1550,11 +1630,7 @@ bool manageMovers(Mat wholeScenethreshImage, Mat &AnalysisFrame){
 				     max(  max(g.pixelRight - safeL2RZone, g.pixelRight - safeR2LZone),
 				          (g.pixelLeft + g.pixelRight) / 2), g.pixelRight, strict);  // Look for vehicle from right
 			if (coalescedRectangle.x != -1){
-				vehiclesGoingLeft.push_back(VehicleDynamics(R2L));
-				vehiclesGoingLeft[vehiclesGoingLeft.size() - 1].addSnapshot(Snapshot(coalescedRectangle, frameNumber));
-				if (coalescedRectangle.x <= g.speedLineRight  // see the note on L2R just above
-					&& !(g.subFrameTiming && coalescedRectangle.x + coalescedRectangle.width >= g.pixelRight - g.margin(45, false)))
-					     vehiclesGoingLeft[vehiclesGoingLeft.size() - 1].markInvalidSpeed();
+				startTrack(vehiclesGoingLeft, coalescedRectangle, false);
 				if (pleaseTrace) traceFile << endl << endl << "<" << frameNumber
 					<< ">     <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< Just added leftbound vehicle[" << vehiclesGoingLeft.size() - 1 << "] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << endl;
 				displayAnalysisGoingLeft(frameNumber, vehiclesGoingLeft.size() - 1, coalescedRectangle, none, AnalysisFrame, -1);

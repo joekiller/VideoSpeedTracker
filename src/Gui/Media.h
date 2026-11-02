@@ -41,6 +41,10 @@ struct SourceInfo {
 	frameio::Shutter shutter = frameio::Shutter::Unknown;
 	int shutterUs = 0;
 	double measuredFps = 0;
+	// A USB camera's own name, and whether VST picked its mode from the driver's list (and why) (Facts, FrameInput.h).
+	std::string deviceName;
+	bool modePicked = false;
+	std::string modeWhy;
 	double seconds() const { return fps > 0 && frames > 0 ? frames / fps : 0; }
 };
 

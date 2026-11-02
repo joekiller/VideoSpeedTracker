@@ -13,10 +13,16 @@
 //   5 Calibrate                      drive-through calibration or counting frames by hand
 // Then the pages used once it's set up:
 //   Live                     tracking with overlays, live counts and a feed of logged vehicles
-//   Results                  speeders and wrong-way drivers, charts, snapshots, csv and highlights
+//   Results                  speeders and wrong-way drivers, charts, snapshots, csv and highlights; archives a
+//                            dataset away and reviews an archived one read-only (Archive.h)
 //   Companion                pairing a phone with the local API (QR code)
 #pragma once
+#include "CalEvidence.h"
+#include "CalSets.h"
+#include "Dataset.h"
+#include "Archive.h"
 #include "Calibration.h"
+#include "ParkingLane.h"
 #include "DashCam.h"
 #include "Health.h"
 #include "Media.h"
@@ -73,7 +79,31 @@ struct ResultRow {
 	bool flagged = false;
 	double fps = 30;
 	std::string time;
+	std::string statsPath;      // the stats csv the row was read from ("" for session rows)
+	int widthPx = 0;            // session rows: the vehicle's length side-on in pixels (VehicleEvent::width), 0 when unknown
+	double lengthFt = 0;        // that length in feet at the lane, from the calibration (0 = no calibration or no width)
+	int calKind = 0;            // 1: the user's own calibration drive, 2: their check drive (CalPass), left out of the tiles and charts
+	double drivenMph = 0;       // for those, the speed they said they drove
+	// Calibration sets (CalSets.h): the set the row's run belongs to (0 = none: a csv from outside the data folder, an
+	// archive, or a run still being written), what the tracker measured, and the zone feet it measured with.  speed and
+	// the trend fields are the measurement re-timed to the set's calibration (App::applySets), adjusted when that moved them.
+	int setId = 0;
+	calsets::Measured measured;
+	double thenFt = 0;
+	bool adjusted = false;
+	// Speed trend (SpeedTrend.h): "decelerating", "steady", "accelerating", "rapid", or "" when not known.
+	std::string trend;
+	int entryMph = 0, exitMph = 0, mphIn20ft = 0;
+	double accel = 0;           // mph/s
+	std::string snapshotPath;   // an archived row's snapshot / clip on disk ("" = none); session rows use vehicleId
+	std::string clipPath;
 };
+
+// Where the Results page's rows come from.  Session: vehicles measured since Studio opened (with snapshots).  Saved:
+// every run the tracker has saved in <data>/Stats (resume::savedRuns), newest first; what Results opens on when this
+// session has nothing yet, so reopening Studio never looks as if earlier results were lost.  File: one csv, either a
+// saved run picked from the menu or anything opened with Open CSV (App::rowsFrom names it).
+enum class ResultsScope { Session, Saved, File };
 
 class App {
 public:
@@ -103,30 +133,73 @@ public:
 	bool remoteOn() const;              // the companion server is up for the phone (not just the map's local one)
 	std::string dataDir();
 	std::string findSample();
-	// Sets the calibration for one direction from a pass at a known speed; keeps the other direction's
-	// calibration valid by expressing both against the same CalibrationSpeed/CalibrationFPS.
-	// Every apply is also appended to calibration-history.csv (Calibration.h).
+	// Adds a pass at a known speed to the calibration (CalEvidence.h): one direction, or the lane both ways on a
+	// one-way street.  It joins what the other methods measured instead of replacing them; addCalibrationInput()
+	// then sets CalibrationFrames from all of them.
 	void applyCalibration(bool l2r, double mph, int frames, double fps);
 	// A check pass: what the calibration in force says a pass at a known speed was, without changing anything.
 	// Appends a "check" row to the history and returns the comparison.
 	CalCheck checkCalibration(bool l2r, double mph, int frames, double fps);
 	void dashcamSpeed(const Vehicle* picked);   // Calibrate: fill the driven speed from a Tesla dashcam clip
+	void targetSpeedChips();                    // Calibrate: the drive-by target speed (10/15/20/25, the limit)
+	// After prefs.speedLimit changed from `before`: moves cfg.g.minLoggedSpeed to calib::minLoggedForLimit() when it was
+	// still the automatic value for `before` (a hand-set value stays).  Returns whether it moved.
+	bool followSpeedLimit(int before);
+	// Records that session pass `v` was the user's own calibration (or check) drive at `mph` (calibration-passes.csv),
+	// so Results marks it and the street report leaves it out.  Called beside applyCalibration/checkCalibration
+	// wherever those are given a picked pass, in Studio and the companion API.
+	void markCalibrationPass(const Vehicle& v, bool check, double mph);
+	const CalPass* calibrationPass(const std::string& statsPath, int frame);   // the mark for a csv row, or nullptr
+	// After an apply: a live run (camera or stream) is restarted so the passes from here on are measured with the new
+	// calibration (a running engine keeps the settings it started with).  A video run just says it applies next time.
+	void restartAfterCalibration();
+	// Calibration sets (Sets.cpp, CalSets.h): every saved run filed by the view it was measured from.  syncSets() rescans
+	// <data>/Stats (at most every few seconds unless forced), files new runs, follows today's calibration and saves
+	// calibration-sets.json; applySets() re-times Results' rows to their set's calibration.
+	calsets::View currentView() const;
+	calsets::Scale currentScale() const;
+	calsets::Scale currentSigma();
+	bool syncSets(bool force = false);
+	void applySets();
+	const calsets::Set* setOfRow(const ResultRow& r) const;
 	double drivenMph(int vehicleId) const;      // calibSpeed_, or the dashcam's unrounded speed when it set it
-	// Replaces the direction's calibration with the mean of what the first pass (the CalibrationFrames the check
-	// was made against) and the check pass imply; recorded as an apply.
+	// Adds a check pass to the calibration as one more input (the failed-check card's "Add this pass"), so the
+	// calibration becomes the weighted combination of every pass instead of either one.
 	void averageCalibration(const CalCheck& check);
-	// Sets CalibrationFrames for one or both directions from the two-cone or known-car measurement
-	// (calib::framesForDistance); `from` names it in the toast.  Recorded in the history as the equivalent pass: CalibrationFrames frames at CalibrationSpeed.
-	void applyDistanceCalibration(bool l2r, bool r2l, double calFrames, const char* from = "the measured spots");
+	// Adds a distance measurement (cones or pole, a known car, the camera setup) for one or both directions.
+	// `calFrames` is what it says CalibrationFrames is (calib::framesForDistance), `from` names it in the toast,
+	// `method` is its CalEvidence method name and `sigma` its relative uncertainty (0: the method's default).
+	void applyDistanceCalibration(bool l2r, bool r2l, double calFrames, const char* from = "the measured spots",
+		const char* method = "cones", double sigma = 0, const std::string& label = "");
+	// The shared calibration layer (CalEvidence.h).  Every method lands here: the input is added to this config's
+	// inputs (unless the same one is already there), all of them are combined per direction, CalibrationFrames is set
+	// from the combination, and the toast says what the inputs now add up to.  `from` names the new one ("the car's
+	// length").  Inputs are kept in calibration-inputs.json; the history gets an apply row when a value changes.
+	void addCalibrationInput(calib::Input in, const char* from);
+	// Takes one input out of the calibration, or puts it back, and recombines.  false if there's no such input.
+	bool setCalibrationInputRemoved(const std::string& id, bool removed);
+	// This config's inputs.  The first time a config is seen with a calibration but no inputs on record (made before
+	// they were kept), its calibration is seeded as one input from the history, so the next method adds to it.
+	const std::vector<calib::Input>& calibrationInputs();
+	// What the inputs add up to for one direction, on the current speed lines.
+	calib::Combined calibrationCombined(bool l2r);
 	// Not calibrated / not checked / verified / check failed, from the history rows for the current VST.cfg.
 	CalState calibrationState(bool l2r);
 	void loadResultsCsv(const std::string& path);
 	void showSessionResults();
+	void showSavedRuns();               // every saved run (ResultsScope::Saved), re-read from <data>/Stats
+	// Opens an archived dataset (archive::read) in Results, read-only, and goes to Results.  false + toast on failure.
+	bool openArchive(const std::string& dir);
+	bool reviewing() const { return !archive_.dir.empty(); }
+	// The limits Results judges rows by: the archive's own while reviewing one, else the Live page's.
+	int resultsLimit() const { return reviewing() ? archive_.speedLimit : prefs.speedLimit; }
+	int resultsWayOver() const { return reviewing() ? archive_.wayOver : prefs.egregious; }
 	// The street report (Report.h): what it reads (data folder, config, calibration history, and blurred snapshots of
 	// this session's fastest vehicles when asked) and the user's choices.  GUI thread only; the API copies them and
 	// builds the report on its own thread.
 	report::Input reportInput(bool snapshots, const std::string& from, const std::string& to);
 	report::Settings reportSettings();
+	report::Input archiveReportInput(bool snapshots, const std::string& from, const std::string& to);   // the open archive's
 	void toast(const std::string& text, unsigned color, const char* icon = nullptr);
 	void setPage(Page p) { page = p; }
 	void setRemote(bool on);
@@ -191,6 +264,15 @@ public:
 	void openMap();
 	bool planFromCalibration(plan::Measured& m, std::string& how);
 	void syncPlanFromCalibration(bool announce = true);
+	// The user's own camera-to-lane distance from outside Pick your spot; saved at once and kept by later calibrations.
+	void setMeasuredDistance(double distM, const char* why);
+	// Pixels per foot at the lane in the 1280-wide frame, from the calibration in force (0 = none for this camera).
+	double pxPerFtAtLane();
+	// Sets largeVehicleArea to a real size (kLargeVehicleSqFt) from the calibration; every apply reaches it.
+	void retuneLargeVehicles();
+	void sizeRows();   // Results rows' length in feet, and truck-or-bus by that length, from the calibration in force
+	static constexpr double kLargeVehicleSqFt = 190;
+	static constexpr double kLargeVehicleFt = 24;   // a box truck, bus or a pickup towing something
 	// "Cars across the picture" needs a picture of the user's own street: an open camera, stream, video or photo that
 	// isn't the bundled 2016 sample.
 	bool planPictureAvailable();
@@ -210,7 +292,9 @@ public:
 	std::vector<std::string> batch;     // queued inputs for the next run; empty = the current source
 	std::string source;                 // current source path / index / URL
 	std::vector<ResultRow> rows;
-	std::string rowsFrom;               // "" = this session, else the csv path
+	ResultsScope rowsScope = ResultsScope::Session;
+	std::string rowsFrom;               // ResultsScope::File: the csv path ("" otherwise)
+	int rowsRuns = 0;                   // ResultsScope::Saved: how many runs the rows came from
 	int calibMarks[2][2] = { { -1, -1 }, { -1, -1 } };   // [l2r?0:1][start/end] frame numbers marked by hand
 	// The Calibrate page's "Cones or pole" mode: each cone's base on the picture (1280-wide grid, -1 = not marked), which
 	// one the next click on the picture places (-1 = none), the measured distance between them, and the directions
@@ -240,15 +324,28 @@ public:
 	double coneTimerAt_ = -1;
 	int coneView_ = -1, coneTexOf_ = -1;
 	Texture coneTex_;
-	// The "Known car" mode (calibMode_ 3) marks a car's two bumpers the way the cones mode marks its spots, sharing
-	// conePlacing_ and coneDir_: carX_/carY_ are the bumpers on the picture (-1 = not marked), carModel_ the picker's
-	// entry in calib::kKnownCars (-1 = typed by hand), carFt_ the length in feet, and carParked_/carFartherFt_ how far
-	// beyond the middle of the traffic lane a parked car sits (calib::markPxAtLane).
+	// The "Known car" mode (calibMode_ 3) marks two points on a car the way the cones mode marks its spots, sharing
+	// conePlacing_ and coneDir_: its wheel centres (carWheels_, the default: the wheelbase) or its bumpers (the length).
+	// carX_/carY_ are the marks on the picture (-1 = not marked), carModel_ the picker's entry in calib::kKnownCars (-1 =
+	// typed by hand) and carFt_ the span in feet.  carParked_ says the car is parked rather than in the travel lane: set
+	// from the marks' rows when there is a parking lane (carSpot(); carAutoFor_ is the marks it was last set for, so a
+	// choice made by hand sticks until the car is marked again), else by hand, with carFartherFt_ how far beyond the
+	// moving cars it sits.
 	float carX_[2] = { -1, -1 }, carY_[2] = { -1, -1 };
+	bool carWheels_ = true;
 	int carModel_ = -1;
-	double carFt_ = 15.5;
+	double carFt_ = calib::kTypicalWheelbaseFt;
 	bool carParked_ = false;
 	double carFartherFt_ = 7;
+	float carAutoFor_[4] = { -1, -1, -1, -1 };
+	// The parking lane from prefs (Mark your street), the lane line's row anywhere across the frame (extended past the
+	// analysis box), and where the marked car is against both for one direction's lane.
+	calib::ParkingLane parkingLane() const;
+	double laneRowAt(bool l2r, double frameX) const;
+	calib::CarSpot carSpot(bool l2r) const;
+	// The span multiplier Known car uses for one direction: the parking lane's when there is one and the car is parked,
+	// carFartherFt_ through the camera model when parked with no parking lane, 1 in the travel lane.
+	double carScale(bool l2r) const;
 	std::unique_ptr<Server> server;
 	bool screenshotMode = false;        // documentation captures (main.cpp --shots)
 	bool persist = true;                // save preferences on exit
@@ -277,6 +374,27 @@ private:
 	void resultsCharts(const std::vector<const ResultRow*>& shown, float width);
 	void reportDialog();
 	Texture* snapshotTexture(int vehicleId);
+	// Archiving (Results): the "Archive these results" dialog, the "Open" menu (archives, a csv, a folder), the
+	// read-only banner over an open archive, and the request for what Results shows now.
+	void archiveDialog();
+	void openMenu();
+	void reviewBanner(float width);
+	archive::Request archiveRequest(const std::string& name, bool move, const std::vector<ResultRow>* from = nullptr);
+	// Calibration sets in Results (Sets.cpp): the colour band down each row's left edge, the set bar above the table
+	// (Lock, Unlock, Publish, Remove, check against today's calibration), and the Publish and Remove dialogs.
+	ImU32 setColor(int setId) const;
+	void setStripe(const ResultRow& r, float rowH);
+	void setsBar(float width);
+	void publishDialog();
+	void removeDialog();
+	void recheckDialog();
+	std::vector<ResultRow> rowsOfRuns(const std::vector<std::string>& csvs);   // every row of those runs, with session snapshots
+	bool publishSet(int setId, const std::string& name, std::string& dir, std::string& error);
+	bool publishCorrected(const dataset::Info& d, const dataset::Calibration& newer, std::string& dir, std::string& error);
+	void removeRuns(const std::vector<std::string>& csvs, bool toArchive, const std::string& name);
+	dataset::Calibration calibrationNow();   // today's zone feet and uncertainty, as a dataset records it
+	void datasetCover(float width);          // the badge and layers over an open published dataset
+	Texture* fileTexture(const std::string& path);   // an archived snapshot, loaded once and cached by path
 	void pumpTracker();
 	// While tracking, the setup pages show the tracker's own frames through player.feed(), never a second capture
 	// (App.cpp, pumpTracker).  sharedFeedBadge() marks such a picture as Live tracking's and says edits apply on the
@@ -323,22 +441,69 @@ private:
 	long liveTexSerial_ = -1, fedSerial_ = -1;
 	double runLevel_ = 0;               // cfg.g.levelDegrees when the run started: the angle its frames already carry
 	std::map<int, std::unique_ptr<Texture>> snapTex_;
+	std::map<std::string, std::unique_ptr<Texture>> fileTex_;
+	archive::Info archive_;             // the archive Results is reviewing (dir empty = none)
+	std::vector<archive::Info> archives_;   // the Open menu's list, read when the menu opens
+	std::vector<dataset::Info> publishedList_;   // the Open menu's published datasets, read with archives_
+	struct ArchiveForm {
+		char name[96] = "";
+		bool move = true;                // "archive away" (the default) or keep a copy
+		std::string error;
+	} archiveForm_;
 	int seenVehicleId_ = 0;
 	bool wasRunning_ = false;
+	bool restartPending_ = false;       // restartAfterCalibration(): restart the live run on the next frame
 	int guideStep_ = 0;                 // which of the Guide's two steps (What you need, Pick your spot) is showing
 	bool showZeroIn_ = false;           // scroll Pick your spot to its "Zero in on it" card on the next frame
 	int resultsFilter_ = 0;
+	// Results opens on the saved runs when this session has nothing yet, once per launch (afterwards, a choice of
+	// "This session" in the menu sticks).
+	bool resultsOpened_ = false;
+	// Appends one stats csv's rows (labelled `label` in the Source column) to `rows`; false with a toast if unreadable.
+	bool appendStatsRows(const std::string& path, const std::string& label, int* skipped);
+	bool openArchiveDialog_ = false;    // open "Archive these results" on the next Results frame (the --shots tour)
 	int selectedRow_ = -1;
 	int calibMode_ = 0;
 	int calibDir_ = 0;
 	int calibPickId_ = 0;
-	int calibSpeed_ = 25;
+	int calibSpeed_ = 25;               // the drive-by's target, then "I drove at" (whole mph; dashMph_ has the decimal)
+	bool calibSpeedSet_ = false;        // false: calibSpeed_ follows the saved target or the posted limit (calib::defaultTarget)
 	bool calibChecking_ = false;        // the Calibrate page's pass picker is choosing a check pass, not a calibration
 	int calibAppliedId_ = 0;            // the session vehicle the latest calibration came from (not a fair check)
 	std::vector<dashcam::Clip> dashClips_;   // Tesla dashcam clips loaded on the Calibrate page
 	int dashFor_ = 0;                   // the vehicle dashMph_ was read for, while calibSpeed_ still shows it rounded
 	double dashMph_ = 0;                // the car's own speed through the zone, to 0.1 mph
 	CalCheck lastCheck_;                // the latest check pass, for the result card
+	std::map<std::string, CalPass> calPasses_;   // calibration-passes.csv by report::passKey, read once
+	bool calPassesLoaded_ = false;
+	calsets::Store sets_;               // calibration-sets.json, as syncSets() last left it
+	bool setsLoaded_ = false;
+	double setsAt_ = -1;                // ImGui::GetTime() of the last scan
+	std::string setsFor_;               // the Stats folder sets_ belongs to
+	int selectedSet_ = 0;               // the set the set bar shows (0 = the selected row's, or none)
+	int setFilter_ = 0;                 // Results shows only this set's rows (0 = all)
+	struct SetForm {
+		char name[96] = "";
+		int setId = 0;
+		bool wholeSet = true;            // Remove: the whole set, or only the selected row's run
+		std::string run;                 // that run's csv
+		bool toArchive = true;           // Remove: move to the archive (default) or delete for good
+		char confirm[16] = "";           // "delete" typed to delete for good
+		std::string error;
+	} setForm_;
+	bool openPublish_ = false, openRemove_ = false, openRecheck_ = false;   // open that dialog on the next Results frame
+	dataset::Info dataset_;             // the published dataset Results is reviewing (dir empty = none; archive_ is set too)
+	dataset::Check recheck_;            // the check the re-check dialog previews
+	bool applySetsDue_ = false;         // re-time Results' rows on the next Results frame
+	std::string datasetVerifiedFor_, datasetVerified_;   // the open dataset's checksum result, worked out once per folder
+	std::vector<calib::Input> calInputs_;   // calibration-inputs.json entries for calInputsFor_ (plus a seed, unsaved)
+	std::string calInputsFor_;
+	bool calInputsLoaded_ = false;
+	void applyCombinedCalibration();    // CalibrationFrames from the inputs, with history rows for any change
+	void saveCalibrationInputs();
+	// The Calibrate page's summary of the inputs ("3 measurements agree within 2%"), with `list` each one's weight and
+	// a button to take it out (under the picture), without it the summary alone (the side panel).
+	void calibrationInputsCard(bool list);
 	std::vector<CalEvent> calHistory_;  // calibration-history.csv rows for calHistoryFor_
 	std::string calHistoryFor_;
 	bool calHistoryLoaded_ = false;
@@ -359,6 +524,9 @@ private:
 	// A camera or stream still connecting in the background: it joins Recent (and is reopened next launch) only once it
 	// opens, so an address that never answered doesn't come back as a recent source.  "" = nothing pending.
 	std::string pendingRecent_;
+	// The source init() reopened from last time ("" once it opened, or for one the user picked this launch): when it
+	// fails, the toast says the setup and results are safe and how to reconnect, not just the device error.
+	std::string resumedSource_;
 	char urlBuf_[512] = "rtsp://";
 	int cameraIndex_ = 0;
 	// Raspberry Pi cameras (PiCamera.h).  `rpicam-vid --list-cameras` takes a moment, so init() starts it in the
@@ -370,6 +538,25 @@ private:
 	int piChoice_ = -1;                 // index into piCams_ when the menu is on a Pi camera, -1 for the USB camera
 	picam::Settings piSettings_;        // the Pi camera settings popup; made into the source name on Connect
 	void piCameraSettings();            // that popup's contents
+	// USB cameras as the system lists them (webcam::list, Webcam.h): names for the menu, and every mode the driver
+	// offers for the settings popup.  Listed in the background at launch and again when the menu is opened (at most
+	// every 3 s), so a camera plugged in later shows up by name.
+	std::future<std::vector<webcam::Device>> usbListing_;
+	std::vector<webcam::Device> usbCams_;
+	bool usbListed_ = false;
+	double usbListedAt_ = -1e9;
+	webcam::Settings usbSettings_;      // the USB camera settings popup; made into the source name on Connect
+	void listUsbCameras();
+	void pumpUsbListing();
+	const webcam::Device* usbDevice(int index) const;
+	void pickUsbCamera(int index);      // the menu's choice: that camera, with the settings it was last connected with
+	void usbCameraSettings(bool inUse); // the popup's contents; `inUse`: it's the connected source, so Apply reconnects
+	// The mode the current settings will open camera `index` in, as far as is known before connecting.
+	webcam::Mode usbModeFor(const webcam::Settings& s) const;
+	// Under the preview: a note when the picture's shape is not the one Mark your street was done on (prefs.zonesFrame).
+	void shapeNote();
+	// Short-view timing's look-ahead (max distance on entry) for `fps` on the saved plan (Guide.cpp applyShortView).
+	int lookAheadFor(double fps) const;
 	// "Check what this camera can do" and "Report this camera" on the Connect page (frameio::probeCamera): the preview
 	// lets go of the camera, the probe runs in the background for a few seconds, then the camera is opened again.
 	std::future<frameio::CameraReport> cameraProbe_;

@@ -28,6 +28,12 @@ them, Connect the camera once a source is open, Mark your street once you've che
 nothing for the tracker to reject, and Calibrate once a calibration was applied to this `VST.cfg` (the bundled
 sample comes calibrated). A **Not calibrated** chip in the header opens step 5.
 
+Reopening VST Studio picks up where you left off: it opens on the page you were on and reconnects the source you
+last used, a USB or Pi camera included (in the background, so a missing camera never holds up the window). Steps 3
+and 4 keep their checks while the camera reconnects or is unplugged; the header names it ("Camera 0 · not
+connected") and a note says your setup and results are safe and how to reconnect it. **Disconnect** on Connect the
+camera is the way to make Studio forget a source.
+
 ### 1 What you need
 
 What each later step will need, one card per step in order: a window on the street (step 2), a camera held still
@@ -68,11 +74,14 @@ the picture. The search and the map pictures come from OpenStreetMap's servers; 
   a ruler of car-length blocks across the lane. Drag the stripes sideways or up and down onto a parked car (or use
   **Slide sideways**), scroll or use **Size** until one block is as long as the car, then **Use it**: that many
   15.5 ft car lengths is the width of street the picture spans, which sets the plan.
-- **From your calibration.** Any calibration in step 5 (a drive past, VST Ride-along, a Tesla clip, a car of known
-  length, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
+- **From your calibration.** Any calibration in step 5 (a drive past, VST Ride-along, a Tesla clip, a car of a known
+  model, cones or a pole) knows the speed zone in feet, and the speed lines say how many pixels that is, so it
   measures the whole picture. Step 2 updates by itself after each new calibration (a toast says so), and a number
   typed afterwards stays until the next one. On a one-way street the legal direction's lane is used; on a two-way
-  street, the mean of the two.
+  street, the mean of the two. When the distance to the lane came from you (typed, the map, or **To the lane** on
+  the ghost car in step 4), a calibration keeps it and works out your lens's field of view from the measured picture
+  instead, and measured numbers always replace an unsaved preview's guesses. Going back to this page never resets them: presets
+  and edits here are only a preview until **Save changes**.
 
 With a camera connected, **Plan with your camera** copies its real size and frame rate into the plan. A camera
 below 24 fps gets a note saying how fast a car the planned view still times and how to raise it (most webcams and
@@ -183,6 +192,15 @@ feet of street lie between the white lines. **Calibrate from it** sets both dire
 past afterwards still checks it. On the 2016 sample, 95 ft away, 20 ft up and a 60° lens put the ghost on a passing
 car and give 47 ft between the lines; the sample's own calibration drive works out to 43 to 49 ft.
 
+**Parking lane.** If cars park along the street, tick **Cars park along this street** on the Parking lane card and
+drag the blue dashed line onto the middle of a parked car's wheels, the way the lane line sits on a moving car's
+hubcaps (drag an end if the street runs at an angle). The tracker ignores it. It is for step 5's **Known car**: it
+lets Studio tell a parked car from a passing one by itself, and tells it how much farther away (or nearer) the
+parked cars are. The card works that out from the gap between the two lines, the camera's height and step 2's
+distance (the same camera model as the ghost car), or you can type a measured distance across the street, from a
+passing car's wheels to a parked car's. The line is Studio's own setting (`vst-studio.ini` `parkY0`, `parkY1`,
+`parkFt`), not a `VST.cfg` key.
+
 ![Mark your street](images/studio/04-zones.jpg)
 
 ![Level the picture](images/studio/04b-zones-level.jpg)
@@ -191,13 +209,23 @@ car and give 47 ft between the lines; the sample's own calibration drive works o
 
 ![A ghost car drawn from the camera setup, sitting on a real car at the right-hand white line](images/studio/04d-zones-ghost.jpg)
 
+![The blue parking lane laid on the parked cars' wheels](images/studio/04e-zones-parking.jpg)
+
 ### 5 Calibrate
 
 VST counts frames rather than measuring distance, so it needs one pass at a known speed, or a measured distance it
-can turn into one: cones a taped distance apart, or a car whose length you know.
+can turn into one: cones a taped distance apart, or a car whose model you know.
 
-- **Drive-through:** run tracking, drive past on cruise control, pick your pass from the list and enter the
-  speed you drove. From the Results page, **This was me** on a selected vehicle does the same.
+- **Drive-through:** pick a target speed (chips for 10, 15, 20 and 25 mph and your posted limit, which is the
+  default; type any other speed under **I drove at**), run tracking, drive past at that speed, pick your pass from
+  the list and enter the speed you drove. Any steady speed calibrates equally well, and a slow pass is counted in more
+  frames (each one-frame miss is a smaller share), so there's no need to drive faster than your street is comfortable
+  with. Passes slower than **Slowest logged** (5 mph under the posted limit, at most 18, unless you set it yourself)
+  aren't written to the csv or Results, but they are
+  listed here, marked "slow", so a 10 or 15 mph drive can still be picked. Most cruise control won't hold under
+  25 mph; hold it steady by eye, or let VST Ride-along read the speed (below). **Check it with a second drive**
+  suggests a speed 5 mph away from the first. From the Results page, **This was me** on a selected vehicle does the
+  same.
 - **Count frames:** step through a calibration video (←/→, Shift for 10 frames, Space to play), mark the frame
   where the front bumper touches each line, and enter the speed.
 - **Cones or pole:** no car needed. Chalk two spots a taped distance apart along the lane (10 ft or more), stand
@@ -224,27 +252,87 @@ can turn into one: cones a taped distance apart, or a car whose length you know.
 ![Cones or pole](images/studio/07d-calibrate-cones.jpg)
 
 - **Known car:** no tape and no trip outside. Any car of a known model in the picture is the measuring stick: find a
-  frame with it side-on in the zone, near the middle of the picture, click its front and rear bumpers at the corners
-  facing the camera, and pick the model (the list gives each generation's overall length) or type the length. The
-  arithmetic is the cones' with the bumpers as the two spots.
+  frame with it side-on in the zone, near the middle of the picture, click the **centre of each wheel** on the side
+  facing the camera, and pick the model (the list gives each generation's wheelbase) or type the wheelbase. The
+  arithmetic is the cones' with the wheels as the two spots.
+
+  Why wheel centres: a wheel's middle is a sharp point at the same height as the lane line (which sits on moving cars'
+  hubcaps), so it's easy to click, and a car a little off square to the camera, rounded corners, a tow hitch or a bike
+  rack don't change it. A bumper's "corner" is fuzzy, and off to one side the camera also sees part of the nose or
+  tail, which looks like extra length. **Bumpers** is still there for a car whose wheels are hidden (by snow, a
+  parked car in front): click the front and rear bumpers at the corners facing the camera, with the model's overall
+  length.
 
   Where the car is matters. Things look smaller the farther they are from the camera, and VST times bumpers in the
   lane traffic drives in, so a car parked beyond that lane looks shorter than it would driving by and every speed
-  would read high (7 ft beyond a lane 30 ft away is +23%). Choose **Parked beyond traffic** and enter the camera's
-  distance to the lane (the same number as step 2's *Window to the lane*) and how much farther the car is; VST scales
-  the bumper marks to the lane's depth (`marks × (lane + farther) ÷ lane`). Each foot that guess is off moves speeds
-  about 100 ÷ (lane + farther) percent, and the page shows that figure. A car driving by needs no correction: step
-  through a recording to a sharp frame of it. Off to one side, the camera also sees part of the car's nose or tail,
-  which looks like extra length; marking the corners facing the camera with the car near the middle keeps it small.
+  would read high. With a parking lane drawn in step 4, Studio says on the picture which line the wheels are on:
+  **PARKED · scaled ×N to the travel lane** in blue, **IN THE TRAVEL LANE** in the lane's colour, or **Not on a
+  line** when the clicks are well away from both (usually not the wheel centres). A parked car's span is scaled to
+  the travel lane with the same camera model as the ghost car: how much a foot of street shrinks between the parked
+  cars' depth and the lane's at that spot in the picture. For a camera up at a window that is noticeably less than
+  the plain ratio of distances, so it is worked out rather than guessed. You can override parked or in the lane.
+  Without a parking lane, choose **Parked** and type how much farther the car is than moving cars (negative for
+  nearer); the page links to step 4 to draw one instead. A car driving by needs no correction: step through a
+  recording to a sharp frame of it. On a two-way street, **Both ways** calibrates each direction from its own lane.
 
   How it compares with cones: a tape over 10 ft or more is good to well under 1%, and the cones stand right at the
-  white lines and the depth the bumpers run at. A model's length is good to about 0.5% once the generation is right,
-  but the car usually spans less than the zone, a parked car needs the depth guess, and clicking a bumper's corner
-  is fuzzier than clicking a pole. Expect a few percent (about 1 mph at 25 mph) from a passing car or a corrected
-  parked one, which makes it a good start; like the cones it is **Not checked** until a drive past checks it.
+  white lines and the depth the bumpers run at. A model's wheelbase is good to about 0.5% once the generation is right,
+  but the car usually spans less than the zone and a parked car needs the depth correction. Expect a few percent
+  (about 1 mph at 25 mph) from a passing car or a corrected parked one, which makes it a good start; like the cones it
+  is **Not checked** until a drive past checks it.
+
+![Known car: a parked car's wheel centres, scaled to the travel lane](images/studio/07e-calibrate-car.jpg)
 
 All four keep the other direction's calibration valid by expressing it against the same `CalibrationSpeed` and
 `CalibrationFPS`. The page shows what crossing times read as which speeds.
+
+#### Your calibration: every way adds up
+
+The ways to calibrate complement each other instead of replacing each other. Each one (a drive past, a Ride-along or
+Tesla pass, **This was me**, cones or a pole, a known car, the Lane card's camera setup) is kept as a *measurement*,
+and the calibration in force is their combination. Adding one never wipes out another, and any one can be taken out
+and put back.
+
+Every method ends up saying the same thing: how many feet of street lie between the two speed lines. A pass at
+`v` mph taking `n` frames at `f` fps says `v × 5280/3600 × n / f` feet; two spots `D` feet apart, `p` pixels apart
+on the picture, say `(speedLineRight - speedLineLeft) / p × D`. Each also carries how sure it is (a relative
+uncertainty, worked out from its own numbers):
+
+| Method | Uncertainty |
+|---|---|
+| Drive past at `v` mph over `n` frames | speedometer about 2% plus 0.5 mph, and ±0.41 frame of counting whole frames: `hypot(hypot(0.02 v, 0.5) / v, 0.41 / n)`, about 4% for 15 mph over 20 frames |
+| Cones or pole `p` px apart | 1% for the tape, 4 px of clicking over the span, 2.5% for where the spots sit: `sqrt(0.01² + (4/p)² + 0.025²)`, about 3% |
+| Known car `p` px long | 0.5% for the model's length, 4 px of clicking, 2% for the corners; parked beyond traffic, plus 1.5 ft of the "farther" guess over the distance to the car |
+| Camera setup (ghost car) | 10%: typed distance, height, angle and lens |
+| A calibration made before this list was kept | 6% (method not on record) |
+
+VST combines them by inverse-variance weighting: each counts with weight `1 / uncertainty²`, so a careful drive past
+has far more say than a rough camera setup, and two equally good ones are simply averaged. The combined uncertainty is
+`1 / sqrt(Σ weights)`, widened when the measurements disagree by more than their own uncertainties allow (by the
+Birge ratio `sqrt(χ² / (n - 1))`), so two careful methods 10% apart never claim ±1%. `CalibrationFrames` is the
+combined length's frames at `CalibrationSpeed` and `CalibrationFPS`, rounded.
+
+Under the picture, **What your calibration is made of** lists each measurement with its share of the weight and how
+far it sits from the result, and the **Your calibration** card says in one line how they stand:
+
+- **1 measurement so far**: add another way and VST cross-checks them.
+- **3 measurements agree within 2%**: the range of them, highest to lowest, as a share of the result.
+- **2 measurements differ by 9%**: VST uses the weighted middle; a third measurement will show which is off.
+- **3 measurements, 1 well off the others**: with three or more, one that sits more than 3 sigma and 4% off the rest,
+  while the rest agree, is marked. It still counts until you take it out with its ✕.
+
+Each line also says how good the result is in mph at your limit ("Good to about ±2.0%, so ±0.3 mph at 15 mph").
+Taken-out measurements stay under **Not counted** with **Put back**. A measurement only counts on the speed lines it
+was made with: moving a line or resizing the box sets them aside (listed as "other speed lines"), the same way it
+made the single calibration stale before. The same pass added twice counts once.
+
+A measurement that agrees to the frame leaves `CalibrationFrames` as it was, and with it any check of that value;
+one that changes it is a new calibration, which needs a new check. Measurements are kept in
+`calibration-inputs.json` in the config folder, one list per `VST.cfg`. The first time a calibrated `VST.cfg` is opened
+without one, its calibration becomes the first measurement: the drive past it came from, when the history shows one,
+or **Your earlier calibration**.
+
+The phone companion's step 5 shows the same summary and list, with **Take out** and **Put back**.
 
 ![Calibrate](images/studio/07-calibrate.jpg)
 
@@ -255,7 +343,8 @@ You can drive past at any steady speed and let a recording supply the speed, ins
 - **A Tesla's dashcam.** Teslas on software 2025.44.25 or later (HW3 and newer) record the car's speed in every
   dashcam frame. Use the `-front.mp4` clip for that minute from the USB drive's `TeslaCam` folder.
 - **Any phone, with VST Ride-along.** Open [joekiller.github.io/VideoSpeedTracker](https://joekiller.github.io/VideoSpeedTracker/)
-  on the phone (add it to the home screen and it works with no signal), tap **Start recording** before you set off,
+  on the phone (add it to the home screen and it works with no signal), pick your target speed (it shows on target,
+  too fast or too slow while you drive), tap **Start recording** before you set off,
   drive past, then **Stop** and save the `.csv` to the computer. It records the phone's GPS position and speed, which
   is good to about half a mph at a steady speed. It sends nothing anywhere.
 
@@ -283,10 +372,11 @@ about. Once a direction is calibrated, **Check it with a second drive** tests it
 Within ±2 mph is **Verified**. Off by more, the page lists the usual causes: a speedometer that reads high (most
 do, more so at speed; a GPS speed app is a better reference), a camera or speed lines that moved since the first
 pass, or the two passes being in different lanes (the far lane crosses more road between the lines). It then
-offers to **Redo calibration** from a new pass, or to **Average** the two: each pass implies a `CalibrationFrames`
-value, and the new calibration is their mean, rounded. An averaged calibration counts as new, so check it once more.
+offers to **Drive again**, leaving that pass out, or to **Add this pass** to the calibration as one more measurement:
+with two honest passes the result lands near their mean, and with more it is one voice among several. The button
+says the frames it would give. A changed calibration counts as new, so check it once more.
 
-The **Current calibration** card shows each direction's standing under its tile: **Not calibrated**,
+The **Your calibration** card shows each direction's standing under its tile: **Not calibrated**,
 **Not checked**, **Verified (±0.3 mph)** or **Check failed (+4.2 mph)**. The Calibrate check mark in the side rail
 still only means a calibration was applied. A check counts only while the calibration it tested is the one in
 `VST.cfg`; changing the value any other way (by hand, or from the companion's settings) makes it "Not checked"
@@ -296,10 +386,11 @@ again.
 
 #### Calibration history
 
-Every calibration and every check is appended to `calibration-history.csv` in the config folder (next to
-`vst-studio.ini`), from the drive-through, **Count frames**, **Cones or pole**, **This was me** on the Results page,
-and the phone companion. A cones-or-pole calibration is recorded as an apply at `CalibrationSpeed` and `CalibrationFPS`
-with the computed frames. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
+Every change to the calibration and every check is appended to `calibration-history.csv` in the config folder (next
+to `vst-studio.ini`), from the drive-through, **Count frames**, **Cones or pole**, **Known car**, **This was me** on the
+Results page, and the phone companion. Since measurements combine, a change is recorded as an apply at
+`CalibrationSpeed` and `CalibrationFPS` with the combined frames, and only when the whole-frame value changes; the
+measurements behind it, with their methods, are in `calibration-inputs.json` beside it. Rows are added and never rewritten, so the file is a record you can show someone: when each calibration
 was made, from what pass, and how a second pass agreed with it. The per-direction state on the page is worked out
 from it, so it survives restarts.
 
@@ -312,8 +403,9 @@ Timestamp, Config, Kind, Direction, DrivenMph, Frames, Fps, CalibrationFrames, M
 - **Config** is the `VST.cfg` the row belongs to; one file serves every config on the computer.
 - **Kind** is `apply` (set the calibration) or `check` (a verification pass). **Direction** is `L2R` or `R2L`.
 - **DrivenMph**, **Frames** and **Fps** describe the pass: the speed you drove and the frames it took between the
-  lines at that frame rate. **CalibrationFrames** is the value in force after the event. An average is recorded as
-  an `apply` of the second pass with the averaged value.
+  lines at that frame rate. **CalibrationFrames** is the value in force after the event. Rows from before
+  measurements were combined record the pass itself, and an average as an `apply` of the second pass with the
+  averaged value.
 - **MeasuredMph** (what the calibration says the check pass was) and **Error** (MeasuredMph − DrivenMph) are set
   for checks only.
 
@@ -365,15 +457,126 @@ The **Unattended health** card on this page looks after a camera left running fo
 
 ### Results
 
-Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
+The menu next to the search box picks what the page shows: **This session** (vehicles measured since Studio opened,
+with snapshots and clips), **All saved runs** (every run in the data folder's `Stats/`, newest first), or one saved
+run. Results opens on all saved runs when this session hasn't measured anything yet, so earlier results are there
+the moment Studio reopens. Filter by speeding, way over, or wrong way; see a speed histogram with the limit marked, every vehicle over
 time, the 85th-percentile speed, and a sortable table. Selecting a vehicle shows its snapshot, details and clip.
-**Open CSV** loads any stats file from an earlier run or from the command line, and shows each vehicle at the
-time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
+The **In → out** column shows each car's speed at the first and second speed line with an icon for how it changed:
+slowing down (green), steady, speeding up (amber) or rapidly speeding up (red); sort it to find the cars that floored
+it. The detail card adds the acceleration and the speed 20 ft further on. How it's measured, and why a 14 ft view at
+30 fps sometimes says "can't tell": [speed-trend.md](speed-trend.md).
+**Open** lists your archives (below) and also loads any stats csv from an earlier run or from the command line,
+showing each vehicle at the time in its Timestamp column. Csvs from before that column existed show Date and Time instead, which for Foscam
 recordings (`manual_yyyymmddhhmmss`) is when the recording started.
+
+**Size.** With a calibration, each vehicle's length is shown in feet (a car is about 15 ft, a pickup or van 19-23, a
+truck or bus 24 or more, which gets the truck icon). It is measured from the tracked boxes while the vehicle is wholly
+in view (the median, so a branch or a walker caught in one box doesn't stretch it), less what frame differencing adds,
+and scaled by the calibration's feet per pixel, so any calibration, a known parked car included, scales sizes too.
+Each new calibration also resets VST.cfg's `largeVehicleArea` to about 190 sq ft at that scale, which is what rows
+opened from an older csv (no length in it) use.
+
+**Your own drives are marked.** A pass you used to calibrate or check (Calibrate's *Use this pass* or *Check this
+pass*, or the phone's *That was me*) shows a **calibration** or **check** tag, and its details say the speed you drove.
+It stays in the table but is left out of the tiles, the charts and the street report, since the person setting up
+isn't traffic. The marks are kept in `calibration-passes.csv` in the config folder (the pass's stats csv and frame),
+so they survive a restart.
+
+**Calibration sets: past speeds follow your calibration.** VST times each car between the two speed lines, and its
+speed is the zone's length over that time. A calibration only changes the zone's length, so when you calibrate the
+same view again every earlier car can be re-timed exactly: each run's manifest records the calibration it was measured
+with, and the csv's `ZoneSeconds` column the car's exact time (about 8 bytes a car). Runs measured from the same view
+(the same speed lines, street edge, level and analysis box) form a **calibration set**:
+
+- An **open** set collects the runs you record from today's view, and its speeds follow your latest calibration.
+  A re-timed speed carries a small ruler mark; hover it (or read the detail card) for what was measured.
+- A set **locks** when you record from a new view (the camera moved or the speed lines changed), keeping the
+  calibration it last had, or when you press **Lock**. Nothing more joins a locked set. Dragging the speed lines
+  locks nothing by itself, so moving them back carries on.
+- A band down each row's left edge shows its set: each set keeps its own colour (blue, slate, teal, sand, then round
+  again), so neighbouring sets always differ, and runs with no calibration on record get a grey band. The line above the table names the
+  sets on screen; pick one (or a row) for what it is and what you can do: **Lock** or **Unlock**, **Only this set**,
+  **Publish** and **Remove**. When you calibrate a locked set's view again, it says how much the new calibration
+  differs and **See what it would change** shows the before and after, with **Use the newer calibration for this set**.
+- **Remove** moves a set, or the run the selected car came from, to the archive (it can be put back), or deletes it
+  for good after you type *delete*.
+- Runs from before VST kept each run's calibration (1.1 and earlier) have their own set, shown as measured.
+
+Sizes in feet use the same calibration as the speeds beside them. The street report and the phone's report re-time
+every run the same way, and say how many speeds were re-timed. Calibrating during a live run (camera or stream)
+restarts tracking so its csv has one calibration. A video keeps the calibration it started with, and is re-timed
+when it finishes. The sets are kept in `Stats/calibration-sets.json`.
+
+#### Publish a dataset for others to check
+
+**Publish** (in the set bar) freezes a set into `<data folder>/Published/<YYYY-MM-DD>_<name>/` for neighbours, the
+city or a council meeting. It locks the set first, so the numbers can't change under the people reading them, and
+leaves the set in Results. The folder is an archive (below) plus `dataset.json`, `points.csv` (one row per car),
+`SHA256SUMS`, and `status.json`. The format is documented in [dataset-schema.md](dataset-schema.md).
+
+Anyone can open it in Studio (**Open > Published**) or by double-clicking its `review.html`, with three layers:
+
+1. **A badge and one sentence**, for someone who has never seen VST: *Not re-checked*, *Still accurate*, *Under review*
+   or *Tainted: needs correction*, then what that means, for example "Speeds are accurate to within ±1.0 mph at 25 mph
+   (±3.9%), with 95% confidence."
+2. **How we know**: how the zone was calibrated and every re-check, with cars over the limit and the 85th percentile
+   before and after.
+3. **The numbers**: the zone feet and uncertainty, the test, the files and whether every checksum still matches.
+
+When you calibrate the same view again, **Check against your latest calibration** re-times every car (exactly, from
+`ZoneSeconds`) and tests the calibration change δ = new zone ÷ published zone − 1 against the accuracy the dataset
+promised, T = 1.96σ, with two one-sided tests at 95% using the new calibration's own σ. If the change is surely inside
+the promise the dataset stays *Still accurate*. If it is surely outside, it becomes *Tainted*. Otherwise it is *Under
+review* until another check drive narrows the new calibration. **Record this check** adds it to `status.json` and every
+car's before and after to `checks/<when>.csv`. The original files are never changed, so the checksums still hold. A
+tainted dataset offers **Publish a corrected copy**, a new version at the newer calibration that names the one it corrects.
 
 ![Results](images/studio/06-results.jpg)
 
 The 85th percentile here, in the street report and on the phone all use the nearest-rank definition (see below).
+
+#### Archive a dataset and review it later
+
+**Archive** puts what Results is showing away in a folder of its own, under a name you choose ("First week, before
+the new signs"). It takes the stats csvs behind the rows with their run manifests and highlights videos, every
+vehicle's snapshot and clip (this session's vehicles have them; a csv opened from disk doesn't), the `VST.cfg` and
+calibration history they were measured with, and the speed limit they were judged by.
+
+- **Move them into the archive** (the default) takes those files out of the data folder, so This session, Open and
+  the street report start fresh. **Put back into my data** on the archive copies them back at any time; the archive
+  keeps its own copy.
+- **Keep them here too** archives a copy and leaves the data folder alone.
+
+Archive is off while tracking runs (the run is still writing its csv) and while you're looking at an archive.
+
+**Open** in Results lists every archive, newest first. An archive opens read-only, with a banner saying so: the
+table, charts and tiles work as usual, judged at the limits it was archived with; the detail card shows the archived
+snapshot and **Play clip**; **Make report** reports on the archive alone; **Highlights** and **Folder** open the
+archive's own. **Close archive** goes back to this session. For an archive kept somewhere else (a USB stick, a
+neighbour's copy), use **Open > An archive folder somewhere else**, or start Studio with
+`VSTStudio --review <folder>`.
+
+You don't need Studio to look at one: each archive has a `review.html` that opens in any web browser (**Open in
+browser** on the banner, or double-click it), with the same table, filters, snapshots and clips. Its snapshots are
+not blurred, so share the folder only with people you'd show the street to.
+
+An archive is a folder `<data folder>/Archive/<YYYY-MM-DD>_<name>/` laid out like the data folder:
+
+| | |
+|---|---|
+| `archive.json` | name, dates, site, limits, the calibration in force, whether the files were moved, and every vehicle |
+| `vehicles.csv` | the vehicles as a spreadsheet: time, speed, direction, wrong way, size, snapshot and clip |
+| `review.html` | the browser viewer |
+| `VST.cfg`, `calibration-history.csv` | the setup and calibration record as they were |
+| `Stats/`, `HiLites/` | the stats csvs, run manifests and highlights videos |
+| `Snapshots/`, `Clips/` | each vehicle's picture (`vehicle_<row>.jpg`) and clip |
+
+It is written under a `.partial` name and renamed only when every file is in, and the originals are removed only
+after that, so a full disk never leaves half an archive or loses a file. The disk budget under **Keep up to** never prunes
+an archive's clips or highlights.
+
+![Archived dataset in Results](images/studio/10b-archive-review.jpg)
 
 ### Street report
 
@@ -447,9 +650,9 @@ be open at once. The API is described in [companion-api.md](companion-api.md).
 | | |
 |---|---|
 | Settings (`VST.cfg`) | the file shown on the Connect the camera page; by default the per-user config (see the README) |
-| App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs and where they came from, recent sources, pairing token |
+| App preferences | `vst-studio.ini` in the same config folder: speed limit, site planner inputs and where they came from, the last source and page, recent sources, pairing token |
 | Calibration history | `calibration-history.csv` in the same config folder: every calibration and check, appended (see [Calibration history](#calibration-history)) |
-| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, and street reports in `Reports/` |
+| Results | the data folder (`dataPathPrefix`, or the per-user data folder when blank): `Stats/` (csv and run manifests), `HiLites/`, `Clips/`, `Trace/`, street reports in `Reports/`, archived datasets in `Archive/`, published datasets in `Published/`, and the calibration sets in `Stats/calibration-sets.json` |
 
 ## For developers
 

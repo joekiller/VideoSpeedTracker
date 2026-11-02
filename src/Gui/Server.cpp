@@ -7,11 +7,13 @@
 #include "UserPaths.h"
 #include <imgui.h>
 #include <nlohmann/json.hpp>
+#include <cmath>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <qrcodegen.hpp>
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <sstream>
 #ifndef _WIN32
@@ -93,6 +95,13 @@ namespace {
 
 std::string lowerDir(const std::string& s) { return s == "L2R" ? "L2R" : s == "R2L" ? "R2L" : "both"; }
 
+// A pass's speed trend (SpeedTrend.h), rounded as the csv rounds it, or null when the tracker couldn't tell.
+json trendJson(const vst::SpeedTrend& t) {
+	if (!t.known()) return nullptr;
+	return json{ { "kind", vst::trendName(t.trend) }, { "entry", int(t.entryMph + 0.5) }, { "exit", int(t.exitMph + 0.5) },
+		{ "accel", std::round(t.accelMphPerSec * 10) / 10 }, { "in20ft", int(t.projectedMph + 0.5) } };
+}
+
 json vehicleJson(const Vehicle& v) {
 	return json{
 		{ "id", v.id }, { "time", v.live || v.recorded.empty() ? v.time : v.recorded }, { "video", v.video }, { "frame", v.ev.frame },
@@ -100,8 +109,10 @@ json vehicleJson(const Vehicle& v) {
 		{ "speed", v.ev.speed }, { "speeding", v.speeding }, { "egregious", v.egregious },
 		{ "area", v.ev.area }, { "large", v.large }, { "frames", v.frames() },
 		{ "startFrame", v.ev.startFrame }, { "endFrame", v.ev.endFrame }, { "fps", v.fps },
-		{ "snapshot", "/api/vehicles/" + std::to_string(v.id) + "/snapshot.jpg" },
+		{ "snapshot", v.belowMin ? json(nullptr) : json("/api/vehicles/" + std::to_string(v.id) + "/snapshot.jpg") },
 		{ "clip", v.clipPath.empty() ? json(nullptr) : json("/api/vehicles/" + std::to_string(v.id) + "/clip.mp4") },
+		{ "belowMin", v.belowMin },
+		{ "trend", trendJson(v.ev.trend) },
 	};
 }
 
@@ -259,7 +270,7 @@ std::vector<std::string> applyPlan(App& app, const json& in) {
 // The settings the companion can read and change: VST.cfg keys by their own names, plus the app's run settings.
 json configJson(App& app) {
 	const Globals& g = app.cfg.g;
-	return json{
+	json r{
 		{ "AnalysisBoxLeft", g.AnalysisBoxLeft }, { "AnalysisBoxTop", g.AnalysisBoxTop },
 		{ "AnalysisBoxWidth", g.AnalysisBoxWidth }, { "AnalysisBoxHeight", g.AnalysisBoxHeight },
 		{ "speedLineLeft", g.speedLineLeft }, { "speedLineRight", g.speedLineRight },
@@ -277,6 +288,23 @@ json configJson(App& app) {
 		{ "speedLimit", app.prefs.speedLimit }, { "egregious", app.prefs.egregious }, { "siteName", app.prefs.siteName },
 		{ "frameWidth", 1280 }, { "frameHeight", 720 },
 	};
+	// The parking lane (ParkingLane.h), Studio's own setting: rows at frame x 0 and 1280, the measured distance (0 =
+	// from the picture), and read-only what Studio makes of it in the middle of the picture.
+	r["parkingLane"] = { int(std::lround(app.prefs.parkY0)), int(std::lround(app.prefs.parkY1)) };
+	r["parkingLaneFt"] = app.prefs.parkFt;
+	calib::ParkingLane park = app.parkingLane();
+	r["parkingLaneBeyondFt"] = nullptr;
+	r["parkingLaneHow"] = nullptr;
+	if (park.set()) {
+		const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+		calib::CarSpot sp;
+		calib::parkedBeyond(app.cameraSetup(), 640, app.laneRowAt(oneWay ? g.LegalDirection == "L2R" : true, 640), park, sp);
+		if (std::isfinite(sp.parkedFt)) {
+			r["parkingLaneBeyondFt"] = std::round(sp.parkedFt * 10) / 10;
+			r["parkingLaneHow"] = sp.fromPicture ? "picture" : sp.typical ? "typical" : "measured";
+		}
+	}
+	return r;
 }
 
 // Per-direction calibration standing, from calibration-history.csv (App::calibrationState).
@@ -288,7 +316,30 @@ json calibrationJson(App& app) {
 			{ "applied", s.applied.empty() ? json(nullptr) : json(s.applied) }, { "checked", checked ? json(s.checked) : json(nullptr) },
 			{ "frames", l2r ? app.cfg.g.CalibrationFramesL2R : app.cfg.g.CalibrationFramesR2L } };
 	};
-	return json{ { "L2R", one(true) }, { "R2L", one(false) } };
+	// What the inputs add up to per direction (CalEvidence.h), with the novice summary and each counted input's share,
+	// and the inputs themselves, so the phone can list them and take one out (POST /api/calibration/inputs).
+	auto combined = [&app](bool l2r) {
+		calib::Combined c = app.calibrationCombined(l2r);
+		std::string detail, head = calib::summary(c, &detail);
+		json shares = json::array();
+		for (const calib::Share& s : c.shares)
+			shares.push_back({ { "id", s.id }, { "contribution", std::round(s.contribution * 1000) / 1000 },
+				{ "offPct", std::round(s.offPct * 10) / 10 }, { "outlier", s.outlier } });
+		return json{ { "summary", head }, { "detail", detail }, { "n", c.n }, { "agree", c.agree() },
+			{ "zoneFt", c.valid ? json(std::round(c.zoneFt * 100) / 100) : json(nullptr) },
+			{ "sigmaPct", c.valid ? json(std::round(c.sigma * 1000) / 10) : json(nullptr) }, { "setAside", c.setAside }, { "shares", shares } };
+	};
+	json inputs = json::array();
+	std::string lines = app.speedLinesSig();
+	for (const calib::Input& in : app.calibrationInputs())
+		inputs.push_back({ { "id", in.id }, { "method", in.method }, { "methodName", calib::methodName(in.method) }, { "label", in.label },
+			{ "time", in.time }, { "dirs", in.dirs == calib::kL2R ? "L2R" : in.dirs == calib::kR2L ? "R2L" : "both" },
+			{ "zoneFt", std::round(in.zoneFt * 100) / 100 }, { "sigmaPct", std::round(in.sigma * 1000) / 10 }, { "removed", in.removed },
+			{ "otherLines", !in.lines.empty() && in.lines != lines } });
+	json one2r = one(true), r2l = one(false);
+	one2r["combined"] = combined(true);
+	r2l["combined"] = combined(false);
+	return json{ { "L2R", one2r }, { "R2L", r2l }, { "inputs", inputs } };
 }
 
 json statusJson(App& app) {
@@ -369,6 +420,14 @@ std::vector<std::string> applyConfig(App& app, const json& in) {
 	}
 	int limit = app.prefs.speedLimit, egregious = app.prefs.egregious;
 	std::string site = app.prefs.siteName;
+	// The parking lane: [0, 0] (none) or two rows on the picture; parkingLaneFt 0 (from the picture) to 40.
+	int park[2] = { int(std::lround(app.prefs.parkY0)), int(std::lround(app.prefs.parkY1)) };
+	double parkFt = app.prefs.parkFt;
+	setPair("parkingLane", park);
+	setDbl("parkingLaneFt", parkFt);
+	if ((park[0] || park[1]) && (park[0] < 1 || park[1] < 1 || park[0] > 719 || park[1] > 719))
+		problems.push_back("parkingLane must be [0,0] (none) or two rows between 1 and 719, where the line on the parked cars' wheels meets the picture's left and right edges");
+	if (!(parkFt >= 0 && parkFt <= 40)) problems.push_back("parkingLaneFt must be between 0 (work it out from the picture) and 40");
 	setInt("speedLimit", limit);
 	setInt("egregious", egregious);
 	setStr("siteName", site);
@@ -378,9 +437,14 @@ std::vector<std::string> applyConfig(App& app, const json& in) {
 	// A run in progress keeps the settings it started with; changes apply from the next run.
 	app.cfg.g.~Globals();
 	new (&app.cfg.g) Globals(g);
+	int limitBefore = app.prefs.speedLimit;
 	app.prefs.speedLimit = limit;
 	app.prefs.egregious = std::max(egregious, limit);
+	if (!in.contains("minLoggedSpeed")) app.followSpeedLimit(limitBefore);   // an explicit minLoggedSpeed wins
 	app.prefs.siteName = site;
+	app.prefs.parkY0 = park[0];
+	app.prefs.parkY1 = park[1];
+	app.prefs.parkFt = parkFt;
 	app.prefs.save();
 	if (app.cfg.dirty() && !app.cfg.save()) problems.push_back(app.cfg.error);
 	return problems;
@@ -537,7 +601,9 @@ void Server::routes() {
 		int since = req.has_param("since") ? std::atoi(req.get_param_value("since").c_str()) : 0;
 		size_t limit = req.has_param("limit") ? std::clamp(std::atoi(req.get_param_value("limit").c_str()), 1, 5000) : 100;
 		std::string from = req.has_param("from") ? req.get_param_value("from") : "", to = req.has_param("to") ? req.get_param_value("to") : "";
-		auto vs = app.tracker.vehiclesSince(since);
+		// passes=1 adds the slow passes (timed under minLoggedSpeed, `belowMin`), for picking a calibration pass.
+		bool passes = req.has_param("passes") && req.get_param_value("passes") == "1";
+		auto vs = passes ? app.tracker.passesSince(since) : app.tracker.vehiclesSince(since);
 		json out = json::array();
 		// Newest first; ISO local timestamps compare correctly as strings.
 		for (auto it = vs.rbegin(); it != vs.rend() && out.size() < limit; ++it) {
@@ -624,11 +690,13 @@ void Server::routes() {
 		if (!slot) return;
 		struct LiveState {
 			int lastVehicle = 0;    // newest vehicle id already sent
+			int lastPass = 0;       // newest slow pass id already sent (the `pass` event)
 			int tick = 0;           // provider calls so far; every 5th (~1 s) sends status and checks the config
 			std::string config;     // the config JSON last sent, "" before the first
 		};
 		auto state = std::make_shared<LiveState>();
 		state->lastVehicle = req.has_param("since") ? std::atoi(req.get_param_value("since").c_str()) : app.tracker.lastVehicleId();
+		state->lastPass = req.has_param("since") ? state->lastVehicle : app.tracker.lastPassId();
 		std::string token = presented(req);
 		res.set_chunked_content_provider("text/event-stream", [this, &app, state, token, slot](size_t, httplib::DataSink& sink) {
 			if (!tokenMatches(token)) return false;   // the pairing code was reset: this phone is signed out
@@ -654,6 +722,11 @@ void Server::routes() {
 			for (const Vehicle& v : app.tracker.vehiclesSince(state->lastVehicle)) {
 				state->lastVehicle = v.id;
 				if (!send("vehicle", vehicleJson(v))) return false;
+			}
+			// A pass timed under minLoggedSpeed: not a logged vehicle, but a calibration drive at 10 or 15 mph is one.
+			for (const Vehicle& v : app.tracker.passesSince(state->lastPass)) {
+				state->lastPass = v.id;
+				if (v.belowMin && !send("pass", vehicleJson(v))) return false;
 			}
 			Tracker::Live live;
 			if (app.tracker.running() && app.tracker.latest(live, false)) {
@@ -738,7 +811,10 @@ void Server::routes() {
 			else if (vid) {
 				Vehicle v;
 				if (!app.tracker.vehicle(vid, v)) err = "no vehicle " + std::to_string(vid);
-				else app.applyCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+				else {
+					app.applyCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+					app.markCalibrationPass(v, false, speed);   // Results marks it, the street report leaves it out
+				}
 			}
 			else {
 				int dir = in.value("dir", "L2R") == "R2L" ? 1 : 0;
@@ -750,6 +826,26 @@ void Server::routes() {
 			return json{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) }, { "config", configJson(app) } }.dump();
 		});
 		sendPosted(res, out);   // 200 either way, as for PUT /api/config
+	}));
+
+	// Take one calibration input out, or put it back: {"id": "...", "removed": true|false}.  The rest are recombined
+	// into CalibrationFrames at once.  200 {ok, problems, calibration} like apply; an unknown id is a problem.
+	http_->Post("/api/calibration/inputs", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
+		json in;
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
+		sendPosted(res, app.post([&app, in] {
+			std::string err, id = in.value("id", "");
+			bool removed = in.value("removed", true);
+			if (id.empty()) err = "id is required";
+			else if (!app.setCalibrationInputRemoved(id, removed)) err = "no calibration input " + id;
+			else {
+				app.toast(removed ? "A calibration measurement was taken out from the phone." : "A calibration measurement was put back from the phone.",
+					theme::c::accent2, ICON_BROADCAST);
+				if (!app.cfg.save()) err = app.cfg.error;
+			}
+			return json{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) },
+				{ "calibration", calibrationJson(app) }, { "config", configJson(app) } }.dump();
+		}));
 	}));
 
 	// Calibration from two cones a measured distance apart (the Calibrate page's "Cones or pole" mode, from the street):
@@ -781,11 +877,112 @@ void Server::routes() {
 			if (shaped)
 				for (int i = 0; i < 2; i++) { app.coneX_[i] = float(xy[i][0]); app.coneY_[i] = float(xy[i][1]); }
 			if (err.empty()) {
-				app.applyDistanceCalibration(dir != "R2L", dir != "L2R", frames);
+				char label[64];
+				snprintf(label, sizeof label, "Cones or pole, %g ft apart", feet);
+				app.applyDistanceCalibration(dir != "R2L", dir != "L2R", frames, "the cones", "cones", calib::sigmaCones(markPx), label);
 				if (!app.cfg.save()) err = app.cfg.error;
 			}
 			json r{ { "ok", err.empty() }, { "problems", err.empty() ? json::array() : json::array({ err }) }, { "config", configJson(app) } };
 			if (frames > 0) { r["zoneFeet"] = std::round((g.speedLineRight - g.speedLineLeft) / markPx * feet * 10) / 10; r["frames"] = std::round(frames * 10) / 10; }
+			return r.dump();
+		});
+		sendPosted(res, out);   // 200 either way, as for apply
+	}));
+
+	// The Known car mode's models, so the phone's picker matches Studio's.
+	http_->Get("/api/calibration/cars", guard([sendJson](const Request&, Response& res) {
+		json cars = json::array();
+		for (const calib::KnownCar& k : calib::kKnownCars) cars.push_back({ { "name", k.name }, { "lengthIn", k.inches }, { "wheelbaseIn", k.wheelbaseIn } });
+		sendJson(res, { { "cars", cars }, { "typicalWheelbaseIn", std::round(calib::kTypicalWheelbaseFt * 12) } }, 200);
+	}));
+
+	// Known car: two marks on a car (its wheel centres, or its bumpers) `feet` apart.  The marks are Studio's own Known car
+	// marks (so the desktop shows them too), "where" says whether the car is parked: "auto" asks the parking lane (no
+	// parking lane: in the travel lane), "parked" with no parking lane uses beyondFt (default 7) through the camera model.
+	// "preview": true answers without applying.  On a two-way street "both" calibrates each lane with its own scale.
+	http_->Post("/api/calibration/car", guard([&app, sendJson, sendPosted, parseBody](const Request& req, Response& res) {
+		json in;
+		if (!parseBody(req, in)) { sendJson(res, { { "error", "body must be a JSON object" } }, 400); return; }
+		std::string out = app.post([&app, in] {
+			std::string err, dir = in.value("dir", "both"), where = in.value("where", "auto"), how = in.value("how", "wheels");
+			double feet = in.contains("feet") && in["feet"].is_number() ? in["feet"].get<double>() : 0;
+			double beyond = in.contains("beyondFt") && in["beyondFt"].is_number() ? in["beyondFt"].get<double>() : calib::kTypicalParkFt;
+			bool preview = in.value("preview", false);
+			double xy[2][2] = { { -1, -1 }, { -1, -1 } };
+			const json* marks = in.contains("marks") ? &in["marks"] : nullptr;
+			bool shaped = marks && marks->is_array() && marks->size() == 2;
+			for (int i = 0; shaped && i < 2; i++) {
+				const json& c = (*marks)[i];
+				shaped = c.is_array() && c.size() == 2 && c[0].is_number() && c[1].is_number();
+				if (shaped) { xy[i][0] = c[0].get<double>(); xy[i][1] = c[1].get<double>(); }
+				shaped = shaped && xy[i][0] >= 0 && xy[i][0] <= 1280 && xy[i][1] >= 0 && xy[i][1] <= 720;
+			}
+			const Globals& g = app.cfg.g;
+			const bool oneWay = g.LegalDirection == "L2R" || g.LegalDirection == "R2L";
+			double markPx = shaped ? std::fabs(xy[1][0] - xy[0][0]) : 0;
+			if (!shaped) err = "mark both points on the car first";
+			else if (!(feet > 0)) err = "enter the car's wheelbase (or length) in feet";
+			else if (dir != "both" && dir != "L2R" && dir != "R2L") err = "dir must be both, L2R or R2L";
+			else if (where != "auto" && where != "lane" && where != "parked") err = "where must be auto, lane or parked";
+			else if (how != "wheels" && how != "bumpers") err = "how must be wheels or bumpers";
+			else if (!(beyond >= -30 && beyond <= 50)) err = "beyondFt must be between -30 and 50";
+			else if (markPx < 60) err = "the car is too small on the picture to measure; pick a nearer one";
+			else if (g.speedLineRight <= g.speedLineLeft) err = "the speed lines aren't set yet";
+			json r{ { "ok", false }, { "problems", json::array() } };
+			if (shaped) {
+				// Studio's Known car state follows, so the desktop shows the same car and choice.
+				for (int i = 0; i < 2; i++) { app.carX_[i] = float(xy[i][0]); app.carY_[i] = float(xy[i][1]); }
+				app.carWheels_ = how == "wheels";
+				if (feet > 0) { app.carFt_ = feet; app.carModel_ = -1; }
+				const bool primaryL2R = oneWay ? g.LegalDirection == "L2R" : dir != "R2L";
+				calib::CarSpot spot = app.carSpot(primaryL2R);
+				bool parkSet = app.parkingLane().set();
+				app.carParked_ = where == "parked" || (where == "auto" && spot.where == calib::CarSpot::Parked);
+				if (!parkSet) app.carFartherFt_ = beyond;
+				std::copy(app.carX_, app.carX_ + 2, app.carAutoFor_);
+				std::copy(app.carY_, app.carY_ + 2, app.carAutoFor_ + 2);
+				r["where"] = app.carParked_ ? "parked" : "lane";
+				r["detected"] = spot.where == calib::CarSpot::Unknown ? json(nullptr) : json(spot.where == calib::CarSpot::Parked ? "parked" : "lane");
+				r["offLines"] = parkSet && spot.offLines;
+				double bft = parkSet ? spot.parkedFt : app.carFartherFt_;
+				r["beyondFt"] = app.carParked_ && std::isfinite(bft) ? json(std::round(bft * 10) / 10) : json(nullptr);
+				r["beyondHow"] = !app.carParked_ ? json(nullptr) : !parkSet ? json("typed") : json(spot.fromPicture ? "picture" : spot.typical ? "typical" : "measured");
+				json byDir = json::object();
+				std::map<std::string, double> rawFrames;   // unrounded, for the apply
+				double zonePx = g.speedLineRight - g.speedLineLeft;
+				for (bool l2r : { true, false }) {
+					if ((l2r && dir == "R2L") || (!l2r && dir == "L2R")) continue;
+					if (oneWay && l2r != primaryL2R && dir == "both") continue;   // one lane: the same numbers twice
+					double sc = app.carScale(l2r);
+					double frames = calib::framesForDistance(markPx * sc, feet, zonePx, g.CalibrationSpeed, g.CalibrationFPS);
+					rawFrames[l2r ? "L2R" : "R2L"] = frames;
+					byDir[l2r ? "L2R" : "R2L"] = { { "scale", std::round(sc * 1000) / 1000 }, { "frames", std::round(frames * 10) / 10 },
+						{ "zoneFeet", frames > 0 ? json(std::round(zonePx / (markPx * sc) * feet * 10) / 10) : json(nullptr) } };
+				}
+				const json& first = byDir[primaryL2R ? "L2R" : "R2L"];
+				r["scale"] = first["scale"];
+				r["frames"] = first["frames"];
+				r["zoneFeet"] = first["zoneFeet"];
+				r["byDir"] = byDir;
+				if (err.empty() && !preview) {
+					// Added to the calibration as a "car" input per direction, weighted like Studio's Known car card.
+					const char* from = how == "wheels" ? "the car's wheelbase" : "the car's length";
+					double farFt = parkSet && std::isfinite(spot.parkedFt) ? spot.parkedFt : app.carFartherFt_;
+					double sigma = calib::sigmaCar(markPx, app.carParked_, app.prefs.planDist * plan::kFt, farFt);
+					std::string label = std::string(how == "wheels" ? "A car's wheelbase" : "A car of known length") + (app.carParked_ ? ", parked" : "");
+					for (const auto& [d, frames] : rawFrames) {
+						bool l2r = d == "L2R";
+						// One lane on a one-way street: "both" applies the one number to both directions.
+						bool both = oneWay && dir == "both";
+						app.applyDistanceCalibration(l2r || both, !l2r || both, frames, from, "car", sigma,
+							both || rawFrames.size() == 1 ? label : label + (l2r ? ", →" : ", ←"));
+					}
+					if (!app.cfg.save()) err = app.cfg.error;
+				}
+			}
+			r["ok"] = err.empty();
+			if (!err.empty()) r["problems"] = json::array({ err });
+			r["config"] = configJson(app);
 			return r.dump();
 		});
 		sendPosted(res, out);   // 200 either way, as for apply
@@ -805,7 +1002,10 @@ void Server::routes() {
 			else if (vid) {
 				Vehicle v;
 				if (!app.tracker.vehicle(vid, v)) err = "no vehicle " + std::to_string(vid);
-				else k = app.checkCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+				else {
+					k = app.checkCalibration(in.contains("dir") ? in.value("dir", "L2R") == "L2R" : v.ev.leftToRight, speed, v.frames(), v.fps);
+					app.markCalibrationPass(v, true, speed);
+				}
 			}
 			else {
 				int dir = in.value("dir", "L2R") == "R2L" ? 1 : 0;

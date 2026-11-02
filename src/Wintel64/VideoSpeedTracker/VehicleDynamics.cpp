@@ -147,7 +147,7 @@ vector<double> getLinearFit(const std::vector<double>& x, const std::vector<doub
 
 
 
-// Private function for subFrameTiming = 1.  Rather than count whole frames between the frame pairs in which the projected front
+// Private function for subFrameTiming = 1 (and a vehicle that came into view already past the entry line, markEnteredAtEdge()).  Rather than count whole frames between the frame pairs in which the projected front
 // bumper passed each speed line (in a 20 ft view at 30 fps a car crosses the zone in a dozen frames, so one frame pair is 15%),
 // fit a line through the front bumpers actually seen in the zone, and the nearest one beyond each speed line, against frame
 // number.  Its slope (pixels per frame) gives the time between the lines to a fraction of a frame.  -1, so no speed, if fewer
@@ -168,7 +168,10 @@ int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
 	const bool l2r = dir == L2R;
 	const double zonePx = double(g.speedLineRight - g.speedLineLeft);
 	vector<double> frames, along;  // frame number, and distance along the street in zone widths (zoneFraction)
-	for (int i = max(first - 1, 0); i <= min(last + 1, int(seenFBPixel.size()) - 1); i++)
+	// A car timed this way because it came into view at the box's edge (markEnteredAtEdge()): its first two sightings are a
+	// blob still growing out of the edge, not a bumper moving at the car's speed, so the fit starts after them.
+	const int skip = fitTiming && !g.subFrameTiming ? 2 : 0;
+	for (int i = max(first - 1, skip); i <= min(last + 1, int(seenFBPixel.size()) - 1); i++)
 		if (seenFBPixel[i] > g.pixelLeft && seenFBPixel[i] < g.pixelRight){  // one at the edge of the box is cut off there, not a bumper
 			frames.push_back(seenFBFrame[i]);
 			along.push_back(g.zoneFraction(l2r, seenFBPixel[i]));
@@ -183,8 +186,56 @@ int VehicleDynamics::subFrameSpeed(Globals& g, direction dir){
 	// expressed in zone widths, so with no streetEdge it is exactly the old pixel test.
 	if (sqrt(sumSq / frames.size()) * zonePx > g.margin(4, l2r)) return -1;
 	double zoneFrames = 1 / abs(slope);
+	zoneSeconds = g.videoFPS > 0 ? zoneFrames / g.videoFPS : 0;
 	double calibrationFrames = (dir == L2R ? g.CalibrationFramesL2R : g.CalibrationFramesR2L) * g.videoFPS / g.CalibrationFPS;
 	return int(calibrationFrames / zoneFrames * g.CalibrationSpeed + 0.5);
+}
+
+// The vehicle's length in pixels, for the size shown in Results (a car is ~15 ft, a pickup ~20, a truck or bus 25+).
+// bestWidth is one box, taken mid-zone, and the motion box there often swallows something else that moved (a branch,
+// a shadow, a walker): on the sample, a 200 px sedan's mid-zone box grew to 380 px.  So this takes the median of every
+// box seen while the vehicle was wholly inside the analysis box, which shrugs off those few merged boxes, then removes
+// what frame differencing adds: one frame of travel (the box spans the vehicle in both frames of the pair) and the
+// blur's spread at the two ends (about 3/4 of BLUR_SIZE in all, after the second threshold).
+int VehicleDynamics::getLengthPx(const Globals& g){
+	std::vector<int> widths;
+	for (Snapshot& s : snaps){
+		Rect r = s.getRect();
+		if (r.width > 0 && r.x > g.pixelLeft + 2 && r.x + r.width < g.pixelRight - 2) widths.push_back(r.width);
+	}
+	if (widths.empty()) return bestWidth;
+	std::nth_element(widths.begin(), widths.begin() + widths.size() / 2, widths.end());
+	double median = widths[widths.size() / 2];
+	int frames = trackEndFrame - trackStartFrame;
+	double perFrame = (frames > 0 && trackEndPixel > 0) ? abs(trackEndPixel - trackStartPixel) / double(frames) : 0;
+	double len = median - perFrame - 0.75 * g.BLUR_SIZE;
+	return int(std::max(len, median / 2) + 0.5);
+}
+
+// Private function: the speed trend (SpeedTrend.h) of a car just timed.  Every front bumper seen inside the box so far
+// (before the zone too: the longer the track, the better the curvature is known), as feet along its direction of travel
+// from the entry line against seconds.  The zone's length in feet comes from the calibration, since the calibration car
+// covered it in CalibrationFrames at CalibrationSpeed, so no new setting is needed; zoneFraction() makes the feet
+// ground distance on a receding street (streetEdge) and is linear otherwise.  The noise floor is 1 px of bumper jitter
+// (the sample's short-view crop strays 0.5-1.5 px rms from a parabola);
+// a fit straying more than margin(4) px rms, subFrameSpeed()'s own limit, isn't one car.  The entry and exit speeds are
+// anchored on finalSpeed, the number VST reports.
+void VehicleDynamics::computeTrend(Globals& g, direction dir){
+	const bool l2r = dir == L2R;
+	const double calFrames = l2r ? g.CalibrationFramesL2R : g.CalibrationFramesR2L;
+	const double zoneFt = g.CalibrationFPS > 0 ? g.CalibrationSpeed * vst::kFtPerSecPerMph * calFrames / g.CalibrationFPS : 0;
+	const double zonePx = double(g.speedLineRight - g.speedLineLeft);
+	trend = vst::SpeedTrend();
+	if (zoneFt <= 0 || zonePx <= 0 || g.videoFPS <= 0) return;
+	const double ftPerPx = zoneFt / zonePx;
+	vector<double> secs, feet;
+	for (size_t i = 0; i < seenFBPixel.size(); i++)
+		if (seenFBPixel[i] > g.pixelLeft && seenFBPixel[i] < g.pixelRight){  // one at the edge of the box is cut off there, not a bumper
+			double f = g.zoneFraction(l2r, seenFBPixel[i]);
+			secs.push_back(seenFBFrame[i] / g.videoFPS);
+			feet.push_back((l2r ? f : 1 - f) * zoneFt);
+		}
+	trend = vst::speedTrend(secs, feet, zoneFt, ftPerPx, g.margin(4, l2r) * ftPerPx, finalSpeed > 0 ? double(finalSpeed) : 0);
 }
 
 //Private function
@@ -232,17 +283,19 @@ int VehicleDynamics::computeFinalSpeed(Globals& g, direction dir, int trackStart
 	// Speed = CalibrationSpeed * (calibration crossing time / this vehicle's crossing time).  The calibration crossing was
 	// counted in CalibrationFPS video; fpsScale converts it to frames of the video being analyzed (exactly 1 when they match).
 	double fpsScale = g.videoFPS / g.CalibrationFPS;
-	if (g.subFrameTiming) return subFrameSpeed(g, dir);  // > 0: estimateNextVehicleData() checked it before calling
+	if (g.subFrameTiming || fitTiming) return subFrameSpeed(g, dir);  // > 0: estimateNextVehicleData() checked it before calling
 	switch (dir){
 	case L2R:
 		// fine tune final frame marker used for estimating speed
 		if ((trackStartPixel - g.speedLineLeft) > halfSpeed && (trackEndPixel - g.speedLineRight) < halfSpeed)  trackEndFrame++;  // went over start late, and left early
 		else if ((trackStartPixel - g.speedLineLeft) < halfSpeed && (trackEndPixel - g.speedLineRight) > halfSpeed)  trackEndFrame--; // went over start early, and left late
+		zoneSeconds = g.videoFPS > 0 ? double(trackEndFrame - trackStartFrame) / g.videoFPS : 0;
 		return int(((double(g.CalibrationFramesL2R) * fpsScale / double(trackEndFrame - trackStartFrame)) * g.CalibrationSpeed) + 0.4999);
 	case R2L:
 		// fine tune final frame markers used for estimating speed
 		if ((g.speedLineRight - trackStartPixel) > halfSpeed && (g.speedLineLeft - trackEndPixel) < halfSpeed)  trackEndFrame++;  // went over start as late as possible and stayed late
 		else if ((g.speedLineRight - trackStartPixel) < halfSpeed && (g.speedLineLeft - trackEndPixel) > halfSpeed)  trackEndFrame--; // went over start early, and left late
+		zoneSeconds = g.videoFPS > 0 ? double(trackEndFrame - trackStartFrame) / g.videoFPS : 0;
 		return int(((double(g.CalibrationFramesR2L) * fpsScale / double(trackEndFrame - trackStartFrame)) * g.CalibrationSpeed) + 0.4999);
 	case UNK:
 		return -1;
@@ -339,6 +392,9 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					entryGap = int(prevNextFrontBumper) - (lastObservedBox.x + lastObservedBox.width);
 					trackStartPixel = int(nextFrontBumper);  // Start tracking speed
 					trackStartFrame = frameNum;
+					// Crossed while the projection was still mostly look-ahead (maxDistOnEntry), the start frame counts from a guess: time
+					// it by the fit instead when it came into view at the box's left edge (markEnteredAtEdge()).
+					if (snaps.front().getRect().x <= g.pixelLeft + g.margin(45, true)) fitTiming = true;
 				}
 			}
 			else { // overlap status is front only or both.  Unfortunately, a good estimate of FB velocity has not been computed yet.
@@ -368,6 +424,7 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 					entryGap = int(prevNextFrontBumper) - lastObservedBox.x;
 					trackStartPixel = int(nextFrontBumper);  // Start tracking speed
 					trackStartFrame = frameNum;
+					if (snaps.front().getRect().x + snaps.front().getRect().width >= g.pixelRight - g.margin(45, false)) fitTiming = true;  // see L2R above
 				}
 			}
 			else{ // overlap status is front only or both.  Since the vehicle is entering, a good estimate of its velocity has not been computed yet.
@@ -478,6 +535,11 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 
 
 
+		// The projection before it is held inside the box.  A speed line on the box's far edge (speedLineLeft = 0 for R2L,
+		// speedLineRight = AnalysisBoxWidth for L2R) is crossed only when the front bumper goes past the edge, which the
+		// held value can never show: every car would then leave the box untimed.  So the exit tests below use this one.
+		// For a line inside the box the two give the same answer.
+		const double projectedFB = nextFrontBumper;
 		if (nextFrontBumper < g.pixelLeft) nextFrontBumper = g.pixelLeft;           // Stay in
 		else if (nextFrontBumper > g.pixelRight) nextFrontBumper = g.pixelRight;    // bounds
 
@@ -489,15 +551,16 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 			if ((trackStartPixel == 0) && (nextFrontBumper >= g.speedLineLeft)){
 				entryGap = int(prevNextFrontBumper) - (lastObservedBox.x + lastObservedBox.width);
 				//				cout << "Entry gap: " << entryGap << endl;
-				trackStartPixel = int(nextFrontBumper); // Start tracking L2R speed
+				trackStartPixel = max(int(nextFrontBumper), 1); // Start tracking L2R speed.  Not 0, which means "not started", when the left line is on the box's edge.
 				trackStartFrame = frameNum;
 			}
-			if ((trackEndPixel == 0) && (nextFrontBumper > g.speedLineRight)){
+			if ((trackEndPixel == 0) && (projectedFB > g.speedLineRight)){
 				int endGap = (int(prevNextFrontBumper) - (lastObservedBox.x + lastObservedBox.width));
-				if (g.subFrameTiming ? subFrameSpeed(g, L2R) > 0 : validGap(entryGap - endGap)){
+				if ((g.subFrameTiming || fitTiming) ? subFrameSpeed(g, L2R) > 0 : validGap(entryGap - endGap)){
 					trackEndPixel = int(nextFrontBumper); // End tracking L2R speed
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, L2R, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
+					computeTrend(g, L2R);
 					cout << "<" << frameNum << ">    > > > > > Speed is : " << finalSpeed << endl;
 					if (bestWidth == 0){  // Left the speed zone before passing its midpoint (e.g. a long truck): size it from what was last seen.  From pfr's 2016 neighborhoods branch.
 						bestHeight = lastObservedBox.height;
@@ -519,12 +582,13 @@ statusTypes VehicleDynamics::estimateNextVehicleData(Globals& g, int frameNum){
 				trackStartPixel = int(nextFrontBumper);  // Start tracking R2L speed
 				trackStartFrame = frameNum;
 			}
-			if ((trackEndPixel == 0) && (nextFrontBumper < g.speedLineLeft)){
+			if ((trackEndPixel == 0) && (projectedFB < g.speedLineLeft)){
 				int endGap = int(prevNextFrontBumper) - lastObservedBox.x;
-				if (g.subFrameTiming ? subFrameSpeed(g, R2L) > 0 : validGap(entryGap - endGap)){
+				if ((g.subFrameTiming || fitTiming) ? subFrameSpeed(g, R2L) > 0 : validGap(entryGap - endGap)){
 					trackEndPixel = max(int(nextFrontBumper), 1); // End tracking R2L speed.  Not 0, which means "not timed", when a fast vehicle's projection was pinned to pixelLeft.
 					trackEndFrame = frameNum;
 					finalSpeed = computeFinalSpeed(g, R2L, trackStartFrame, trackEndFrame, trackStartPixel, trackEndPixel, entryGap, endGap, estVelocity);
+					computeTrend(g, R2L);
 					cout << "<" << frameNum << ">   < < < < < Speed is : " << finalSpeed << endl;
 					if (bestWidth == 0){  // Left the speed zone before passing its midpoint (e.g. a long truck): size it from what was last seen.  From pfr's 2016 neighborhoods branch.
 						bestHeight = lastObservedBox.height;
@@ -779,4 +843,4 @@ Projection VehicleDynamics::getBestProjection(Globals& g, int frameNum){
 		return Projection(Rect(int(nextFrontBumper), nextY, int(nextRearBumper - nextFrontBumper), nextHeight), vState, estVelocity, frameNum);
 	}
 		
-};
+};

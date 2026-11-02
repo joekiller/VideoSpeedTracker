@@ -265,9 +265,10 @@ void AppPrefs::load() {
 	auto b = [&](const char* k, bool& f) { if (kv.count(k)) f = kv[k] == "1" || kv[k] == "true"; };
 	str("config", configPath); str("source", lastSource); str("site", siteName); str("remoteToken", remoteToken);
 	str("remoteAddress", remoteAddress);
-	str("zonesFor", zonesFor); str("calibratedFor", calibratedFor); str("calibratedLines", calibratedLines);
+	str("zonesFor", zonesFor); str("zonesFrame", zonesFrame); str("calibratedFor", calibratedFor); str("calibratedLines", calibratedLines); str("lastPage", lastPage);
+	b("planDistMeasured", planDistMeasured);
 	str("planNote", planNote); str("planCalSig", planCalSig); i("planSource", planSource); d("planCarLengths", planCarLengths);
-	i("speedLimit", speedLimit); i("egregious", egregious); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
+	i("speedLimit", speedLimit); i("egregious", egregious); i("calibTarget", calibTarget); i("hlMin", hlMin); i("hlMax", hlMax); i("hlArea", hlArea);
 	i("remotePort", remotePort); i("keepVideoGB", keepVideoGB); i("planPreset", planPreset);
 	b("realtime", realtime); b("highlights", highlights); b("trace", trace); b("showMotion", showMotion);
 	b("guideDone", guideDone); b("remote", remoteEnabled);
@@ -277,6 +278,7 @@ void AppPrefs::load() {
 	d("planDist", planDist); d("planClear", planClear); d("planCalib", planCalib); d("planCarLen", planCarLen);
 	d("siteLat", siteLat); d("siteLon", siteLon); d("planCamLat", planCamLat); d("planCamLon", planCamLon);
 	str("planStreet", planStreet); str("planDraft", planDraft); b("planAutosave", planAutosave); d("calcHeightFt", calcHeightFt); d("calcYawDeg", calcYawDeg);
+	d("parkY0", parkY0); d("parkY1", parkY1); d("parkFt", parkFt);
 	if (remoteToken.empty()) remoteToken = newToken();
 }
 
@@ -294,7 +296,7 @@ std::string AppPrefs::render() const {
 	std::ostringstream out;
 	out << "# VST Studio preferences\n"
 		<< "config = " << configPath << "\nsource = " << lastSource << "\nsite = " << siteName << "\n"
-		<< "speedLimit = " << speedLimit << "\negregious = " << egregious << "\n"
+		<< "speedLimit = " << speedLimit << "\negregious = " << egregious << "\ncalibTarget = " << calibTarget << "\n"
 		<< "realtime = " << realtime << "\nhighlights = " << highlights << "\nhlMin = " << hlMin << "\nhlMax = " << hlMax
 		<< "\nhlArea = " << hlArea << "\ntrace = " << trace << "\nshowMotion = " << showMotion << "\nguideDone = " << guideDone
 		<< "\nremote = " << remoteEnabled << "\nremotePort = " << remotePort << "\nremoteToken = " << remoteToken << "\nremoteAddress = " << remoteAddress << "\nkeepVideoGB = " << keepVideoGB
@@ -302,11 +304,11 @@ std::string AppPrefs::render() const {
 		<< "\nplanShutter = " << planShutter << "\nplanDist = " << planDist << "\nplanClear = " << planClear
 		<< "\nplanCalib = " << planCalib << "\nplanCarLen = " << planCarLen << "\nplanSource = " << planSource
 		<< "\nplanNote = " << planNote << "\nplanCalSig = " << planCalSig << "\nplanCarLengths = " << planCarLengths
-		<< "\ncalcHeightFt = " << calcHeightFt << "\ncalcYawDeg = " << calcYawDeg << "\nzonesFor = " << zonesFor
+		<< "\ncalcHeightFt = " << calcHeightFt << "\ncalcYawDeg = " << calcYawDeg << "\nparkY0 = " << parkY0 << "\nparkY1 = " << parkY1 << "\nparkFt = " << parkFt << "\nzonesFor = " << zonesFor << "\nzonesFrame = " << zonesFrame
 		<< "\nsiteLat = " << std::setprecision(10) << siteLat << "\nsiteLon = " << siteLon
 		<< "\nplanCamLat = " << planCamLat << "\nplanCamLon = " << planCamLon << std::setprecision(6)
 		<< "\nplanStreet = " << planStreet << "\nplanAutosave = " << planAutosave << "\nplanDraft = " << planDraft
-		<< "\ncalibratedFor = " << calibratedFor << "\ncalibratedLines = " << calibratedLines << "\nplanConfirmed = " << planConfirmed << "\n";
+		<< "\ncalibratedFor = " << calibratedFor << "\ncalibratedLines = " << calibratedLines << "\nplanConfirmed = " << planConfirmed << "\nlastPage = " << lastPage << "\nplanDistMeasured = " << planDistMeasured << "\n";
 	for (auto& r : recent) out << "recent = " << r << "\n";
 	return out.str();
 }

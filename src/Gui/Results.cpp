@@ -1,4 +1,5 @@
 #include "Results.h"
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 
@@ -24,7 +25,9 @@ bool readStatsCsv(const std::string& path, std::vector<StatsRow>& rows, std::str
 		if (trim(line).empty()) continue;
 		// Columns: Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed,
 		// Flag, Timestamp.  Csvs written before Flag and Timestamp existed end at estSpeed, with a 14th "*****" only when flagged,
-		// so both formats are read the same way: column 13 is the flag if present, column 14 the time if present.
+		// so both formats are read the same way: column 13 is the flag if present, column 14 the time if present.  Columns 15-19
+		// (v1.10+) are the speed trend: EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, all empty when unknown.  Column 20 is LengthPx, column 21 ZoneSeconds
+		// (seconds between the speed lines, empty when unknown).
 		std::vector<std::string> f;
 		std::stringstream ss(line);
 		for (std::string cell; std::getline(ss, cell, ',');) f.push_back(trim(cell));
@@ -39,6 +42,21 @@ bool readStatsCsv(const std::string& path, std::vector<StatsRow>& rows, std::str
 		r.compass = f[3];
 		r.flagged = f.size() > 13 && f[13].find('*') != std::string::npos;
 		if (f.size() > 14) r.timestamp = f[14];
+		if (f.size() > 19 && !f[18].empty()) {
+			try {
+				r.entryMph = std::stoi(f[15]);
+				r.exitMph = std::stoi(f[16]);
+				r.accel = std::stod(f[17]);
+				r.mphIn20ft = std::stoi(f[19]);
+				r.trend = f[18];
+			}
+			catch (...) { r.trend.clear(); }   // a hand-edited row: keep the vehicle, drop its trend
+		}
+		if (f.size() > 20) toInt(f[20], r.lengthPx);
+		if (f.size() > 21 && !f[21].empty()) {
+			try { r.zoneSeconds = std::stod(f[21]); }
+			catch (...) { r.zoneSeconds = 0; }
+		}
 		rows.push_back(r);
 	}
 	if (skipped) *skipped = bad;
@@ -48,11 +66,20 @@ bool readStatsCsv(const std::string& path, std::vector<StatsRow>& rows, std::str
 bool writeStatsCsv(const std::string& path, const std::vector<StatsRow>& rows) {
 	std::ofstream out(path);
 	if (!out) return false;
-	out << "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp\n";
+	out << "Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, "
+		"EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft, LengthPx, ZoneSeconds\n";
 	for (const StatsRow& r : rows) {
 		out << r.date << ", " << r.time << ", " << r.frame << ", " << r.compass << ", " << r.startFrame << ", " << r.endFrame << ", "
 			<< r.frames << ", " << r.startPix << ", " << r.endPix << ", " << r.deltaPix << ", " << r.area << ", , " << r.speed << ", "
-			<< (r.flagged ? "*****" : "") << ", " << r.timestamp << "\n";
+			<< (r.flagged ? "*****" : "") << ", " << r.timestamp << ", ";
+		char zs[32] = "";
+		if (r.zoneSeconds > 0) snprintf(zs, sizeof zs, "%.4f", r.zoneSeconds);
+		if (r.trend.empty()) out << ", , , , , " << r.lengthPx << ", " << zs << "\n";
+		else {
+			char a[32];
+			snprintf(a, sizeof a, "%.1f", r.accel);
+			out << r.entryMph << ", " << r.exitMph << ", " << a << ", " << r.trend << ", " << r.mphIn20ft << ", " << r.lengthPx << ", " << zs << "\n";
+		}
 	}
 	return bool(out);
 }

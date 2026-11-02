@@ -115,6 +115,10 @@ export class Vst extends EventTarget {
   calibrationApply(body) { return this.request('POST', '/api/calibration/apply', body); }
   calibrationCheck(body) { return this.request('POST', '/api/calibration/check', body); }
   calibrationDistance(body) { return this.request('POST', '/api/calibration/distance', body); }
+  /** Take one calibration measurement out ({ id, removed: true }) or put it back ({ id, removed: false }). */
+  calibrationInputs(body) { return this.request('POST', '/api/calibration/inputs', body); }
+  calibrationCar(body) { return this.request('POST', '/api/calibration/car', body); }
+  calibrationCars() { return this.request('GET', '/api/calibration/cars'); }
 
   // ---- media ------------------------------------------------------------------------------------
 
@@ -139,7 +143,10 @@ export class Vst extends EventTarget {
 
   // ---- live events ------------------------------------------------------------------------------
 
-  /** Subscribes to live events ('status', 'vehicle', 'tracks', 'config'), re-dispatched on this object. */
+  /**
+   * Subscribes to live events ('status', 'vehicle', 'pass', 'tracks', 'config'), re-dispatched on this object.
+   * 'pass' is a pass timed under VST's logging minimum (`belowMin`): not a logged vehicle, but a calibration pass.
+   */
   connectLive() {
     this.disconnectLive();
     const fire = (type, data) => {
@@ -158,8 +165,8 @@ export class Vst extends EventTarget {
         try {
           fire('status', await this.status());
           // The first poll only learns the newest id; later polls announce what arrived since.
-          const fresh = await this.vehicles(lastId == null ? { limit: 1 } : { since: lastId, limit: 50 });
-          if (lastId != null) [...fresh].reverse().forEach((v) => fire('vehicle', v));
+          const fresh = await this.vehicles(lastId == null ? { limit: 1, passes: 1 } : { since: lastId, limit: 50, passes: 1 });
+          if (lastId != null) [...fresh].reverse().forEach((v) => fire(v.belowMin ? 'pass' : 'vehicle', v));
           lastId = Math.max(lastId ?? 0, ...fresh.map((v) => v.id));
           this.dispatchEvent(new CustomEvent('online'));
         } catch (e) {
@@ -187,7 +194,7 @@ export class Vst extends EventTarget {
         else if (result === 'ok') startPolling();
         else if (this.stopLive === stop) setTimeout(() => { if (this.stopLive === stop) this.connectLive(); }, 5000);   // VST is gone: try again
       };
-      for (const t of ['status', 'vehicle', 'tracks', 'config']) es.addEventListener(t, (e) => fire(t, JSON.parse(e.data)));
+      for (const t of ['status', 'vehicle', 'pass', 'tracks', 'config']) es.addEventListener(t, (e) => fire(t, JSON.parse(e.data)));
     } catch { startPolling(); }
     const stop = () => { es?.close(); clearInterval(poll); };
     this.stopLive = stop;

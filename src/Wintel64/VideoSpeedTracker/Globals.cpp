@@ -203,6 +203,8 @@ vector<string> Globals::problems(){
 		bad("analysis box too tall: AnalysisBoxTop + AnalysisBoxHeight = " + to_string(AnalysisBoxTop + AnalysisBoxHeight) + ", must be <= " + to_string(FrameHeight));
 	if (speedLineLeft < 0 || speedLineLeft >= speedLineRight || speedLineRight > AnalysisBoxWidth)
 		bad("speed lines must satisfy 0 <= speedLineLeft < speedLineRight <= AnalysisBoxWidth (they are relative to AnalysisBoxLeft)");
+	else if (speedLineRight - speedLineLeft < kMinZone)
+		bad("the speed zone is " + to_string(speedLineRight - speedLineLeft) + " px wide (speedLineRight - speedLineLeft); it must be at least " + to_string(kMinZone) + " px so a car is seen several times between the lines");
 	if (R2LStreetY <= 0 || R2LStreetY > AnalysisBoxHeight || L2RStreetY <= 0 || L2RStreetY > AnalysisBoxHeight)
 		bad("R2LStreetY and L2RStreetY must be between 1 and AnalysisBoxHeight (they are relative to AnalysisBoxTop)");
 	if (R2LStreetYRight < 0 || R2LStreetYRight > AnalysisBoxHeight || L2RStreetYRight < 0 || L2RStreetYRight > AnalysisBoxHeight)

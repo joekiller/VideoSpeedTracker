@@ -6,7 +6,9 @@
  * x offsets from AnalysisBoxLeft; lane ("hubcap") lines are y offsets from AnalysisBoxTop, at the box's left edge
  * (R2LStreetY / L2RStreetY) and right edge (R2LStreetYRight / L2RStreetYRight, 0 = level), so a lane can run at an
  * angle across the picture. streetEdge [left, right] ([0, 0] = off) is a line along the curb that VST Studio uses
- * to measure how the street recedes; the phone shows it but leaves its editing to Studio.
+ * to measure how the street recedes; the phone shows it but leaves its editing to Studio. parkingLane [left, right]
+ * ([0, 0] = none) is VST Studio's own line on the parked cars' wheel centres, in whole-frame rows at x 0 and 1280 (not
+ * box-relative: it usually lies outside the box), which step 5's Known car mode uses to tell parked from passing.
  * Colours match the desktop tracker: R2L lane orange, L2R lane purple, speed lines white.
  *
  * `k` is frame units per CSS pixel, so strokes, labels and handles keep a constant on-screen size
@@ -17,6 +19,9 @@ import { esc } from './ui.js';
 export const W = 1280, H = 720;
 export const LANE = { R2L: '#ff9f1c', L2R: '#c084fc' };
 export const EDGE = '#84cc16';
+export const PARK = '#60a5fa';
+/** Frame x of the parking lane's two end handles (Canvas.cpp kParkGripX). */
+export const PARK_X = [40, 1240];
 
 /** Absolute frame coordinates of everything drawable, derived from config. */
 export function geometry(c) {
@@ -30,7 +35,48 @@ export function geometry(c) {
     r2lR: y + (c.R2LStreetYRight || c.R2LStreetY), l2rR: y + (c.L2RStreetYRight || c.L2RStreetY),
     obs: o1 > o0 ? [x + o0, x + o1] : null,
     edge: c.streetEdge && c.streetEdge[0] > 0 && c.streetEdge[1] > 0 ? [y + c.streetEdge[0], y + c.streetEdge[1]] : null,
+    park: c.parkingLane && c.parkingLane[0] > 0 && c.parkingLane[1] > 0 ? [...c.parkingLane] : null,
   };
+}
+
+/**
+ * The speed zone's rails, the same as VST's (Globals::railZone, Globals::kMinZone): the lines sit inside the box, at
+ * least MIN_ZONE px apart, so a car is seen several times between them. A line may sit right on the box's side; VST
+ * times cars as they come into view there. keepLeft says which line (or box side) the user just moved; the other one
+ * gives way. Returns the two line keys.
+ */
+export const MIN_ZONE = 200;
+export function railZone(c, keepLeft) {
+  const w = c.AnalysisBoxWidth, clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  let sl = c.speedLineLeft, sr = c.speedLineRight;
+  if (keepLeft) {
+    sl = clamp(sl, 0, Math.max(w - MIN_ZONE, 0));
+    sr = clamp(sr, Math.min(sl + MIN_ZONE, w), w);
+  } else {
+    sr = clamp(sr, Math.min(MIN_ZONE, w), w);
+    sl = clamp(sl, 0, Math.max(sr - MIN_ZONE, 0));
+  }
+  return { speedLineLeft: Math.round(sl), speedLineRight: Math.round(sr) };
+}
+
+/** The parking lane's row at frame x. */
+export const parkYAt = (park, fx) => park[0] + (park[1] - park[0]) * fx / W;
+
+/**
+ * Dragging one end handle of the parking lane to row fy tilts the line about the other handle (Canvas.cpp
+ * parkingLineOverlay); an end within 2 px of level snaps level.  Rows stay inside the frame.
+ */
+function moveParkEnd(park, end, fy) {
+  const a = PARK_X[0] / W, b = PARK_X[1] / W;
+  const at = [parkYAt(park, PARK_X[0]), parkYAt(park, PARK_X[1])];
+  const want = [...at];
+  want[end] = fy;
+  if (Math.abs(want[0] - want[1]) <= 2) want[end] = want[1 - end];
+  // Through (a, want0) and (b, want1), evaluated at 0 and 1.
+  const slope = (want[1] - want[0]) / (b - a);
+  const l = want[0] - slope * a, r = want[0] + slope * (1 - a);
+  const clampRow = (v) => Math.round(Math.max(1, Math.min(H - 1, v)));
+  return { parkingLane: [clampRow(l), clampRow(r)] };
 }
 
 /** A lane line's y at frame x, between its left end yl and right end yr across the box. */
@@ -70,7 +116,7 @@ export function applyHandle(c, handle, fx, fy, k = 2) {
       const dx = nx - g.box.x, dy = ny - g.box.y;
       return {
         AnalysisBoxLeft: nx, AnalysisBoxTop: ny, AnalysisBoxWidth: right - nx, AnalysisBoxHeight: bottom - ny,
-        speedLineLeft: Math.max(0, c.speedLineLeft - dx), speedLineRight: Math.max(1, c.speedLineRight - dx),
+        ...railZone({ AnalysisBoxWidth: right - nx, speedLineLeft: c.speedLineLeft - dx, speedLineRight: c.speedLineRight - dx }, true),
         R2LStreetY: clamp(c.R2LStreetY - dy, 0, bottom - ny), L2RStreetY: clamp(c.L2RStreetY - dy, 0, bottom - ny),
         ...(c.R2LStreetYRight ? { R2LStreetYRight: clamp(c.R2LStreetYRight - dy, 1, bottom - ny) } : {}),
         ...(c.L2RStreetYRight ? { L2RStreetYRight: clamp(c.L2RStreetYRight - dy, 1, bottom - ny) } : {}),
@@ -82,17 +128,33 @@ export function applyHandle(c, handle, fx, fy, k = 2) {
       const w = clamp(fx, g.box.x + 200, W - 1) - g.box.x, h = clamp(fy, g.box.y + 60, H - 1) - g.box.y;
       return {
         AnalysisBoxWidth: w, AnalysisBoxHeight: h,
-        speedLineRight: Math.min(c.speedLineRight, w), speedLineLeft: Math.min(c.speedLineLeft, w - 20),
+        ...railZone({ AnalysisBoxWidth: w, speedLineLeft: c.speedLineLeft, speedLineRight: c.speedLineRight }, false),
         R2LStreetY: Math.min(c.R2LStreetY, h), L2RStreetY: Math.min(c.L2RStreetY, h),
         ...(c.R2LStreetYRight ? { R2LStreetYRight: Math.min(c.R2LStreetYRight, h) } : {}),
         ...(c.L2RStreetYRight ? { L2RStreetYRight: Math.min(c.L2RStreetYRight, h) } : {}),
         ...(g.edge ? { streetEdge: c.streetEdge.map((e) => Math.min(e, h)) } : {}),
       };
     }
-    case 'sl': return { speedLineLeft: clamp(fx - g.box.x, 0, c.speedLineRight - 40) };
-    case 'sr': return { speedLineRight: clamp(fx - g.box.x, c.speedLineLeft + 40, g.box.w) };
+    // A speed line dragged out past the box's side takes the side with it, up to the picture's edge (as in VST
+    // Studio), so the zone can go where the road is without resizing the box first. Then the rails (railZone).
+    case 'sl': {
+      const sr = c.speedLineRight;
+      if (fx >= g.box.x) return railZone({ ...c, speedLineLeft: Math.min(fx - g.box.x, sr - MIN_ZONE) }, true);
+      const nx = clamp(fx, 0, g.box.x), dx = nx - g.box.x;
+      const grown = { AnalysisBoxLeft: nx, AnalysisBoxWidth: right - nx };
+      return { ...grown, ...railZone({ ...grown, speedLineLeft: 0, speedLineRight: sr - dx }, true),
+        obstruction: g.obs ? [c.obstruction[0] - dx, c.obstruction[1] - dx] : c.obstruction };
+    }
+    case 'sr': {
+      const sl = c.speedLineLeft;
+      if (fx <= right) return railZone({ ...c, speedLineRight: Math.max(fx - g.box.x, sl + MIN_ZONE) }, false);
+      const w = clamp(fx, right, W - 1) - g.box.x;
+      return { AnalysisBoxWidth: w, ...railZone({ AnalysisBoxWidth: w, speedLineLeft: sl, speedLineRight: w }, false) };
+    }
     case 'r2l': return moveLane(c, g, 'R2L', fy, k);
     case 'l2r': return moveLane(c, g, 'L2R', fy, k);
+    case 'pkl': return g.park ? moveParkEnd(g.park, 0, fy) : {};
+    case 'pkr': return g.park ? moveParkEnd(g.park, 1, fy) : {};
     case 'o0': return { obstruction: [clamp(fx - g.box.x, 0, c.obstruction[1] - 10), c.obstruction[1]] };
     case 'o1': return { obstruction: [c.obstruction[0], clamp(fx - g.box.x, c.obstruction[0] + 10, g.box.w)] };
     default: return {};
@@ -114,6 +176,8 @@ export function handlePoint(c, h, k = 2) {
       const dir = h.toUpperCase(), hx = laneHandleX(g, dir, k);
       return [hx, laneYAt(g, dir === 'R2L' ? g.r2l : g.l2r, dir === 'R2L' ? g.r2lR : g.l2rR, hx)];
     }
+    case 'pkl': return g.park ? [PARK_X[0], parkYAt(g.park, PARK_X[0])] : null;
+    case 'pkr': return g.park ? [PARK_X[1], parkYAt(g.park, PARK_X[1])] : null;
     case 'o0': return g.obs ? [g.obs[0], y + bh - 16 * k] : null;
     case 'o1': return g.obs ? [g.obs[1], y + bh - 16 * k] : null;
     default: return null;
@@ -128,7 +192,7 @@ export function oneLane(c) {
   return { ...c, [`${to}StreetY`]: c[`${from}StreetY`], [`${to}StreetYRight`]: c[`${from}StreetYRight`] || 0 };
 }
 
-export const HANDLE_AXES = { tl: 'xy', br: 'xy', sl: 'x', sr: 'x', r2l: 'y', l2r: 'y', o0: 'x', o1: 'x' };
+export const HANDLE_AXES = { tl: 'xy', br: 'xy', sl: 'x', sr: 'x', r2l: 'y', l2r: 'y', o0: 'x', o1: 'x', pkl: 'y', pkr: 'y' };
 
 /** Chevron arrow path pointing along `dir`, centred at (cx, cy). */
 function chevrons(cx, cy, dir, k) {
@@ -193,6 +257,13 @@ export function zonesSvg(c, { k = 2, editable = false, selected = null, tracks =
   // The street edge (set in VST Studio): a thin green dashed line along the curb.
   if (g.edge) s += `<line x1="${x}" y1="${g.edge[0]}" x2="${x + w}" y2="${g.edge[1]}" stroke="${EDGE}" stroke-width="${sw * 0.8}" stroke-dasharray="${5 * k} ${4 * k}"/>`;
 
+  // The parking lane (VST Studio's, for Known car calibration): dashed blue across the whole frame.
+  if (g.park) {
+    s += `<line x1="0" y1="${g.park[0]}" x2="${W}" y2="${g.park[1]}" stroke="rgba(0,0,0,.4)" stroke-width="${sw * 2.4}"/>`;
+    s += `<line x1="0" y1="${g.park[0]}" x2="${W}" y2="${g.park[1]}" stroke="${PARK}" stroke-width="${sw * 1.2}" stroke-dasharray="${8 * k} ${5 * k}"/>`;
+    s += label(70, parkYAt(g.park, 70) - 7 * k, 'PARKING', PARK);
+  }
+
   // Lane ("hubcap") lines, at their angle.  One-way: just the one lane.
   const lanes = legal === 'L2R' || legal === 'R2L' ? [legal] : ['R2L', 'L2R'];
   for (const dir of lanes) {
@@ -225,6 +296,7 @@ export function zonesSvg(c, { k = 2, editable = false, selected = null, tracks =
       const hx = laneHandleX(g, dir, k);
       s += handle(dir.toLowerCase(), hx, laneYAt(g, dir === 'R2L' ? g.r2l : g.l2r, dir === 'R2L' ? g.r2lR : g.l2rR, hx), LANE[dir]);
     }
+    if (g.park) for (const [id, i] of [['pkl', 0], ['pkr', 1]]) s += handle(id, PARK_X[i], parkYAt(g.park, PARK_X[i]), PARK);
     if (g.obs) { s += handle('o0', g.obs[0], y + h - 16 * k, '#cbd5e1', 'pill'); s += handle('o1', g.obs[1], y + h - 16 * k, '#cbd5e1', 'pill'); }
   }
   return s;

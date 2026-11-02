@@ -39,8 +39,7 @@ bool isImagePath(const std::string& name) {
 Kind classify(const std::string& name) {
 	if (name.empty()) return Kind::None;
 	if (picam::isName(name)) return Kind::PiCamera;
-	if (name.size() < 4 && std::all_of(name.begin(), name.end(), [](char c) { return std::isdigit((unsigned char)c) != 0; }))
-		return Kind::Camera;
+	if (webcam::isName(name)) return Kind::Camera;   // "0", "12", "0?w=1920&h=1080" (not "2016": a file)
 	if (name.find("://") != std::string::npos) return Kind::Stream;
 	if (isImagePath(name) && name.find('%') == std::string::npos) return Kind::Image;   // "img_%04d.jpg" is a numbered sequence: VideoCapture reads it as a video
 	return Kind::File;
@@ -77,9 +76,21 @@ std::string safeName(const std::string& name) {
 
 std::string label(const std::string& name) {
 	switch (classify(name)) {
-	case Kind::Camera: return "camera " + name;
+	case Kind::Camera: { webcam::Settings s; webcam::parse(name, s); return "camera " + std::to_string(s.camera); }
 	case Kind::PiCamera: return picam::label(name);
 	default: return safeName(name);
+	}
+}
+
+std::string deviceKey(const std::string& name) {
+	switch (classify(name)) {
+	case Kind::Camera: { webcam::Settings s; webcam::parse(name, s); return "usb:" + std::to_string(s.camera); }
+	case Kind::PiCamera: {
+		picam::Settings s;
+		std::string error;
+		return picam::parse(name, s, error) ? "picam:" + std::to_string(s.camera) : "picam";
+	}
+	default: return name;
 	}
 }
 
@@ -177,7 +188,7 @@ public:
 class CaptureSource : public FrameSource {
 public:
 	CaptureSource(const std::string& name, Kind kind, const OpenOptions& o) : kind_(kind) {
-		if (kind == Kind::Camera) openCamera(std::stoi(name), o);
+		if (kind == Kind::Camera) openCamera(name, o);
 		else openNamed(name, o);
 	}
 	Kind kind() const override { return kind_; }
@@ -193,18 +204,51 @@ protected:
 		f.shutter = shutter_;
 		f.shutterUs = shutter_ == Shutter::Fixed ? shutterUs_ : 0;
 		f.measuredFps = measuredFps_;
+		f.deviceName = deviceName_;
+		f.modePicked = modePicked_;
+		f.modeWhy = modeWhy_;
 	}
 
 private:
-	void openCamera(int index, const OpenOptions& o) {
-		if (!cap_.open(index)) return;
-		if (o.cameraWidth <= 0 || o.cameraHeight <= 0) return;
-		// Each set is a request; a camera without the mode keeps its nearest one, and facts() reports what it chose.
-		cap_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-		cap_.set(cv::CAP_PROP_FRAME_WIDTH, o.cameraWidth);
-		cap_.set(cv::CAP_PROP_FRAME_HEIGHT, o.cameraHeight);
-		if (o.cameraFps > 0) cap_.set(cv::CAP_PROP_FPS, o.cameraFps);
-		fixShutter(o);
+	// The mode, in order: the user's own (the name's settings), else the best for timing from what the driver lists
+	// (webcam::best), else OpenOptions' ask.  The driver is asked before the camera is opened: on Windows, reading a
+	// source's modes activates it, which an open capture would refuse.  The shutter then follows the name's setting,
+	// or the policy's (fixShutter), and on Linux automatic exposure is told not to lower the frame rate.
+	void openCamera(const std::string& name, const OpenOptions& o) {
+		webcam::Settings s;
+		webcam::parse(name, s);
+		std::lock_guard<std::recursive_mutex> busy(webcam::deviceLock());   // no listing in between (Webcam.h)
+		webcam::Device dev = webcam::describe(s.camera);
+		deviceName_ = dev.name;
+		webcam::Mode mode;
+		if (!s.picksMode()) {
+			mode.width = s.width; mode.height = s.height; mode.fps = s.fps; mode.format = s.format;
+			// The user named a size, not always a rate or format: the best the driver lists at that size fills them in.
+			std::vector<webcam::Mode> atSize;
+			for (const webcam::Mode& m : dev.modes) if (m.width == s.width && m.height == s.height && (s.fps <= 0 || std::lround(m.fps) == std::lround(s.fps))) atSize.push_back(m);
+			webcam::Mode fill = webcam::best(atSize);
+			if (mode.fps <= 0) mode.fps = fill.fps;
+			if (mode.format.empty()) mode.format = fill.format;
+		}
+		else if (o.cameraPicksMode) {
+			mode = webcam::best(dev.modes);
+			if (mode.valid()) { modePicked_ = true; modeWhy_ = webcam::whyBest(mode, dev.modes); }
+		}
+		if (!mode.valid() && o.cameraWidth > 0 && o.cameraHeight > 0) { mode.width = o.cameraWidth; mode.height = o.cameraHeight; mode.fps = o.cameraFps; }
+		if (s.fps > 0 && s.picksMode()) mode.fps = s.fps;   // a rate alone: at the picked size
+		if (!cap_.open(s.camera)) return;
+		if (mode.valid()) {
+			// Each set is a request; a camera without the mode keeps its nearest one, and facts() reports what it chose.
+			const std::string f = mode.format.empty() || mode.format.size() != 4 ? std::string("MJPG") : mode.format;
+			cap_.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc(f[0], f[1], f[2], f[3]));
+			cap_.set(cv::CAP_PROP_FRAME_WIDTH, mode.width);
+			cap_.set(cv::CAP_PROP_FRAME_HEIGHT, mode.height);
+			if (mode.fps > 0) cap_.set(cv::CAP_PROP_FPS, mode.fps);
+		}
+		if (webcam::holdFrameRate(s.camera)) notes_.push_back("Camera frame rate: held constant on automatic exposure.");
+		OpenOptions shutter = o;
+		if (s.shutterUs >= 0) { shutter.cameraShutterUs = s.shutterUs; shutter.cameraShutterFromEnv = false; }
+		fixShutter(shutter);
 	}
 
 	// Reads `n` frames and returns the mean brightness of the last three, after the camera has had the first ones to
@@ -319,6 +363,8 @@ private:
 	int shutterUs_ = 0;
 	double measuredFps_ = 0;
 	std::vector<std::string> notes_;
+	std::string deviceName_, modeWhy_;
+	bool modePicked_ = false;
 };
 
 // A Raspberry Pi camera: rpicam-vid, read frame by frame (PiCamera.h).
@@ -453,17 +499,6 @@ double timedRate(cv::VideoCapture& cap) {
 	return n > 0 && s > 0 ? n / s : 0;
 }
 
-std::string deviceName(int index) {
-#ifdef __linux__
-	std::ifstream in("/sys/class/video4linux/video" + std::to_string(index) + "/name");
-	std::string line;
-	if (in && std::getline(in, line)) return line;
-#else
-	(void)index;
-#endif
-	return "";
-}
-
 std::string number(double v) {
 	char b[32];
 	if (std::isnan(v)) return "?";
@@ -476,8 +511,9 @@ std::string number(double v) {
 CameraReport probeCamera(int index) {
 	CameraReport r;
 	r.index = index;
-	r.name = deviceName(index);
 	try {
+		r.device = webcam::describe(index);
+		r.name = r.device.name;
 		for (cv::VideoCaptureAPIs api : cv::videoio_registry::getCameraBackends())
 			r.available += (r.available.empty() ? "" : ", ") + cv::videoio_registry::getBackendName(api);
 		cv::VideoCapture cap;
@@ -492,13 +528,21 @@ CameraReport probeCamera(int index) {
 			k.settable = k.readable && cap.set(c.prop, k.value);   // its own value back: changes nothing
 			r.controls.push_back(k);
 		}
-		for (const auto& m : kProbeModes) {
+		// The fixed modes worth knowing about, plus the one VST would pick when it isn't among them (a Brio's 720p90).
+		std::vector<CameraReport::Mode> asks;
+		for (const auto& m : kProbeModes) { CameraReport::Mode a; a.askW = m.w; a.askH = m.h; a.askFps = m.fps; asks.push_back(a); }
+		webcam::Mode picked = webcam::best(r.device.modes);
+		if (picked.valid() && std::none_of(asks.begin(), asks.end(), [&](const CameraReport::Mode& a) {
+				return a.askW == picked.width && a.askH == picked.height && std::lround(a.askFps) == std::lround(picked.fps); })) {
+			CameraReport::Mode a; a.askW = picked.width; a.askH = picked.height; a.askFps = picked.fps; asks.insert(asks.begin(), a);
+		}
+		for (const auto& m : asks) {
 			CameraReport::Mode mode;
-			mode.askW = m.w; mode.askH = m.h; mode.askFps = m.fps;
+			mode = m;
 			cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-			cap.set(cv::CAP_PROP_FRAME_WIDTH, m.w);
-			cap.set(cv::CAP_PROP_FRAME_HEIGHT, m.h);
-			cap.set(cv::CAP_PROP_FPS, m.fps);
+			cap.set(cv::CAP_PROP_FRAME_WIDTH, m.askW);
+			cap.set(cv::CAP_PROP_FRAME_HEIGHT, m.askH);
+			cap.set(cv::CAP_PROP_FPS, m.askFps);
 			mode.measured = timedRate(cap);
 			mode.w = int(cap.get(cv::CAP_PROP_FRAME_WIDTH));
 			mode.h = int(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
@@ -526,6 +570,19 @@ std::string CameraReport::markdown() const {
 	for (const Mode& m : modes)
 		o << "| " << m.askW << "x" << m.askH << " @ " << number(m.askFps) << " | " << m.w << "x" << m.h << " | " << number(m.fps)
 		  << " fps | " << (m.measured > 0 ? number(std::round(m.measured)) + " fps" : std::string("nothing")) << " |\n";
+	if (!device.modes.empty()) {
+		// What the driver lists, best first and one per size and rate, so a report shows what the camera claims next
+		// to what it did above.
+		o << "\n**Listed by the driver** (" << device.modes.size() << " modes";
+		if (device.vendor) { char ids[32]; snprintf(ids, sizeof ids, ", USB %04x:%04x", device.vendor, device.product); o << ids; }
+		o << "): ";
+		std::vector<webcam::Mode> shown = webcam::offered(device.modes, 16);
+		for (size_t i = 0; i < shown.size(); i++) o << (i ? ", " : "") << shown[i].width << "x" << shown[i].height << "@" << number(std::round(shown[i].fps)) << " " << shown[i].format;
+		webcam::Mode b = webcam::best(device.modes);
+		if (b.valid()) o << "\n\nVST picks " << b.width << "x" << b.height << " at " << number(std::round(b.fps)) << " fps " << b.format;
+		o << "\n";
+	}
+	if (!device.error.empty()) o << "\n" << device.error << "\n";
 	o << "\n| Control | Value | Reads | Sets |\n| --- | --- | --- | --- |\n";
 	for (const Control& k : controls)
 		o << "| " << k.name << " | " << (k.readable ? number(k.value) : "") << " | " << (k.readable ? "yes" : "no") << " | " << (k.settable ? "yes" : "no") << " |\n";

@@ -33,7 +33,9 @@ passing traffic. VST outputs:
 
     *Note:* in the current build each entry also ends with a
     Timestamp, the date and time the vehicle passed, with its UTC
-    offset. The columns are described in the
+    offset, and then its speed trend (speed in and out of the zone,
+    acceleration, whether it was slowing down, steady or speeding up,
+    and its speed 20 ft further on). The columns are described in the
     [README](../README.md#the-stats-csv).
 
 2.  A trace (debug) file, if you request it. This file contains copious
@@ -479,8 +481,8 @@ without noticeable bugs (except the codec pop-up issue noted above).
 
 *Note:* OpenCV 2.4 and 3.x are no longer supported; CMake requires
 OpenCV 4 or newer. Release packages use OpenCV 5.0.0, built from source
-and linked statically on Linux and Windows, and Homebrew's `opencv` on
-macOS.
+and linked statically on every platform; the macOS app also carries a
+small LGPL FFmpeg build for video files and streams.
 
 ## Installing Executables
 Executables that can run on Win7tel64 platforms can be found in the repo

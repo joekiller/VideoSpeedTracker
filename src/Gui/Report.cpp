@@ -1,4 +1,5 @@
 #include "Report.h"
+#include "CalSets.h"
 #include "Results.h"
 #include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -254,6 +255,15 @@ static void readManifest(const fs::path& p, Run& run) {
 	}
 }
 
+bool runConfigOf(const std::string& csvPath, RunConfig& out) {
+	Run run;
+	run.cfg = out;
+	readManifest(manifestFor(csvPath), run);
+	if (!run.cfgFromManifest) return false;
+	out = run.cfg;
+	return true;
+}
+
 // Times for a row.  The Timestamp column (VST 1.1+) is when the vehicle passed.  Older csvs only have Date/Time, which
 // for Foscam recordings (manual_yyyymmddhhmmss) is when the recording started, the same on every row: the vehicle's
 // offset into the video (Frame / fps) is added.  For other sources Date/Time was already the moment it passed.
@@ -303,7 +313,9 @@ std::vector<Run> loadRuns(const Input& in, std::vector<Obs>& obs) {
 		double fps = run.fps > 0 ? run.fps : run.cfg.calFps;
 		std::string legal = run.cfg.resolveLegal();
 		int idx = int(runs.size());
+		auto zone = in.zoneFt.find(run.name);
 		for (const StatsRow& r : rows) {
+			if (in.calibrationPasses.count(passKey(run.name, r.frame))) { run.calibrationDrives++; continue; }
 			Obs o;
 			o.run = idx;
 			o.t = rowTime(r, recordingStart, fps);
@@ -312,6 +324,16 @@ std::vector<Run> loadRuns(const Input& in, std::vector<Obs>& obs) {
 			// The csv names directions by compass label; anything else falls back to which way the bumper moved.
 			o.l2r = r.compass == run.cfg.l2rCompass || (r.compass != run.cfg.r2lCompass && r.endPix > r.startPix);
 			o.speed = r.speed;
+			// Re-timed to its calibration set's zone feet (CalSets.h), from the calibration its manifest recorded.
+			if (zone != in.zoneFt.end() && run.cfgFromManifest) {
+				calsets::Measured m;
+				m.speed = r.speed;
+				m.zoneSeconds = r.zoneSeconds;
+				double then = calsets::zoneFeet(o.l2r ? run.cfg.framesL2R : run.cfg.framesR2L, run.cfg.calSpeed, run.cfg.calFps);
+				calsets::Retimed t = calsets::retime(m, then, o.l2r ? zone->second.first : zone->second.second);
+				if (t.adjusted) run.adjusted++;
+				o.speed = t.speed;
+			}
 			o.flagged = r.flagged;
 			o.wrongWay = (o.l2r && legal == "R2L") || (!o.l2r && legal == "L2R");
 			obs.push_back(o);
@@ -643,6 +665,11 @@ Study analyze(const Input& in, const Settings& s) {
 			"Their observed time is estimated from the first to the last vehicle logged, outages in them are unknown, and "
 			"vehicles below the logging minimum or that couldn't be timed weren't counted.");
 	if (old) st.caveats.push_back(count(old, "stats csv predates", "stats csvs predate") + " the Timestamp column (13 columns).");
+	int retimed = 0, retimedRuns = 0;
+	for (size_t i = 0; i < st.runs.size(); i++) if (runUsed[i]) { retimed += st.runs[i].adjusted; retimedRuns += st.runs[i].adjusted > 0; }
+	if (retimed)
+		st.caveats.push_back(std::to_string(retimed) + (retimed == 1 ? " speed" : " speeds") + " in " + count(retimedRuns, "run was", "runs were")
+			+ " re-timed to a newer calibration of the same camera view, as VST Studio's Results shows them.");
 	if (derived) {
 		std::string f;
 		for (double x : derivedFps) f += (f.empty() ? "" : ", ") + fmt("%g", x);
@@ -653,6 +680,9 @@ Study analyze(const Input& in, const Settings& s) {
 	if (st.undatedExcluded) st.caveats.push_back(count(st.undatedExcluded, "vehicle has", "vehicles have") + " no time at all and " + (st.undatedExcluded == 1 ? "is" : "are") + " left out of this date range.");
 	if (st.undatedIncluded) st.caveats.push_back(count(st.undatedIncluded, "vehicle has", "vehicles have") + " no time: counted in the speed statistics but not in the time-of-day charts or coverage.");
 	if (st.flaggedExcluded) st.caveats.push_back(count(st.flaggedExcluded, "vehicle", "vehicles") + " flagged as implausible (*****) left out of every statistic.");
+	int calDrives = 0;
+	for (const Run& r : st.runs) calDrives += r.calibrationDrives;
+	if (calDrives) st.caveats.push_back(count(calDrives, "calibration or check drive", "calibration or check drives") + " by the person setting up VST left out of every statistic.");
 	if (legals.size() > 1) st.caveats.push_back("The one-way setting (LegalDirection) changed between runs; the wrong-way count uses each run's own setting.");
 	for (int k = 0; k < 2; k++)
 		if (st.checkMismatch[k])

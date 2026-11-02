@@ -5,10 +5,11 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { esc, raw, html, band, passPills } from '../js/ui.js';
+import { esc, raw, html, band, passPills, trendOf } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
-import { geometry, applyHandle, laneYAt, laneHandleX } from '../js/overlay.js';
+import { geometry, applyHandle, laneYAt, laneHandleX, railZone, MIN_ZONE } from '../js/overlay.js';
 import * as plan from '../js/plan.js';
+import * as ground from '../js/ground.js';
 
 describe('ui.js esc', () => {
   it('escapes the five HTML metacharacters', () => {
@@ -60,6 +61,15 @@ describe('ui.js band and passPills', () => {
     const pills = passPills({ speed: 31, speeding: true }, 25).map((p) => p.__html).join('');
     assert.match(pills, /\+6 over/);
     assert.doesNotMatch(passPills({ speed: 50, speeding: true, egregious: true }, 25).map((p) => p.__html).join(''), /over/);
+  });
+  it('shows a speed change, but not a steady one or an unknown one', () => {
+    const pills = (trend) => passPills({ speed: 24, trend }, 25).map((p) => p.__html).join('');
+    assert.match(pills({ kind: 'rapid', entry: 21, exit: 27, accel: 8.5, in20ft: 31 }), /class="pill bad".*21→27/);
+    assert.match(pills({ kind: 'decelerating', entry: 26, exit: 22, accel: -6, in20ft: 18 }), /class="pill ok"/);
+    assert.equal(pills({ kind: 'steady', entry: 24, exit: 24, accel: 0.4, in20ft: 24 }), '');
+    assert.equal(pills(null), '');
+    assert.equal(trendOf({ trend: { kind: 'sideways' } }), null);
+    assert.equal(trendOf({ trend: { kind: 'accelerating' } }).label, 'Speeding up');
   });
 });
 
@@ -138,9 +148,34 @@ describe('overlay.js geometry', () => {
     assert.equal(geometry({ ...cfg, obstruction: [0, 0] }).obs, null);
   });
   it('keeps dragged speed lines inside the box and apart', () => {
-    assert.deepEqual(applyHandle(cfg, 'sr', 5000, 0), { speedLineRight: 1269 });
-    assert.deepEqual(applyHandle(cfg, 'sl', 5000, 0), { speedLineLeft: 909 - 40 });
-    assert.deepEqual(applyHandle(cfg, 'sl', -50, 0), { speedLineLeft: 0 });
+    assert.deepEqual(applyHandle(cfg, 'sr', 5000, 0), { AnalysisBoxWidth: 1269, speedLineLeft: 350, speedLineRight: 1269 });
+    assert.deepEqual(applyHandle(cfg, 'sl', 5000, 0), { speedLineLeft: 909 - MIN_ZONE, speedLineRight: 909 });
+    assert.deepEqual(applyHandle(cfg, 'sl', -50, 0), { AnalysisBoxLeft: 0, AnalysisBoxWidth: 1279, speedLineLeft: 0, speedLineRight: 919, obstruction: [261, 321] });
+  });
+  // The rails (VST's Globals::railZone): whatever is drawn, the lines stay inside the box and MIN_ZONE apart.
+  it('keeps the speed lines on the rails, moving the one not being edited', () => {
+    assert.deepEqual(railZone(cfg, true), { speedLineLeft: 350, speedLineRight: 909 });
+    assert.deepEqual(railZone({ ...cfg, speedLineLeft: 800 }, true), { speedLineLeft: 800, speedLineRight: 1000 });
+    assert.deepEqual(railZone({ ...cfg, speedLineLeft: 1200 }, true), { speedLineLeft: 1269 - MIN_ZONE, speedLineRight: 1269 });
+    assert.deepEqual(railZone({ ...cfg, speedLineRight: 400 }, false), { speedLineLeft: 200, speedLineRight: 400 });
+    assert.deepEqual(railZone({ ...cfg, speedLineLeft: -30, speedLineRight: 5000 }, true), { speedLineLeft: 0, speedLineRight: 1269 });
+  });
+  it('lets a speed line drag the box side out with it, up to the picture edge', () => {
+    const c = { ...cfg, AnalysisBoxLeft: 300, AnalysisBoxWidth: 700, speedLineLeft: 50, speedLineRight: 600, obstruction: [100, 160] };
+    const out = applyHandle(c, 'sl', 120, 0);
+    assert.deepEqual(out, { AnalysisBoxLeft: 120, AnalysisBoxWidth: 880, speedLineLeft: 0, speedLineRight: 780, obstruction: [280, 340] });
+    const after = geometry({ ...c, ...out });
+    assert.equal(after.sr, geometry(c).sr);  // the other line stays put on the picture
+    assert.equal(after.sl, 120);
+    assert.deepEqual(applyHandle(c, 'sr', 1100, 0), { AnalysisBoxWidth: 800, speedLineLeft: 50, speedLineRight: 800 });
+    assert.deepEqual(applyHandle(c, 'sr', 5000, 0), { AnalysisBoxWidth: 979, speedLineLeft: 50, speedLineRight: 979 });
+  });
+  it('carries a line along when the box side is pushed past it, keeping the zone wide enough', () => {
+    const c = applyHandle(cfg, 'tl', 500, 220);  // past the left line at x 360
+    assert.equal(c.speedLineLeft, 0);
+    assert.ok(c.speedLineRight - c.speedLineLeft >= MIN_ZONE);
+    const b = applyHandle(cfg, 'br', 400, 410);  // the box 390 wide: right line in to its side, left line out of the way
+    assert.deepEqual([b.speedLineLeft, b.speedLineRight], [190, 390]);
   });
   it('keeps lines still on screen when the box corner moves', () => {
     const c = applyHandle(cfg, 'tl', 110, 240);
@@ -276,5 +311,104 @@ describe('map.js reads OpenStreetMap tags', async () => {
     assert.equal(s.maxspeedMph, 25);
     assert.ok(Math.abs(s.wayBearing - 321.8) < 1, `bearing ${s.wayBearing}`);
     assert.equal(map.nearestStreet(ways, 38.01, -78.01), null, 'nothing within 30 m');
+  });
+});
+
+describe('plan.js drive-by target matches src/Gui/Calibration.h', () => {
+  it('offers 10-25 plus a limit that is none of them, in order', () => {
+    assert.deepEqual(plan.targetPresets(25), [10, 15, 20, 25]);
+    assert.deepEqual(plan.targetPresets(15), [10, 15, 20, 25]);
+    assert.deepEqual(plan.targetPresets(30), [10, 15, 20, 25, 30]);
+    assert.deepEqual(plan.targetPresets(12), [10, 12, 15, 20, 25]);
+    assert.deepEqual(plan.targetPresets(0), [10, 15, 20, 25]);
+  });
+  it('starts from the saved choice, else the posted limit', () => {
+    assert.equal(plan.defaultTarget(0, 15), 15);
+    assert.equal(plan.defaultTarget(undefined, 15), 15);
+    assert.equal(plan.defaultTarget(20, 15), 20);
+    assert.equal(plan.defaultTarget(0, 0), 25);
+    assert.equal(plan.defaultTarget(200, 15), plan.TARGET_MAX);
+  });
+  it('suggests a different speed for the check drive', () => {
+    assert.equal(plan.checkTarget(15), 20);
+    assert.equal(plan.checkTarget(10), 15);
+    assert.equal(plan.checkTarget(25), 20);
+    assert.equal(plan.checkTarget(5), 10);
+    assert.ok(plan.belowCruiseControl(15) && !plan.belowCruiseControl(25));
+  });
+  it('sets the logging minimum 5 under the limit, at most 18, and only moves an automatic one', () => {
+    assert.deepEqual([15, 20, 25, 45, 5].map(plan.minLoggedForLimit), [10, 15, 18, 18, 5]);
+    assert.ok(plan.minLoggedFollows(18, 15) && plan.minLoggedFollows(10, 15) && !plan.minLoggedFollows(12, 15));
+  });
+});
+
+// The demo's copy of VST Studio's calibration combining (src/Gui/CalEvidence.h), held to the same numbers as
+// tests/calibration_test.cpp so the phone's demo and the real app say the same thing.
+import * as calib from '../js/calib.js';
+
+describe('calib.js combining', () => {
+  const mk = (id, method, zoneFt, sigma, dirs = 'both', lines = 'L') => ({ id, method, zoneFt, sigma, dirs, lines, removed: false });
+  it('gives equal sigmas the plain mean and equal shares', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.03), mk('b', 'cones', 30.6, 0.03)], 'L2R', 'L');
+    assert.ok(Math.abs(c.zoneFt - 30.3) < 1e-9);
+    assert.ok(c.shares.every((s) => Math.abs(s.contribution - 0.5) < 1e-9));
+    assert.equal(calib.summary(c).summary, '2 measurements agree within 2%');
+  });
+  it('weighs a rough camera setup far below a careful pass', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.03), mk('c', 'camera', 33, 0.10)], 'L2R', 'L');
+    assert.ok(c.shares[1].contribution < 0.1 && c.zoneFt > 30 && c.zoneFt < 30.3);
+  });
+  it('widens the sigma and says they differ when two careful ones disagree', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.02), mk('b', 'car', 33, 0.02)], 'L2R', 'L');
+    assert.ok(c.birge > 2 && c.sigma > 0.04 && !c.agree);
+    assert.equal(calib.summary(c).summary, '2 measurements differ by 10%');
+  });
+  it('flags only the one that is well off the other two, and leaves out removed, other-direction and other-lines inputs', () => {
+    const v = [mk('a', 'pass', 30, 0.03), mk('b', 'cones', 30.4, 0.03), mk('x', 'car', 35, 0.03)];
+    const c = calib.combine(v, 'L2R', 'L');
+    assert.deepEqual(c.shares.map((s) => s.outlier), [false, false, true]);
+    assert.equal(calib.summary(c).summary, '3 measurements, 1 well off the others');
+    v[2].removed = true;
+    assert.equal(calib.summary(calib.combine(v, 'L2R', 'L')).summary, '2 measurements agree within 2%');
+    const w = [mk('a', 'pass', 30, 0.03, 'L2R'), mk('b', 'pass', 40, 0.03, 'R2L'), mk('c', 'cones', 31, 0.03, 'both', 'OLD')];
+    const l = calib.combine(w, 'L2R', 'L');
+    assert.equal(l.n, 1);
+    assert.equal(l.setAside, 1);
+    assert.equal(calib.combine(w, 'R2L', 'L').zoneFt, 40);
+  });
+  it('flags no single one when all three disagree', () => {
+    const c = calib.combine([mk('a', 'pass', 30, 0.02), mk('b', 'cones', 33, 0.02), mk('c', 'car', 36, 0.02)], 'L2R', 'L');
+    assert.equal(c.outliers, 0);
+    assert.equal(calib.summary(c).summary, '3 measurements differ by 19%');
+  });
+  it('uses the same error models as VST Studio', () => {
+    assert.ok(Math.abs(calib.sigmaPass(15, 20) - Math.hypot(Math.hypot(0.3, 0.5) / 15, 0.41 / 20)) < 1e-12);
+    assert.ok(Math.abs(calib.framesForZone(calib.zoneFtFromPass(25, 30, 30), 25, 30) - 30) < 1e-9);
+  });
+});
+
+// The demo's copy of VST Studio's parking-lane camera model (js/ground.js) against numbers printed by the C++
+// (Perspective.h laneScale / hubcapDepthAtRow, ParkingLane.h placeCar) for the same setups.
+describe('ground.js matches Perspective.h', () => {
+  const close = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol, `${a} vs ${b}`);
+  const window2 = { distanceFt: 20, heightFt: 15, yawDeg: 0, hfovDeg: 66 };
+  const angled = { distanceFt: 30, heightFt: 12, yawDeg: 20, hfovDeg: 70 };
+  it('laneScale', () => {
+    close(ground.laneScale(window2, 640, 25), 1.291704649);
+    close(ground.laneScale(angled, 900, 35), 1.259319481);
+  });
+  it('hubcapDepthAtRow', () => {
+    close(ground.hubcapDepthAtRow(window2, 640, 400, 370), 18.096327186);
+    close(ground.hubcapDepthAtRow(angled, 900, 420, 380), 31.523859564);
+    assert.ok(Number.isNaN(ground.hubcapDepthAtRow({ ...window2, heightFt: 1.2 }, 640, 400, 380)));
+  });
+  it('placeCar', () => {
+    const s = ground.placeCar(window2, 400, { y: [370, 372], ft: 0 }, 600, 371);
+    assert.equal(s.where, 'parked');
+    assert.equal(s.how, 'picture');
+    close(s.parkedFt, 1.060741848);
+    close(s.parkedScale, 1.038677916);
+    assert.equal(ground.placeCar(window2, 400, { y: [370, 372], ft: 0 }, 600, 399).where, 'lane');
+    assert.equal(ground.placeCar(window2, 400, null, 600, 371).where, null);
   });
 });

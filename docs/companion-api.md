@@ -91,6 +91,27 @@ Lets the companion tell "found VST, needs pairing" apart from "nothing at this a
   editing `VST.cfg`) puts the direction back to `unchecked`. VST Studio works this out from
   `calibration-history.csv` in its config folder, so it survives restarts.
 
+  Each direction also has `combined`, what the calibration's measurements add up to (see
+  [Calibration](#calibration)), and `calibration.inputs` lists the measurements:
+
+  ```json
+  "calibration": {
+    "L2R": { "state": "unchecked", …, "combined": {
+      "summary": "3 measurements agree within 2%", "detail": "", "n": 3, "agree": true, "zoneFt": 31.42, "sigmaPct": 1.8,
+      "setAside": 0, "shares": [ { "id": "2026-11-01T14:03:22-04:00#1", "contribution": 0.412, "offPct": -0.6, "outlier": false }, … ] } },
+    "R2L": { … },
+    "inputs": [ { "id": "2026-11-01T14:03:22-04:00#1", "method": "pass", "methodName": "Drive past", "label": "Drive past at 15 mph",
+      "time": "2026-11-01T14:03:22-04:00", "dirs": "both", "zoneFt": 31.25, "sigmaPct": 4.1, "removed": false, "otherLines": false }, … ]
+  }
+  ```
+
+  `summary` and `detail` are the words VST Studio shows (`detail` is the next step, or empty); `n` counts the
+  measurements in the result, `zoneFt` and `sigmaPct` are the result and its uncertainty (`null` with none), and
+  `setAside` counts ones made on other speed lines. `shares` has one entry per counted measurement: its share of the
+  weight (they add up to 1), how far it is from the result in percent, and whether it is well off the others.
+  `method` is `pass`, `cones`, `car`, `camera` or `earlier` (others may be added; show `methodName`), `dirs` is
+  `L2R`, `R2L` or `both`, `removed` says it was taken out, and `otherLines` that it was made on other speed lines.
+
 ### `GET /api/health`
 
 How an unattended run is holding up (see "Leaving it running" in [vst-studio.md](vst-studio.md)):
@@ -112,10 +133,12 @@ How an unattended run is holding up (see "Leaving it running" in [vst-studio.md]
   true after three `moved` checks in a row, about 6 minutes. `dx`/`dy` are in 1280x720 frame pixels.
 * `/api/status` carries a summary of this as `health: {"camera", "cameraWarning", "lowDisk"}`.
 
-### `GET /api/vehicles?since=<id>&from=<iso>&to=<iso>&limit=<n>`
+### `GET /api/vehicles?since=<id>&from=<iso>&to=<iso>&limit=<n>&passes=1`
 
 Logged passes, newest first. All parameters are optional: `since` returns only ids greater than it,
-`from`/`to` bound `time`, `limit` defaults to 100 and may go up to 5000.
+`from`/`to` bound `time`, `limit` defaults to 100 and may go up to 5000. `passes=1` also lists this session's
+passes timed under `minLoggedSpeed` (`belowMin: true`), for picking a calibration pass: a calibration drive on a
+quiet street can be 10 or 15 mph. Logged and slow passes share one id sequence.
 
 ```json
 [
@@ -137,7 +160,9 @@ Logged passes, newest first. All parameters are optional: `since` returns only i
     "endFrame": 6224,
     "fps": 30,
     "snapshot": "/api/vehicles/1042/snapshot.jpg",
-    "clip": "/api/vehicles/1042/clip.mp4"
+    "clip": "/api/vehicles/1042/clip.mp4",
+    "belowMin": false,
+    "trend": { "kind": "accelerating", "entry": 35, "exit": 41, "accel": 4.6, "in20ft": 43 }
   }
 ]
 ```
@@ -146,8 +171,15 @@ Logged passes, newest first. All parameters are optional: `since` returns only i
 * `wrongWay` is true when `legalDirection` is not `both` and `dir` differs from it.
 * `speeding` is `speed > speedLimit`; `egregious` is `speed >= egregious`.
 * `frames` is the number of frames the vehicle took to cross the speed zone, measured at `fps`.
+* `trend` is how the speed changed through the zone ([speed-trend.md](speed-trend.md)), or `null` when VST couldn't
+  tell: `kind` is `decelerating`, `steady`, `accelerating` or `rapid`; `entry` and `exit` are the mph at the two speed
+  lines (they average `speed`); `accel` is mph per second (+ speeding up, one decimal); `in20ft` is the mph projected
+  20 ft past the exit line (`exit` when steady, 0 if it would stop). The same as the csv's last five columns.
 * `clip` is a short (2-4 s) mp4 of the analysis-box strip from entry to exit, or `null` when none is
-  kept (for example after a restart). `snapshot` is always present.
+  kept (for example after a restart). `snapshot` is present for every logged pass.
+* `belowMin` is true for a pass timed under `minLoggedSpeed` (only with `passes=1`, or the `pass` event). It is in
+  neither the csv nor the counts, has `snapshot` and `clip` `null`, and `speeding`/`egregious`/`wrongWay` false.
+  `POST /api/calibration/apply` and `/check` take its id like any other.
 
 ### `GET /api/vehicles/<id>`
 
@@ -184,6 +216,7 @@ The live view as `multipart/x-mixed-replace` JPEG frames (about 10 fps is plenty
 |---|---|---|
 | `status` | same body as `/api/status` | about once a second |
 | `vehicle` | one `/api/vehicles` item | each time a pass is logged |
+| `pass` | one `/api/vehicles?passes=1` item with `belowMin: true` | each time a pass is timed under `minLoggedSpeed` (a slow calibration drive) |
 | `tracks` | `[{"id", "dir", "x", "y", "w", "h", "speed"}]` | optional, ~5/s, vehicles currently being tracked (frame coords; `speed` 0 until known) |
 | `config` | same body as `GET /api/config` | when the stream opens, then within about a second of any config change, from any client (the desktop included) |
 
@@ -191,7 +224,7 @@ Between events VST also sends an SSE comment (`:`) about every 200 ms, which Eve
 VST notice a closed tab within a fraction of a second and give its stream slot back.
 
 Without `/api/live` the companion falls back to polling `/api/status` every 2 s and
-`/api/vehicles?since=` every 5 s.
+`/api/vehicles?since=&passes=1` every 5 s.
 
 ### `GET /api/config`, `PUT /api/config`
 
@@ -204,6 +237,7 @@ companion-facing settings:
   "speedLineLeft": 350, "speedLineRight": 909,
   "obstruction": [251, 311],
   "R2LStreetY": 122, "L2RStreetY": 158, "R2LStreetYRight": 0, "L2RStreetYRight": 0, "streetEdge": [0, 0],
+  "parkingLane": [0, 0], "parkingLaneFt": 0, "parkingLaneBeyondFt": null, "parkingLaneHow": null,
   "L2RDirection": "SW", "R2LDirection": "NE",
   "CalibrationFramesL2R": 35, "CalibrationFramesR2L": 40, "CalibrationSpeed": 25, "CalibrationFPS": 30,
   "legalDirection": "R2L",
@@ -216,7 +250,8 @@ companion-facing settings:
 
 `minLoggedSpeed` (mph, `VST.cfg`'s key of the same name) is the slowest timed vehicle written to the
 stats csv; slower ones are only counted in the run manifest. 0 logs every timed vehicle; negative values
-are refused.
+are refused. While it is automatic (18, or the value the limit last gave it), a `speedLimit` change moves it to 5 under
+the new limit, at most 18 (15 mph → 10), unless the same body sets `minLoggedSpeed`; a value set by hand stays.
 
 `subFrameTiming` (0 or 1) turns on short-view timing for a view of about 14 to 25 ft of street, where a car
 fills most of the frame. `maxL2RDistOnEntry` and `maxR2LDistOnEntry` are the tracker's look-ahead, the
@@ -238,6 +273,15 @@ angle across the picture (0 = level, the same as the left end). `streetEdge` (`[
 way; `[0, 0]` = off) is an optional line along the curb: where it closes in on a lane line tells
 short-view timing how the street recedes, so it measures each car along the ground. See `VST.cfg`'s keys
 of the same names and `Perspective.h`.
+
+`parkingLane` (`[left, right]`, rows where the line meets the picture's left edge (x 0) and right edge (x 1280),
+whole-frame coordinates, not offsets from the box; `[0, 0]` = none) is an optional line on the middle of parked
+cars' wheels, for the Known car calibration below. `parkingLaneFt` (0 to 40; 0 = work it out from the picture) is a
+measured distance across the street from a passing car's wheels to a parked car's. Read-only, `parkingLaneBeyondFt`
+is how far beyond the moving cars VST makes the parked cars (signed: negative is nearer the camera; `null` with no
+parking lane) and `parkingLaneHow` how it got that: `"picture"` (the gap between the lines through the camera
+model, `Perspective.h` `hubcapDepthAtRow`), `"measured"` (`parkingLaneFt`) or `"typical"` (7 ft, when the camera
+model can't say). The tracker ignores all of these; they are VST Studio's settings, not `VST.cfg` keys.
 
 `GET` also returns, read-only, `obstruction_extent`, `SENSITIVITY_VALUE`, `BLUR_SIZE` and
 `largeVehicleArea` (the `VST.cfg` values) and `frameWidth`/`frameHeight` (always 1280 and 720).
@@ -330,14 +374,17 @@ decline to start (no source chosen, zones that don't validate); `ok` is still tr
 ### Calibration
 
 The tracker turns frames-in-the-zone into speed by comparison with a vehicle driven at a known
-speed. Three ways to record it:
+speed. Each way of calibrating adds a *measurement* of the street between the speed lines, and
+`CalibrationFrames<dir>` is their weighted combination (inverse-variance; the method and weights are in
+[vst-studio.md](vst-studio.md#your-calibration-every-way-adds-up)). A new measurement joins the others instead of
+replacing them; `GET /api/status` `calibration` shows them and what they add up to. Three ways to add one:
 
 * **From a logged pass (preferred).** Drive through at a known speed, find the pass, then
-  `POST /api/calibration/apply {"dir": "L2R"|"R2L", "speed": 25, "vehicleId": 1042}`. VST sets
-  `CalibrationFrames<dir>` so that a pass like that one (its `frames` at its `fps`) reads `speed`
-  mph. `CalibrationSpeed` and `CalibrationFPS` stay as they are, since the other direction's
-  calibration is expressed against them: `CalibrationFrames<dir> = frames × speed / CalibrationSpeed
-  × CalibrationFPS / fps`, rounded.
+  `POST /api/calibration/apply {"dir": "L2R"|"R2L", "speed": 25, "vehicleId": 1042}`. The pass says the
+  zone is `speed × 5280/3600 × frames / fps` feet; on a one-way street it measures the lane both ways,
+  on a two-way street just `dir`. With nothing else measured, `CalibrationFrames<dir>` becomes the value that
+  makes a pass like that one read `speed` mph (`frames × speed / CalibrationSpeed × CalibrationFPS / fps`,
+  rounded); with other measurements, the combination's. `CalibrationSpeed` and `CalibrationFPS` stay as they are.
 * **By hand.** `POST /api/calibration/mark {"dir", "edge": "start"|"end"}` records the current frame
   as the calibration vehicle's front bumper crosses the first and then the second speed line, and
   answers `{"ok": true, "frame": 2161, "marks": [start, end]}` (`-1` for an edge not marked yet);
@@ -348,15 +395,46 @@ speed. Three ways to record it:
   `cones` are the two spots in frame coordinates (1280×720, like the speed
   lines) and `feet` is the taped distance between them; `dir` defaults to `"both"`. The zone between
   the speed lines is `(speedLineRight - speedLineLeft) / |x2 - x1| × feet` long, and VST sets
-  `CalibrationFrames<dir>` to the frames a car at `CalibrationSpeed` takes to cross it at
-  `CalibrationFPS`: `zoneFeet / (CalibrationSpeed × 5280 / 3600) × CalibrationFPS`, rounded. The answer
+  adds that length as a measurement for `dir`, so on its own `CalibrationFrames<dir>` becomes the frames a car at
+  `CalibrationSpeed` takes to cross it at `CalibrationFPS` (`zoneFeet / (CalibrationSpeed × 5280 / 3600) ×
+  CalibrationFPS`, rounded), and beside others, the combination's. The answer
   adds `"zoneFeet"` and the unrounded `"frames"` (both to 0.1). Refusals: cones missing or off the
   picture, `feet` not positive, an unknown `dir`, spots less than 40 px apart across the picture, or
   speed lines not set. The calibration shows as Not checked until a check pass (below).
 
+* **From a car of a known model (no tape, and a parked car works).**
+  `POST /api/calibration/car {"marks": [[x1, y1], [x2, y2]], "feet": 9.25, "how": "wheels"|"bumpers", "dir": "both"|"L2R"|"R2L", "where": "auto"|"lane"|"parked", "beyondFt": 7, "preview": false}`.
+  `marks` are the car's two wheel centres on the side facing the camera (`how: "wheels"`, the default; `feet` is the
+  wheelbase) or its front and rear bumpers (`"bumpers"`; `feet` is the overall length), in frame coordinates.
+  `GET /api/calibration/cars` lists the models Studio knows:
+  `{"cars": [{"name": "Toyota Camry 2018-2024", "lengthIn": 192, "wheelbaseIn": 111}, …], "typicalWheelbaseIn": 111}`.
+  `where: "auto"` (the default) asks the parking lane: marks nearer the parking line than the lane line are a parked
+  car. A parked car's span is scaled to the travel lane's depth with the camera model (`ParkingLane.h`), at the car's
+  column; with no parking lane, `"parked"` takes `beyondFt` (feet farther than moving cars, -30 to 50, default 7) and
+  `"auto"` means in the lane. On a two-way street `"both"` calibrates each direction from its own lane line.
+  `preview: true` answers without changing anything. The marks and choices also show in Studio's Known car card.
+  Besides `ok`, `problems` and `config`, the answer has `where` (`"parked"`|`"lane"`, what was used), `detected`
+  (what the parking lane says, or `null` without one), `offLines` (the marks are well away from both lines: probably
+  not on the wheels), `beyondFt` and `beyondHow` (`"picture"`|`"measured"`|`"typical"`|`"typed"`, for a parked car),
+  and `scale`, `frames` (unrounded) and `zoneFeet` for the first direction, with each direction's in
+  `byDir: {"L2R": {"scale", "frames", "zoneFeet"}, …}`. Refusals: marks missing or off the picture, `feet` not
+  positive, an unknown `dir`, `where` or `how`, `beyondFt` out of range, marks less than 60 px apart across the
+  picture, or speed lines not set. The car is added to the calibration as one more input (method `car`, one per direction on a two-way street), combined with the others like cones or a pass.
+
+A pass applied or checked by `vehicleId` is also recorded as the user's own drive (`calibration-passes.csv` in the
+config folder): Studio's Results tags it, and the street report leaves it out. An apply while a camera or stream is
+being tracked restarts tracking on the next frame, so passes from then on use the new calibration; the run so far
+keeps its csv (and the old calibration) and Results offers to set it aside. A video run isn't restarted.
+
 Every way of applying returns `{"ok": true, "problems": [], "config": { … }}`, or `200`
 `{"ok": false, "problems": [ … ]}` when the pass is gone, the span isn't marked, `speed` isn't
 positive, or (for the spots) one of the refusals above. A body that isn't a JSON object is a `400`.
+
+**Taking one out.** `POST /api/calibration/inputs {"id": "…", "removed": true}` takes a measurement out of
+the calibration, and `{"id": "…", "removed": false}` puts it back; the rest are recombined at once. It answers
+`{"ok": true, "problems": [], "calibration": { … }, "config": { … }}` (`calibration` as in `GET /api/status`), or
+`200 {"ok": false, "problems": [ … ]}` for a missing or unknown `id`. A body that isn't a JSON object is a `400`.
+A removed measurement stays listed, so it can always be put back.
 
 **Checking it.** One pass at a speedometer reading is easy to get wrong, so after calibrating, drive past
 once more (ideally at a different speed) and send that pass to
@@ -383,11 +461,12 @@ The session's stats csv, same columns as the command-line `stats_*.csv`. `404` `
 first run.
 
 ```
-Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp
+Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp, EntryMph, ExitMph, AccelMphPerSec, Trend, MphIn20ft
 ```
 
 `Flag` is `*****` for an implausible speed, else empty. `Timestamp` is when the vehicle passed, ISO 8601 with the
-UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The columns are described
+UTC offset (`2026-10-30T14:03:22-04:00`), or empty when the source gives no way to tell. The last five are the speed
+trend (the vehicle's `trend`), all empty when it's `null`. The columns are described
 in the [README](../README.md#the-stats-csv).
 
 ### `GET /api/report.html?from=YYYY-MM-DD&to=YYYY-MM-DD`

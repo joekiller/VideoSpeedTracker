@@ -27,6 +27,7 @@
 #include <opencv2/opencv.hpp>
 #include "Projection.h"
 #include "Snapshot.h"
+#include "SpeedTrend.h"
 
 using namespace std;
 using namespace cv;
@@ -53,6 +54,7 @@ public:
 	int getTrackEndFrame();
 
 	int getArea();
+	int getLengthPx(const Globals& g);  // pixels, the vehicle's side-on length (see the .cpp)
 
 	double getFBSlope();
 
@@ -78,7 +80,20 @@ public:
 	// track picked up again after it was lost), so it can never be timed.
 	bool firstSeenInZone() const { return seenInZone; }
 
+	// For a vehicle first seen just coming in at the box's edge, already a little past a speed line that sits on (or
+	// within a frame pair of) that edge: it can't have been seen sooner, so it is timed, but there is no frame in which
+	// its front bumper was seen at the entry line.  Its speed comes from a fit through the front bumpers seen in the zone
+	// (subFrameSpeed()), as in a short view, rather than from counting frames between the lines.
+	void markEnteredAtEdge() { fitTiming = true; }
+
 	int getFinalSpeed();
+	// Seconds the front bumper took between the speed lines, from the same timing as getFinalSpeed() (0 = not timed).  Speed =
+	// zone length / this, so a later calibration of the same view can re-time the car exactly (csv ZoneSeconds; CalSets.h).
+	double getZoneSeconds() const { return zoneSeconds; }
+
+	// Entry and exit speed, acceleration class and the speed 20 ft on (SpeedTrend.h), set when the car is timed.  Unknown
+	// until then, and for a car whose front bumper wasn't seen often or cleanly enough to tell.
+	const vst::SpeedTrend& getSpeedTrend() const { return trend; }
 
 	void holdFrame(Mat inMat);
 
@@ -94,6 +109,7 @@ private:
 
 	void assembleStats(int frameNumber, direction dir);
 	int subFrameSpeed(Globals& g, direction dir);
+	void computeTrend(Globals& g, direction dir);
 	statusTypes estimateNextVehicleData(Globals& g, int FrameNum);
 
 
@@ -142,11 +158,14 @@ private:
 	int trackStartPixel = 0;
 	int trackEndPixel= 0;
 	bool seenInZone = false;  // see firstSeenInZone()
+	bool fitTiming = false;   // see markEnteredAtEdge()
 	int trackStartFrame = 0;
 	int trackEndFrame = 0;
 
 	int entryGap;
 	int finalSpeed = -1;  // A final valid speed will be > 0;
+	double zoneSeconds = 0;  // set with finalSpeed by computeFinalSpeed() / subFrameSpeed()
+	vst::SpeedTrend trend;  // see getSpeedTrend()
 
 // for hilites reel
 	Mat lastFeed;

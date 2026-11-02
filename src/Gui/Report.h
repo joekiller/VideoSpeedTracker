@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -64,7 +65,17 @@ struct Input {
 	RunConfig current;                    // the current VST.cfg, for runs without a manifest
 	std::vector<Snapshot> snapshots;      // used only when Settings::includeSnapshots
 	std::vector<std::string> csvFiles;    // explicit csvs; empty = every *.csv in <dataDir>/Stats
+	// Calibration and check drives (passKey of each, from calib::loadPasses): the person calibrating isn't traffic, so
+	// these rows are left out of every statistic and counted in Run::calibrationDrives.
+	std::set<std::string> calibrationPasses;
+	// Calibration sets (CalSets.h): the zone feet, L2R and R2L, each run (stats csv file name) is shown at.  A run listed
+	// here is re-timed from its manifest's calibration to these, exactly as Results shows it; others are read as measured.
+	std::map<std::string, std::pair<double, double>> zoneFt;
 };
+
+// How a calibration pass (CalPass) and a stats row are matched: the stats csv's file name and the row's Frame.  A csv
+// holds one run of one source, so no two of its rows share a frame.
+inline std::string passKey(const std::string& statsFile, int frame) { return statsFile + "|" + std::to_string(frame); }
 
 // ---- what loadStudy() reads -------------------------------------------------------------------------------
 
@@ -100,6 +111,8 @@ struct Run {
 	bool timesDerived = false;            // times rebuilt from Date/Time (and Frame/fps)
 	int undated = 0;                      // rows with no usable time at all
 	int skipped = 0;                      // malformed rows
+	int adjusted = 0;                     // rows re-timed to a newer calibration of the same view (Input::zoneFt)
+	int calibrationDrives = 0;            // rows left out as the user's own calibration or check drives (Input::calibrationPasses)
 	std::string problem;                  // manifest present but unreadable, etc.
 };
 
@@ -195,6 +208,9 @@ constexpr int kMinCell = 5;               // fewer vehicles than this and an hou
 
 // Reads the csvs, manifests and history.  Never fails outright: what can't be read becomes a caveat.
 std::vector<Run> loadRuns(const Input& in, std::vector<Obs>& obs);
+// The settings a stats csv was measured with, from its run manifest (run_<stem>.json beside it).  False, with `out`
+// untouched, when it has no readable manifest (runs before VST 1.2): what they were measured with isn't known.
+bool runConfigOf(const std::string& csvPath, RunConfig& out);
 // The whole pipeline up to the numbers.
 Study analyze(const Input& in, const Settings& s);
 std::string renderHtml(const Study& st);
