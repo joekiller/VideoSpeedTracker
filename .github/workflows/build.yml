@@ -1,8 +1,8 @@
 name: build
 
-# The one CI check pull requests get: a single Linux build and test job against the distro's OpenCV. The full
-# multi-platform matrix (release.yml) runs after merge, on main, and locally .githooks/pre-commit runs the same
-# build and tests before each commit. Pushes to main and pull requests only: a push to a PR branch used to
+# Pull requests' Linux check: a single Linux build and test job against the distro's OpenCV. Windows and macOS get
+# their own checks (platform-windows.yml, platform-macos.yml); the Linux .deb matrix (release.yml) runs after merge,
+# on main, and locally .githooks/pre-commit runs the same build and tests before each commit. Pushes to main and pull requests only: a push to a PR branch used to
 # start a second, identical run next to the pull_request one.
 #
 # Only changes that can affect the build, the tests or the companion start a run; docs, README and release-only

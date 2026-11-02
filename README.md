@@ -236,9 +236,10 @@ only).
 
 ### Pre-commit hook and CI
 
-Pull requests get one CI job (Linux, `.github/workflows/build.yml`), and only when they touch code, tests or config.
-The full release matrix (six Linux packages, Windows and macOS) runs only after a merge to main, so a change that
-breaks a platform shows up there rather than on the PR. Catch what you can before committing by turning on the repo's hook once per clone:
+Pull requests get a Linux job (`.github/workflows/build.yml`) plus Windows and macOS checks
+(`platform-windows.yml`, `platform-macos.yml`) that run the release workflow's own Windows and macOS builds, tests
+and packaging, unsigned. Each runs only when the PR touches files that platform builds from. The eight Linux `.deb`
+packages are built only after a merge to main. Catch what you can before committing by turning on the repo's hook once per clone:
 
 ```
 git config core.hooksPath .githooks
@@ -247,7 +248,7 @@ git config core.hooksPath .githooks
 `.githooks/pre-commit` looks at what is staged: companion changes run `node --test companion/test/*.test.mjs`, and
 changes under `src/`, `tests/`, `bin/`, `cmake/`, `sampleData/` or `CMakeLists.txt` rebuild `build/` (or
 `$VST_BUILD_DIR`) and run `ctest`, leaving the two slow real-time tests to CI unless `VST_HOOK_FULL=1`. `git commit --no-verify` skips it.
-To run the full matrix on a branch before merging, start the release workflow by hand:
+To build every Linux package too on a branch before merging, start the release workflow by hand:
 `gh workflow run release.yml --ref <branch>`.
 
 To build what the release packages use instead:

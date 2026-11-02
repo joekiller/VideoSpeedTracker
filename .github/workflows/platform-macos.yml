@@ -1,0 +1,44 @@
+name: macos
+
+# A pull request's Mac check: release.yml's own macos job (Apple clang build, ctest under macOS's bash 3.2 and BSD
+# tools, VSTStudio.app staged with its Info.plist and icon and ad-hoc signed, the .tar.gz and .dmg), so Mac-only
+# breaks (libc++'s missing standard headers, bash 3.2 in scripts and test fakes, the AVFoundation camera lister, the
+# .app bundle) show up on the PR instead of on main. No signing, notarizing or publishing: there's no tag and no
+# secrets are passed.
+#
+# Runs only for files the Mac package builds from; Windows-only packaging doesn't start it. Like build.yml, a PR that
+# doesn't touch these gets no run at all, so don't make it a required check.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/platform-macos.yml
+      - .github/workflows/release.yml
+      - CMakeLists.txt
+      - bin/**
+      - cmake/**
+      - packaging/build-*.sh
+      - packaging/macos-*
+      - packaging/vst-studio.png
+      - sampleData/**
+      - src/**
+      - tests/**
+
+# A new push to the PR cancels its running check.
+concurrency:
+  group: platform-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    with:
+      linux: false
+      windows: false
+    # A called workflow may only ask for what its caller grants, and GitHub checks every job in it, including the
+    # tag-only publish jobs that a PR skips. So this grants what release.yml's jobs declare; on a PR no step that uses
+    # the write scopes runs (publish needs a tag, signing and notarizing need a tag and secrets), and fork PRs get a
+    # read-only token whatever is asked for.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
