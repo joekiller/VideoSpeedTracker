@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { esc, raw, html, band, passPills, trendOf } from '../js/ui.js';
 import { pct, summarize, reportRange } from '../js/views/stats.js';
+import { passHref, localStamp } from '../js/history.js';
 import { geometry, applyHandle, laneYAt, laneHandleX, railZone, MIN_ZONE } from '../js/overlay.js';
 import * as plan from '../js/plan.js';
 import * as ground from '../js/ground.js';
@@ -129,6 +130,7 @@ describe('stats.js reportRange', () => {
     assert.deepEqual(reportRange('day', now), { from: '2026-11-04', to: '2026-11-05' });
     assert.deepEqual(reportRange('week', now), { from: '2026-10-29', to: '2026-11-05' });
     assert.deepEqual(reportRange('month', now), { from: '2026-10-06', to: '2026-11-05' });
+    assert.deepEqual(reportRange('all', now), {}, 'All: every day of data, so neither end is given');
   });
 });
 
@@ -410,5 +412,17 @@ describe('ground.js matches Perspective.h', () => {
     close(s.parkedScale, 1.038677916);
     assert.equal(ground.placeCar(window2, 400, { y: [370, 372], ft: 0 }, 600, 399).where, 'lane');
     assert.equal(ground.placeCar(window2, 400, null, 600, 371).where, null);
+  });
+});
+
+describe('history.js', () => {
+  it('a saved pass opens by its run and frame (same speed as the list), a session-only one by id', () => {
+    assert.equal(passHref({ id: 12, frame: 5 }), '#/passes/12');
+    assert.equal(passHref({ id: 12, run: 'stats_a.csv', frame: 5 }), '#/passes/saved/stats_a.csv/5');
+    assert.equal(passHref({ id: null, run: 'stats_camera0_20261101_1330.csv', frame: 600123 }), '#/passes/saved/stats_camera0_20261101_1330.csv/600123');
+  });
+  it('localStamp is local wall-clock time with no offset, as VST compares from/to', () => {
+    const ms = new Date(2026, 10, 2, 7, 5, 9).getTime();
+    assert.equal(localStamp(ms), '2026-11-02T07:05:09');
   });
 });

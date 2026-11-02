@@ -86,7 +86,7 @@ export async function passCard(v, { speedLimit, siteName }, snapshotUrl) {
     const over = v.speed - speedLimit;
     g.fillText(over > 0 ? `${over} mph over the limit` : 'Within the limit', 72, 1120);
   }
-  footer(g, siteName, new Date(v.time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+  footer(g, siteName, v.time ? new Date(v.time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '');
   return c;
 }
 

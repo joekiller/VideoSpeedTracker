@@ -277,7 +277,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
   function makeVehicle(time, dir, speed, withClip) {
     const id = nextId++;
     const frames = framesFor(dir, speed);
-    const frame = Math.round((time - started) / 1000 * 30) + 600_000;
+    const frame = Math.round((time - (started - 15 * DAY)) / 1000 * 30);   // frames since the camera first ran, never negative
     const large = rand() < 0.04;
     const wrongWay = config.legalDirection !== 'both' && dir !== config.legalDirection;
     return {
@@ -325,8 +325,54 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
     for (const at of times) vehicles.push(randomPass(at, started - at < DAY));
   }
 
+  // ---- saved runs and calibration sets (GET /api/vehicles?scope=saved, GET /api/sets) ------------------------------
+  //
+  // The story the demo tells: VST Studio was reopened SESSION_HOURS ago, so "this session" is only the newest passes;
+  // the two weeks before live in saved runs (Data/Stats/stats_*.csv) that the phone reads with scope=saved.
+  //   set 1  days 14-8: the first camera spot.  Locked when the camera was moved, then published for a council letter.
+  //   set 2  day 7 on: the new spot, open (follows today's calibration).  A recalibration 3 days ago re-timed the
+  //          older run in it by 4%, so its passes show `adjusted` with the speed as `measured` beside it.
+  // One pass in run C is the user's own calibration drive, which Stats leaves out of the street's numbers.
+  const SESSION_HOURS = 5;
+  const sessionStart = started - SESSION_HOURS * 3600e3;
+  const ymd = (ms) => localIso(ms).slice(0, 10).replace(/-/g, '');
+  const runs = [   // oldest first; `from` is when the run started
+    { from: started - 14 * DAY, set: 1, adjust: 1 },
+    { from: started - 7 * DAY, set: 2, adjust: 1.04 },
+    { from: started - 3 * DAY, set: 2, adjust: 1 },
+    { from: sessionStart, set: 2, adjust: 1 },
+  ].map((r) => ({ ...r, csv: `stats_camera0_${ymd(r.from)}_${localIso(r.from).slice(11, 16).replace(':', '')}00.csv` }));
+  const runOf = (ms) => [...runs].reverse().find((r) => ms >= r.from) ?? runs[0];
+  const sets = [
+    { id: 1, known: true, state: 'locked', lockReason: 'view', lockedAt: localIso(runs[1].from), first: localIso(runs[0].from), last: localIso(runs[0].from),
+      runs: 1, published: true, followsCalibration: false, newerCalibration: false, zoneFt: { L2R: 19.6, R2L: 19.6 }, stripe: 0 },
+    { id: 2, known: true, state: 'open', lockReason: null, lockedAt: null, first: localIso(runs[1].from), last: localIso(runs[3].from),
+      runs: 3, published: false, followsCalibration: true, newerCalibration: false, zoneFt: { L2R: 21.2, R2L: 21.2 }, stripe: 1 },
+  ];
+  for (const s of sets) {
+    const span = (iso) => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    s.summary = `Set ${s.id} · ${span(s.first)}${s.first.slice(0, 10) === s.last.slice(0, 10) ? '' : ` to ${span(s.last)}`} · ${s.runs} ${s.runs === 1 ? 'run' : 'runs'} · zone ${s.zoneFt.L2R.toFixed(1)} ft${s.published ? ' · published' : s.state === 'locked' ? ' · locked' : ''}`;
+  }
+  // The user's calibration drive: a steady 20 mph the legal way, a day and a half ago.
+  const calDriveAt = started - 1.5 * DAY;
+  const calDrive = vehicles.reduce((best, v) => (Math.abs(Date.parse(v.time) - calDriveAt) < Math.abs(Date.parse(best.time) - calDriveAt) ? v : best), vehicles[0]);
+  Object.assign(calDrive, { dir: 'R2L', compass: config.R2LDirection, wrongWay: false, speed: 20, speeding: false, egregious: false, trend: { kind: 'steady', entry: 20, exit: 20, accel: 0.2, in20ft: 20 } });
+
+  const inSession = (v) => Date.parse(v.time) >= sessionStart;
+  /** One pass as a saved csv row reads back: the session's id, snapshot and clip only while it is in this session. */
+  function savedJson(v) {
+    const r = runOf(Date.parse(v.time));
+    const live = inSession(v);
+    return {
+      ...v, id: live ? v.id : null, video: `Camera 0 · ${localIso(r.from).slice(0, 16).replace('T', ' ')}`,
+      snapshot: live ? v.snapshot : null, clip: live ? v.clip : null,
+      run: r.csv, set: r.set, measured: Math.round(v.speed / r.adjust), adjusted: Math.round(v.speed / r.adjust) !== v.speed,
+      calibration: v === calDrive ? 'drive' : null,
+    };
+  }
+
   const counts = () => {
-    const s = vehicles.filter((v) => Date.parse(v.time) >= started - DAY);
+    const s = vehicles.filter(inSession);   // "counts cover the current session"
     return {
       vehicles: s.length,
       speeders: s.filter((v) => v.speeding).length,
@@ -481,14 +527,14 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
   function handle(method, path, query = new URLSearchParams(), body = {}) {
     const m = path.match(/^\/api\/vehicles\/(\d+)\/(snapshot\.jpg|clip\.mp4)$/);
     if (m && method === 'GET') {
-      const v = vehicles.find((x) => x.id === Number(m[1]));
+      const v = vehicles.find((x) => x.id === Number(m[1]) && inSession(x));
       if (!v) return err(404, 'No such vehicle');
       if (m[2] === 'clip.mp4') return v.clip ? { status: 200, file: 'demo/clip.mp4' } : err(404, 'No clip kept for this vehicle');
       return { status: 200, file: `demo/snap${v.id % SNAPSHOTS}.jpg` };
     }
     const one = path.match(/^\/api\/vehicles\/(\d+)$/);
     if (one && method === 'GET') {
-      const v = vehicles.find((x) => x.id === Number(one[1]));
+      const v = vehicles.find((x) => x.id === Number(one[1]) && inSession(x));
       return v ? ok(v) : err(404, 'No such vehicle');
     }
     switch (`${method} ${path}`) {
@@ -504,18 +550,27 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         return ok({ ok: !problems.length, problems, plan: planJson() });
       }
       case 'GET /api/vehicles': {
-        const since = Number(query.get('since') || 0);
+        const scope = query.get('scope') || 'session';
+        if (!['session', 'saved'].includes(scope)) return err(400, 'scope must be session or saved');
+        const saved = scope === 'saved';
+        const since = saved ? 0 : Number(query.get('since') || 0);
+        const run = saved ? query.get('run') || '' : '';
+        const set = saved ? Number(query.get('set') || 0) : 0;
         const from = query.get('from') ? Date.parse(query.get('from')) : -Infinity;
         const to = query.get('to') ? Date.parse(query.get('to')) : Infinity;
-        const limit = Math.min(5000, Number(query.get('limit') || 100));
+        const limit = Math.min(saved ? 20000 : 5000, Number(query.get('limit') || 100));
         const out = [];
         for (let i = vehicles.length - 1; i >= 0 && out.length < limit; i--) {
           const v = vehicles[i];
           const t = Date.parse(v.time);
-          if (v.id > since && t >= from && t <= to) out.push(v);
+          if (!saved && !inSession(v)) break;   // oldest first, so everything before is from earlier sessions
+          if (run && runOf(t).csv !== run) continue;
+          if (set && runOf(t).set !== set) continue;
+          if (v.id > since && t >= from && t <= to) out.push(saved ? savedJson(v) : v);
         }
         return ok(out);
       }
+      case 'GET /api/sets': return ok(sets);
       case 'POST /api/run': {
         const a = body?.action;
         if (a === 'start') Object.assign(state, { running: true, paused: false });
@@ -637,7 +692,7 @@ export function createDemoVst({ now = () => Date.now(), tracks = true } = {}) {
         return bad ? err(400, 'from and to must be dates like 2026-11-02') : { status: 200, file: 'demo/report.html' };
       }
       case 'GET /api/stats.csv': {
-        const rows = vehicles.map((v) => [v.time.slice(0, 10).replace(/-/g, ''), v.time.slice(11, 19).replace(/:/g, ''),
+        const rows = vehicles.filter(inSession).map((v) => [v.time.slice(0, 10).replace(/-/g, ''), v.time.slice(11, 19).replace(/:/g, ''),
           v.frame, v.compass, v.startFrame, v.endFrame, v.frames, '', '', '', v.area, '', v.speed, '', v.time].join(', '));
         return { status: 200, text: `Date, Time, Frame, Direction, StartFrame, EndFrame, # Frames, StartPix, EndPix, DeltaPix, VehicleArea, , estSpeed, Flag, Timestamp\n${rows.join('\n')}\n`, type: 'text/csv' };
       }

@@ -138,7 +138,8 @@ How an unattended run is holding up (see "Leaving it running" in [vst-studio.md]
 Logged passes, newest first. All parameters are optional: `since` returns only ids greater than it,
 `from`/`to` bound `time`, `limit` defaults to 100 and may go up to 5000. `passes=1` also lists this session's
 passes timed under `minLoggedSpeed` (`belowMin: true`), for picking a calibration pass: a calibration drive on a
-quiet street can be 10 or 15 mph. Logged and slow passes share one id sequence.
+quiet street can be 10 or 15 mph. Logged and slow passes share one id sequence. These are this session's passes
+(since VST Studio opened); `scope=saved` (below) lists every saved run instead. `scope=session` is the default.
 
 ```json
 [
@@ -180,6 +181,55 @@ quiet street can be 10 or 15 mph. Logged and slow passes share one id sequence.
 * `belowMin` is true for a pass timed under `minLoggedSpeed` (only with `passes=1`, or the `pass` event). It is in
   neither the csv nor the counts, has `snapshot` and `clip` `null`, and `speeding`/`egregious`/`wrongWay` false.
   `POST /api/calibration/apply` and `/check` take its id like any other.
+
+### `GET /api/vehicles?scope=saved&run=<csv>&set=<id>&from=<iso>&to=<iso>&limit=<n>`
+
+Every saved run's passes, newest first by `time` (passes with no recorded time last): the same list as VST Studio's Results **All saved runs** (every
+`<data>/Stats/stats_*.csv`), so the phone still has the street's history after Studio restarts. Speeds are shown the way
+Results shows them, re-timed to their [calibration set](#get-apisets)'s calibration. `run` keeps one csv (by file name),
+`set` one calibration set, `from`/`to` bound `time` (a pass with no recorded time is left out when either is given), and
+`limit` defaults to 100 and may go up to 20000. `since` and `passes` don't apply. Each item is a vehicle as above, plus:
+
+```json
+{ "id": null, "time": "2026-10-22T08:14:03-04:00", "video": "Camera 0 · 2026-10-22 07:00", "snapshot": null, "clip": null,
+  "run": "stats_camera0_20261022_070012.csv", "set": 1, "measured": 31, "adjusted": true, "calibration": null }
+```
+
+* `id`, `snapshot` and `clip` are this session's (`/api/vehicles/<id>` works) when the pass was measured since VST
+  Studio opened; otherwise `id` is `null` and there is no picture, which only lives in memory. A saved pass is found
+  again by `run` and `frame`.
+* `time` is the csv's `Timestamp`, or for a csv from before that column its `Date`/`Time` as local time
+  (`2016-01-30T17:22:51`, when a Foscam recording started), or `""` when there is neither.
+* `video` is the run in words, as Results' Source column has it.
+* `set` is the calibration set's id, or `null` for a run with none yet (the one being written, until its manifest is read).
+* `speed` is the speed as shown, `measured` what the tracker measured, and `adjusted` true when they differ (an open set
+  re-timed by a newer calibration). `speeding`/`egregious` follow `speed` and today's limits; `wrongWay`, `dir` and the
+  trend follow the csv's compass label read with today's settings, as in Results.
+* `calibration` is `"drive"` or `"check"` for a pass the user marked as their own calibration or check drive (the
+  companion's Stats leave those out, as Results' tiles do), else `null`.
+* `400` `{"error"}` for any other `scope`; `503` `{"error"}` when VST Studio is too busy to answer.
+
+### `GET /api/sets`
+
+The calibration sets ([vst-studio.md](vst-studio.md), `src/Gui/CalSets.h`), oldest first: runs measured from the same
+camera view share a set, an open set's speeds follow the latest calibration, and a locked one keeps the calibration it
+was measured with.
+
+```json
+[ { "id": 1, "known": true, "state": "locked", "lockReason": "view", "lockedAt": "2026-10-26T09:12:40-04:00",
+    "first": "2026-10-19T07:00:12-04:00", "last": "2026-10-25T07:00:03-04:00", "runs": 7, "published": true,
+    "followsCalibration": false, "newerCalibration": false, "zoneFt": { "L2R": 19.6, "R2L": 19.6 }, "stripe": 0,
+    "summary": "Set 1 · Oct 19 to Oct 25 · 7 runs · zone 19.6 ft · published" } ]
+```
+
+* `known` is false for the set of runs saved before VST recorded calibrations (shown as measured, `zoneFt` `null`).
+* `lockReason` is `"view"` (a run from a new camera view locked it), `"manual"`, or `"unknown"` for the set with no
+  calibration on record; `null` while open.
+* `followsCalibration`: open and on today's view, so today's calibration is what its speeds use.
+* `newerCalibration`: locked, on today's view, and today's calibration differs; Studio's Results can apply it.
+* `zoneFt` is the zone length its speeds are shown at; `stripe` (0-3) is the colour of its band, by set number as in
+  Results, `null` for the unknown set; `summary` is Results' tooltip for it.
+* Locking, publishing and removing sets stay in VST Studio.
 
 ### `GET /api/vehicles/<id>`
 

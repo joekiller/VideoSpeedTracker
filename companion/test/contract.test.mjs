@@ -194,6 +194,66 @@ describe('GET /api/vehicles', () => {
   });
 });
 
+describe('GET /api/vehicles?scope=saved and GET /api/sets', () => {
+  // A saved pass is a vehicle plus where it was saved and how its speed stands; `id` (and the media) only while the
+  // pass is also in this session, and `time` "" when its csv never recorded one.
+  const SAVED = {
+    ...VEHICLE,
+    id: (v) => v === null || isInt(v),
+    time: (s) => s === '' || (isStr(s) && !Number.isNaN(Date.parse(s))),
+    run: (s) => isStr(s) && /^stats_.+\.csv$/.test(s),
+    set: (v) => v === null || isInt(v),
+    measured: isInt, adjusted: isBool,
+    calibration: (c) => c === null || ['drive', 'check'].includes(c),
+  };
+  const SET = {
+    id: isInt, known: isBool, state: (s) => ['open', 'locked'].includes(s),
+    lockReason: (r) => r === null || isStr(r), lockedAt: (r) => r === null || isStr(r),
+    first: isStr, last: isStr, runs: isInt, published: isBool, followsCalibration: isBool, newerCalibration: isBool,
+    zoneFt: (z) => z === null || (isNum(z.L2R) && isNum(z.R2L)),
+    stripe: (x) => x === null || (isInt(x) && x >= 0 && x < 4), summary: isStr,
+  };
+
+  it('scope=saved lists every saved run\'s passes with the documented fields', async () => {
+    const [r, sets, session] = await Promise.all([api.get('/api/vehicles?scope=saved&limit=2000'), api.get('/api/sets'), api.get('/api/vehicles?limit=5000')]);
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.data) && r.data.length <= 2000);
+    r.data.forEach((v, i) => assertShape(v, SAVED, `saved[${i}]`));
+    assert.equal(sets.status, 200);
+    assert.ok(Array.isArray(sets.data));
+    sets.data.forEach((s, i) => assertShape(s, SET, `sets[${i}]`));
+    const setIds = new Set(sets.data.map((s) => s.id));
+    const sessionIds = new Set(session.data.map((v) => v.id));
+    for (const v of r.data) {
+      if (v.set !== null) assert.ok(setIds.has(v.set), `saved pass in ${v.run} names set ${v.set}, which /api/sets lists`);
+      assert.equal(v.adjusted, v.speed !== v.measured, 'adjusted means the shown speed differs from the measured one');
+      if (v.id === null) assert.equal(v.snapshot, null, 'no snapshot outside this session');
+      else {
+        assert.ok(sessionIds.has(v.id), `saved pass with id ${v.id} is one of this session's vehicles`);
+        assert.equal(v.snapshot, `/api/vehicles/${v.id}/snapshot.jpg`);
+      }
+    }
+  });
+
+  it('scope=saved run= keeps to one run, and from= leaves out older or undated passes', async () => {
+    const { data: all } = await api.get('/api/vehicles?scope=saved&limit=5000');
+    if (!all.length) return;   // a fresh VST Studio may have no saved runs yet
+    const run = all[all.length - 1].run;
+    const { data: one } = await api.get(`/api/vehicles?scope=saved&limit=5000&run=${encodeURIComponent(run)}`);
+    assert.ok(one.length > 0 && one.every((v) => v.run === run));
+    const dated = all.filter((v) => v.time);
+    if (dated.length) {
+      const from = dated[Math.floor(dated.length / 2)].time;
+      const { data: newer } = await api.get(`/api/vehicles?scope=saved&limit=5000&from=${encodeURIComponent(from)}`);
+      assert.ok(newer.every((v) => v.time && v.time >= from));
+    }
+  });
+
+  it('an unknown scope is 400 {error}', async () => {
+    assertError(await api.get('/api/vehicles?scope=everything'), 400, 'bad scope');
+  });
+});
+
 describe('media', () => {
   it('snapshot.jpg is a JPEG, 404 {error} when gone', async () => {
     const { data: vs } = await api.get('/api/vehicles?limit=1');

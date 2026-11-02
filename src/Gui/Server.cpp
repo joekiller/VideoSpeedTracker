@@ -2,6 +2,7 @@
 #include "Server.h"
 #include "App.h"
 #include "Settings.h"
+#include "Resume.h"
 #include "Icons.h"
 #include "Theme.h"
 #include "UserPaths.h"
@@ -114,6 +115,151 @@ json vehicleJson(const Vehicle& v) {
 		{ "belowMin", v.belowMin },
 		{ "trend", trendJson(v.ev.trend) },
 	};
+}
+
+// "yyyymmdd hhmmss" (a csv from before the Timestamp column: Date and Time, which for a Foscam recording is when it
+// started) as ISO local time, "yyyy-mm-ddThh:mm:ss"; "" when it isn't that shape.
+std::string isoFromDateTime(const std::string& date, const std::string& time) {
+	auto digits = [](const std::string& x, size_t n) { return x.size() == n && std::all_of(x.begin(), x.end(), [](char ch) { return ch >= '0' && ch <= '9'; }); };
+	if (!digits(date, 8)) return "";
+	std::string t = digits(time, 6) ? time : "000000";
+	return date.substr(0, 4) + "-" + date.substr(4, 2) + "-" + date.substr(6, 2) + "T" + t.substr(0, 2) + ":" + t.substr(2, 2) + ":" + t.substr(4, 2);
+}
+
+// Every saved run's passes for the phone (GET /api/vehicles?scope=saved): what Studio's Results shows as "All saved
+// runs", so a phone opened after Studio restarts still has the street's history.
+//
+// Flow, keeping file work off the GUI thread:
+//   1. GUI thread (post): the data folder.
+//   2. Here: resume::savedRuns() lists Stats/stats_*.csv newest first; each csv and its manifest (calsets::readRun) is
+//      read, and each row is matched to this session's vehicle for the same csv and frame, if any (that one has a
+//      snapshot, maybe a clip, and an id the rest of the API knows).
+//   3. GUI thread (post): App::rowsFromStats() builds the rows exactly as Results does (directions from today's compass
+//      labels, the user's calibration drives marked), then syncSets() + retimeRows() file each run into its
+//      calibration set and re-time its speed to that set's calibration.  The session id goes in first, so the run being
+//      written now (no set yet) wears the open set's stripe, as on the desktop.
+//   4. Here: filtered by run/set/from/to, sorted newest first by time (undated passes last), cut at limit, as JSON.
+//
+// Returns false with `error` when the GUI thread was too busy to answer.
+bool savedPasses(App& app, const std::string& onlyRun, int onlySet, const std::string& from, const std::string& to, size_t limit, json& out,
+	std::string& error) {
+	struct Run { resume::SavedRun saved; calsets::RunInfo info; std::vector<StatsRow> stats; std::vector<int> ids; };
+	struct Job { std::string dataDir; std::vector<Run> runs; std::vector<ResultRow> rows; int limit = 0, egregious = 0; };
+	auto job = std::make_shared<Job>();   // shared with posted tasks that may still run after post() gives up
+	std::string ok = app.post([&app, job] { job->dataDir = app.dataDir(); return std::string("1"); });
+	if (ok.empty()) { error = "VST Studio is busy; try again"; return false; }
+
+	std::map<std::string, Vehicle> session;   // "<csv file name>#<frame>" -> this session's vehicle
+	for (Vehicle& v : app.tracker.vehiclesSince(0))
+		if (!v.statsPath.empty()) session[fs::path(v.statsPath).filename().string() + "#" + std::to_string(v.ev.frame)] = std::move(v);
+	for (resume::SavedRun& sr : resume::savedRuns(job->dataDir)) {
+		std::string name = fs::path(sr.csv).filename().string();
+		if (!onlyRun.empty() && name != onlyRun) continue;
+		Run r;
+		std::string err;
+		if (!readStatsCsv(sr.csv, r.stats, err)) continue;   // gone or unreadable since it was listed: Results skips it too
+		r.info = calsets::readRun(sr.csv);
+		for (const StatsRow& row : r.stats) {
+			auto it = session.find(name + "#" + std::to_string(row.frame));
+			r.ids.push_back(it == session.end() ? 0 : it->second.id);
+		}
+		r.saved = std::move(sr);
+		job->runs.push_back(std::move(r));
+	}
+
+	ok = app.post([&app, job] {
+		job->limit = app.prefs.speedLimit;
+		job->egregious = app.prefs.egregious;
+		for (const Run& r : job->runs) {
+			size_t first = job->rows.size();
+			app.rowsFromStats(r.stats, r.info, r.saved.csv, resume::runLabel(r.saved.name), job->rows);
+			for (size_t i = 0; i < r.ids.size(); i++) job->rows[first + i].vehicleId = r.ids[i];
+		}
+		app.syncSets();
+		app.retimeRows(job->rows);
+		return std::string("1");
+	});
+	if (ok.empty()) { error = "VST Studio is busy; try again"; return false; }
+
+	// Newest first by when each car passed, so runs that overlap or were written out of order (an old video tracked
+	// today) still read as one timeline; passes with no recorded time go last, newest run first.
+	struct Pick { size_t run, k, row; std::string time; };   // run index, its csv row, the row in job->rows
+	std::vector<Pick> picks;
+	for (size_t ri = 0, at = 0; ri < job->runs.size(); at += job->runs[ri].stats.size(), ri++) {
+		const Run& r = job->runs[ri];
+		for (size_t k = r.stats.size(); k-- > 0;) {
+			const StatsRow& s = r.stats[k];
+			if (onlySet && job->rows[at + k].setId != onlySet) continue;
+			std::string time = !s.timestamp.empty() ? s.timestamp : isoFromDateTime(s.date, s.time);
+			// Same rule as session vehicles: ISO local times compare correctly as strings.  A pass with no known time
+			// can't be said to fall in a period, so a from/to filter leaves it out.
+			if ((!from.empty() || !to.empty()) && time.empty()) continue;
+			if (!from.empty() && time < from) continue;
+			if (!to.empty() && time > to) continue;
+			picks.push_back({ ri, k, at + k, time });
+		}
+	}
+	std::stable_sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) {
+		if (a.time.empty() != b.time.empty()) return b.time.empty();
+		return a.time > b.time;
+	});
+	if (picks.size() > limit) picks.resize(limit);
+
+	out = json::array();
+	for (const Pick& pk : picks) {
+		const Run& r = job->runs[pk.run];
+		const ResultRow& row = job->rows[pk.row];
+		const StatsRow& s = r.stats[pk.k];
+		std::string name = fs::path(r.saved.csv).filename().string();
+		auto sv = row.vehicleId ? session.find(name + "#" + std::to_string(s.frame)) : session.end();
+		const Vehicle* v = sv == session.end() ? nullptr : &sv->second;
+		json trend = nullptr;
+		if (!row.trend.empty())
+			trend = { { "kind", row.trend }, { "entry", row.entryMph }, { "exit", row.exitMph }, { "accel", row.accel }, { "in20ft", row.mphIn20ft } };
+		out.push_back({
+			{ "id", v ? json(v->id) : json(nullptr) }, { "time", pk.time }, { "video", row.source }, { "frame", s.frame },
+			{ "dir", row.l2r ? "L2R" : "R2L" }, { "compass", row.compass }, { "wrongWay", row.wrongWay },
+			{ "speed", row.speed }, { "speeding", row.speed > job->limit }, { "egregious", row.speed >= job->egregious },
+			{ "area", row.area }, { "large", row.large }, { "frames", row.frames },
+			{ "startFrame", s.startFrame }, { "endFrame", s.endFrame }, { "fps", row.fps },
+			{ "snapshot", v ? json("/api/vehicles/" + std::to_string(v->id) + "/snapshot.jpg") : json(nullptr) },
+			{ "clip", v && !v->clipPath.empty() ? json("/api/vehicles/" + std::to_string(v->id) + "/clip.mp4") : json(nullptr) },
+			{ "belowMin", false },
+			{ "trend", trend },
+			{ "run", name },
+			{ "set", row.setId ? json(row.setId) : json(nullptr) },
+			{ "measured", row.measured.speed },
+			{ "adjusted", row.adjusted },
+			{ "calibration", row.calKind == 1 ? json("drive") : row.calKind == 2 ? json("check") : json(nullptr) },
+		});
+	}
+	return true;
+}
+
+// The calibration sets for the phone (GET /api/sets), oldest first: the same model as Results' stripes and set bar
+// (CalSets.h).  `stripe` is the colour slot, chosen by set number like App::setColor (null for the set of runs with no
+// calibration on record, drawn faint); `summary` is calsets::describe(), the desktop's tooltip.
+json setsJson(App& app) {
+	app.syncSets();
+	const calsets::View now = app.currentView();
+	const calsets::Scale nowFt = app.currentScale();
+	auto r1 = [](double v) { return std::round(v * 10) / 10; };
+	json out = json::array();
+	for (const calsets::Set& s : app.sets().sets) {
+		calsets::Scale shown = calsets::shownScale(s, now, nowFt);
+		out.push_back({
+			{ "id", s.id }, { "known", s.known }, { "state", s.locked() ? "locked" : "open" },
+			{ "lockReason", s.locked() ? json(s.lockReason) : json(nullptr) }, { "lockedAt", s.lockedAt.empty() ? json(nullptr) : json(s.lockedAt) },
+			{ "first", s.first }, { "last", s.last }, { "runs", s.runs.size() },
+			{ "published", !s.published.empty() },
+			{ "followsCalibration", s.known && !s.locked() && s.view.same(now) },
+			{ "newerCalibration", calsets::newerCalibration(s, now, nowFt) },
+			{ "zoneFt", s.known && shown.valid() ? json{ { "L2R", r1(shown.l2r) }, { "R2L", r1(shown.r2l) } } : json(nullptr) },
+			{ "stripe", s.known ? json((s.id - 1) % 4) : json(nullptr) },
+			{ "summary", calsets::describe(s, shown) },
+		});
+	}
+	return out;
 }
 
 // Step 2's site planner for the phone (GET/PUT /api/plan).  It shows Pick your spot's draft, the same one the desktop
@@ -603,6 +749,19 @@ void Server::routes() {
 		std::string from = req.has_param("from") ? req.get_param_value("from") : "", to = req.has_param("to") ? req.get_param_value("to") : "";
 		// passes=1 adds the slow passes (timed under minLoggedSpeed, `belowMin`), for picking a calibration pass.
 		bool passes = req.has_param("passes") && req.get_param_value("passes") == "1";
+		// scope=saved: every saved run's passes, as Results' "All saved runs" (savedPasses above).  `since` and
+		// `passes` are about this session's ids and slow passes, so they don't apply there.
+		if (req.has_param("scope") && req.get_param_value("scope") == "saved") {
+			json out;
+			std::string err;
+			std::string run = req.has_param("run") ? req.get_param_value("run") : "";
+			size_t savedLimit = req.has_param("limit") ? std::clamp(std::atoi(req.get_param_value("limit").c_str()), 1, 20000) : 100;
+			int set = req.has_param("set") ? std::atoi(req.get_param_value("set").c_str()) : 0;
+			if (!savedPasses(app, run, set, from, to, savedLimit, out, err)) { sendJson(res, { { "error", err } }, 503); return; }
+			sendJson(res, out);
+			return;
+		}
+		if (req.has_param("scope") && req.get_param_value("scope") != "session") { sendJson(res, { { "error", "scope must be session or saved" } }, 400); return; }
 		auto vs = passes ? app.tracker.passesSince(since) : app.tracker.vehiclesSince(since);
 		json out = json::array();
 		// Newest first; ISO local timestamps compare correctly as strings.
@@ -612,6 +771,10 @@ void Server::routes() {
 			out.push_back(vehicleJson(*it));
 		}
 		sendJson(res, out);
+	}));
+
+	http_->Get("/api/sets", guard([&app, sendPosted](const Request&, Response& res) {
+		sendPosted(res, app.post([&app] { return setsJson(app).dump(); }));
 	}));
 
 	http_->Get(R"(/api/vehicles/(\d+))", guard([&app, sendJson](const Request& req, Response& res) {
